@@ -1,3 +1,4 @@
+# this is directly copied and simplified from GetOrganelle
 import os
 import sys
 from itertools import combinations, product
