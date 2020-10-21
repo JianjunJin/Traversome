@@ -36,12 +36,16 @@ def timed_log(log, output_base, prefix, log_level="NOTSET", file_handler_mode="a
     console.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s: %(message)s'))
     if log_level == "INFO":
         console.setLevel(logging.INFO)
+    elif log_level == "DEBUG":
+        console.setLevel(logging.DEBUG)
     else:
         console.setLevel(logging.NOTSET)
     logfile = logging.FileHandler(os.path.join(output_base, prefix + '.log.txt'), mode=file_handler_mode)
     logfile.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s: %(message)s'))
     if log_level == "INFO":
         logfile.setLevel(logging.INFO)
+    elif log_level == "DEBUG":
+        logfile.setLevel(logging.DEBUG)
     else:
         logfile.setLevel(logging.NOTSET)
     log_timed.addHandler(console)
