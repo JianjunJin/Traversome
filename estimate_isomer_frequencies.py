@@ -222,13 +222,13 @@ def get_path_length(input_path, assembly_graph):
 #             read_len=median_len, input_path=this_sub_path, internal_len=internal_len, assembly_graph=assembly_graph)
 #         if num_fitting_sites < 1:
 #             continue
-#         total_fitting_sites = 0
+#         total_starting_points = 0
 #         for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
-#             total_fitting_sites += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
+#             total_starting_points += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
 #         total_length = 0
 #         for go_isomer, go_length in enumerate(isomer_lengths):
 #             total_length += isomer_percents[go_isomer] * float(go_length)
-#         this_prob = total_fitting_sites / total_length
+#         this_prob = total_starting_points / total_length
 #         all_prob.append(this_prob)
 #         n__num_reads_in_range = right_id + 1 - left_id
 #         x__num_matched_reads = len(this_sub_path_info["mapped_records"])
@@ -365,13 +365,13 @@ def mixture_binomial_loglike(
 #                 read_len=median_len, input_path=this_sub_path, internal_len=internal_len, assembly_graph=assembly_graph)
 #             if num_fitting_sites < 1:
 #                 continue
-#             total_fitting_sites = 0
+#             total_starting_points = 0
 #             for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
-#                 total_fitting_sites += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
+#                 total_starting_points += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
 #             total_length = 0
 #             for go_isomer, go_length in enumerate(isomer_lengths):
 #                 total_length += isomer_percents[go_isomer] * float(go_length)
-#             this_prob = total_fitting_sites / total_length
+#             this_prob = total_starting_points / total_length
 #             n__num_reads_in_range = right_id + 1 - left_id
 #             x__num_matched_reads = len(this_sub_path_info["mapped_records"])
 #             components.append(pm.Binomial.dist(n=n__num_reads_in_range, p=this_prob))
@@ -423,13 +423,13 @@ def mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted, is
                 read_len=median_len, input_path=this_sub_path, internal_len=internal_len, assembly_graph=assembly_graph)
             if num_fitting_sites < 1:
                 continue
-            total_fitting_sites = 0
+            total_starting_points = 0
             for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
-                total_fitting_sites += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
+                total_starting_points += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
             total_length = 0
             for go_isomer, go_length in enumerate(isomer_lengths):
                 total_length += isomer_percents[go_isomer] * float(go_length)
-            this_prob = total_fitting_sites / total_length
+            this_prob = total_starting_points / total_length
             n__num_reads_in_range = right_id + 1 - left_id
             x__num_matched_reads = len(this_sub_path_info["mapped_records"])
             components.append(pm.Binomial.dist(n=n__num_reads_in_range, p=this_prob))
@@ -474,13 +474,13 @@ def get_neg_likelihood_of_iso_freq(
         if num_fitting_sites < 1:
             continue
 
-        total_fitting_sites = 0
+        total_starting_points = 0
         for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
-            total_fitting_sites += symbol_dict_of_isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
+            total_starting_points += symbol_dict_of_isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
         total_length = 0
         for go_isomer, go_length in enumerate(isomer_lengths):
             total_length += symbol_dict_of_isomer_percents[go_isomer] * float(go_length)
-        this_prob = total_fitting_sites / total_length
+        this_prob = total_starting_points / total_length
 
         n__num_reads_in_range = right_id + 1 - left_id
         x__num_matched_reads = len(this_sub_path_info["mapped_records"])
