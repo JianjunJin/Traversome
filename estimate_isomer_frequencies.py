@@ -122,7 +122,7 @@ def get_id_range_in_increasing_values(min_num, max_num, increasing_numbers):
     return left_id, right_id
 
 
-# TODO describe
+# given a read with certain length (i.e. median length of all candidate reads), calculate how many possible sites
 def get_fitting_sites_in_range(read_len, input_path, internal_len, assembly_graph):
     maximum_num_cat = read_len - internal_len - 2
     left_trim = max(maximum_num_cat - assembly_graph.vertex_info[input_path[0][0]].len - assembly_graph.overlap(), 0)
@@ -222,15 +222,18 @@ def get_path_length(input_path, assembly_graph):
 #             read_len=median_len, input_path=this_sub_path, internal_len=internal_len, assembly_graph=assembly_graph)
 #         if num_fitting_sites < 1:
 #             continue
-#         this_prob = 0
+#         total_fitting_sites = 0
 #         for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
-#             this_prob += isomer_percents[go_isomer] * sub_path_freq / float(isomer_lengths[go_isomer])
-#         this_prob *= num_fitting_sites
+#             total_fitting_sites += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
+#         total_length = 0
+#         for go_isomer, go_length in enumerate(isomer_lengths):
+#             total_length += isomer_percents[go_isomer] * float(go_length)
+#         this_prob = total_fitting_sites / total_length
 #         all_prob.append(this_prob)
 #         n__num_reads_in_range = right_id + 1 - left_id
 #         x__num_matched_reads = len(this_sub_path_info["mapped_records"])
 #     return [p1, p2, p3]
-
+#
 
 
 
@@ -248,7 +251,8 @@ def mixture_binomial_loglike(
     :param x__num_matched_reads: shape=(count_sub_paths)
     :return: likelihood
     """
-    this_prob = tt.sum(isomer_percents * sub_path_freq * num_fitting_sites / isomer_lengths, axis=0)
+    # this_prob = tt.sum(isomer_percents * sub_path_freq * num_fitting_sites / isomer_lengths, axis=0)
+    this_prob = tt.sum(isomer_percents * sub_path_freq * num_fitting_sites, axis=0) / (isomer_percents * isomer_lengths)
     likes = x__num_matched_reads * log(this_prob) + \
             (n__num_reads_in_range - x__num_matched_reads) * log(1 - this_prob)
     return np.sum(likes)
@@ -361,10 +365,13 @@ def mixture_binomial_loglike(
 #                 read_len=median_len, input_path=this_sub_path, internal_len=internal_len, assembly_graph=assembly_graph)
 #             if num_fitting_sites < 1:
 #                 continue
-#             this_prob = 0
+#             total_fitting_sites = 0
 #             for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
-#                 this_prob += isomer_percents[go_isomer] * sub_path_freq / float(isomer_lengths[go_isomer])
-#             this_prob *= num_fitting_sites
+#                 total_fitting_sites += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
+#             total_length = 0
+#             for go_isomer, go_length in enumerate(isomer_lengths):
+#                 total_length += isomer_percents[go_isomer] * float(go_length)
+#             this_prob = total_fitting_sites / total_length
 #             n__num_reads_in_range = right_id + 1 - left_id
 #             x__num_matched_reads = len(this_sub_path_info["mapped_records"])
 #             components.append(pm.Binomial.dist(n=n__num_reads_in_range, p=this_prob))
@@ -416,10 +423,13 @@ def mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted, is
                 read_len=median_len, input_path=this_sub_path, internal_len=internal_len, assembly_graph=assembly_graph)
             if num_fitting_sites < 1:
                 continue
-            this_prob = 0
+            total_fitting_sites = 0
             for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
-                this_prob += isomer_percents[go_isomer] * sub_path_freq / float(isomer_lengths[go_isomer])
-            this_prob *= num_fitting_sites
+                total_fitting_sites += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
+            total_length = 0
+            for go_isomer, go_length in enumerate(isomer_lengths):
+                total_length += isomer_percents[go_isomer] * float(go_length)
+            this_prob = total_fitting_sites / total_length
             n__num_reads_in_range = right_id + 1 - left_id
             x__num_matched_reads = len(this_sub_path_info["mapped_records"])
             components.append(pm.Binomial.dist(n=n__num_reads_in_range, p=this_prob))
@@ -460,12 +470,18 @@ def get_neg_likelihood_of_iso_freq(
                           align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
         num_fitting_sites = get_fitting_sites_in_range(
             read_len=median_len, input_path=this_sub_path, internal_len=internal_len, assembly_graph=assembly_graph)
+
         if num_fitting_sites < 1:
             continue
-        this_prob = 0
+
+        total_fitting_sites = 0
         for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
-            this_prob += symbol_dict_of_isomer_percents[go_isomer] * sub_path_freq / float(isomer_lengths[go_isomer])
-        this_prob *= num_fitting_sites
+            total_fitting_sites += symbol_dict_of_isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
+        total_length = 0
+        for go_isomer, go_length in enumerate(isomer_lengths):
+            total_length += symbol_dict_of_isomer_percents[go_isomer] * float(go_length)
+        this_prob = total_fitting_sites / total_length
+
         n__num_reads_in_range = right_id + 1 - left_id
         x__num_matched_reads = len(this_sub_path_info["mapped_records"])
         maximum_loglike_expression += x__num_matched_reads * log(this_prob) + \
@@ -600,7 +616,7 @@ def main():
                 if success_runs:
                     # for run_res in sorted(success_runs, key=lambda x: x.fun):
                     #     log_handler.info(str(run_res.fun) + str([round(m, 8) for m in run_res.x]))
-                    log_handler.info("Proportion: %s Log-likelihood: %s" % (-success_runs[0].x, -success_runs[0].fun))
+                    log_handler.info("Proportion: %s Log-likelihood: %s" % (success_runs[0].x, -success_runs[0].fun))
         log_handler = simple_log(log_handler, options.output_dir, "ifragaria")
         log_handler.info("\nTotal cost " + "%.2f" % (time.time() - time0) + " s")
         log_handler.info("Thank you!")
