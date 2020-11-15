@@ -142,272 +142,12 @@ def get_path_length(input_path, assembly_graph):
     return circular_len + assembly_graph.overlap() * int(is_circular_path(input_path, assembly_graph))
 
 
-# class LogLike(tt.Op):
-#     """
-#     https://docs.pymc.io/notebooks/blackbox_external_likelihood.html#:~:text=Using%20a%20%E2%80%9Cblack%20box%E2%80%9D%20likelihood%20function%C2%B6&text=PyMC3%20is%20a%20great%20tool,functions%20for%20your%20particular%20model.
-#     Specify what type of object will be passed and returned to the Op when it is
-#     called. In our case we will be passing it a vector of values (the parameters
-#     that define our model) and returning a single "scalar" value (the
-#     log-likelihood)
-#     """
-#     itypes = [tt.dvector]  # expects a vector of parameter values when called
-#     otypes = [tt.dscalar]  # outputs a single scalar value (the log likelihood)
-#
-#     def __init__(self, in_loglike):  # x, data,
-#         """
-#         Initialise the Op with various things that our log-likelihood function
-#         requires. Below are the things that are needed in this particular
-#         example.
-#
-#         Parameters
-#         ----------
-#         in_loglike:
-#             The log-likelihood (or whatever) function we've defined
-#         data:
-#             The "observed" data that our log-likelihood function takes in
-#         x:
-#             The dependent variable (aka 'x') that our model requires
-#         sigma:
-#             The noise standard deviation that our function requires.
-#         """
-#
-#         # add inputs as class attributes
-#         self.likelihood = in_loglike
-#         # self.data = data
-#         # self.x = x
-#
-#     def perform(self, node, inputs, outputs):
-#         # the method that is used when calling the Op
-#         theta, = inputs  # this will contain my variables
-#
-#         # call the log-likelihood function
-#         logl = self.likelihood(*theta)  # data,
-#         outputs[0][0] = np.array(logl)  # output the log-likelihood
-#
-#
-# def mcmc(isomer_num, log_like, n_generations, n_burn, log_handler):
-#     log_l = LogLike(log_like)
-#     with pm.Model() as isomer_model:
-#         isomer_percents = [pm.Uniform("P" + str(isomer_id + 1)) for isomer_id in range(isomer_num)]
-#         isomer_percents = tt.as_tensor_variable(isomer_percents)
-#         # use a DensityDist (use a lamdba function to "call" the Op)
-#         pm.DensityDist("likelihood", lambda percents: log_l(percents), observed={"percents": isomer_percents})
-#         # step1 = pm.Slice(vars=isomer_percents)
-#         step1 = pm.HamiltonianMC(vars=isomer_percents)
-#         step2 = pm.Metropolis(vars=isomer_percents)
-#         # sample from the distribution
-#         # start = pm.find_MAP(model=isomer_model)
-#         trace = pm.sample(n_generations, [step1, step2], tune=n_burn,
-#                           discard_tuned_samples=True)
-#         log_handler.info(pm.summary(trace))
-#         # pm.traceplot(trace)
-#         # plt.show()
-
-
-# @pm.deterministic
-# def theoretical_prob(isomer_percents, all_sub_paths, assembly_graph, align_len_at_path_sorted, isomer_lengths):
-#     all_prob = []
-#     for this_sub_path, this_sub_path_info in all_sub_paths.items():
-#         internal_len = get_internal_length_from_path(this_sub_path, assembly_graph)
-#         external_len_without_overlap = get_path_len_without_terminal_overlaps(this_sub_path, assembly_graph)
-#         left_id, right_id = get_id_range_in_increasing_values(
-#             min_num=internal_len + 2, max_num=external_len_without_overlap,
-#             increasing_numbers=align_len_at_path_sorted)
-#         if int((left_id + right_id) / 2) == (left_id + right_id) / 2.:
-#             median_len = align_len_at_path_sorted[int((left_id + right_id) / 2)]
-#         else:
-#             median_len = (align_len_at_path_sorted[int((left_id + right_id) / 2)] +
-#                           align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
-#         num_fitting_sites = get_fitting_sites_in_range(
-#             read_len=median_len, input_path=this_sub_path, internal_len=internal_len, assembly_graph=assembly_graph)
-#         if num_fitting_sites < 1:
-#             continue
-#         total_starting_points = 0
-#         for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
-#             total_starting_points += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
-#         total_length = 0
-#         for go_isomer, go_length in enumerate(isomer_lengths):
-#             total_length += isomer_percents[go_isomer] * float(go_length)
-#         this_prob = total_starting_points / total_length
-#         all_prob.append(this_prob)
-#         n__num_reads_in_range = right_id + 1 - left_id
-#         x__num_matched_reads = len(this_sub_path_info["mapped_records"])
-#     return [p1, p2, p3]
-#
-
-
-
-
-
-# # ERROR: sum() does not work for Elewise object, which has no __len__()
-def mixture_binomial_loglike(
-        isomer_percents, sub_path_freq, isomer_lengths, num_fitting_sites, n__num_reads_in_range, x__num_matched_reads):
-    """
-    :param isomer_percents: shape=(count_isomers)
-    :param sub_path_freq: shape=(count_isomers, count_sub_paths)
-    :param isomer_lengths: shape=(count_isomers)
-    :param num_fitting_sites: shape=(,count_sub_paths)
-    :param n__num_reads_in_range: shape=(count_sub_paths)
-    :param x__num_matched_reads: shape=(count_sub_paths)
-    :return: likelihood
-    """
-    # this_prob = tt.sum(isomer_percents * sub_path_freq * num_fitting_sites / isomer_lengths, axis=0)
-    this_prob = tt.sum(isomer_percents * sub_path_freq * num_fitting_sites, axis=0) / (isomer_percents * isomer_lengths)
-    likes = x__num_matched_reads * log(this_prob) + \
-            (n__num_reads_in_range - x__num_matched_reads) * log(1 - this_prob)
-    return np.sum(likes)
-#
-#
-# def mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted, isomer_lengths,
-#          n_generations, n_burn, log_handler):
-#     with pm.Model() as isomer_model:
-#         isomer_percents = pm.Dirichlet(name="probs", a=np.ones(isomer_num), shape=(isomer_num,))
-#         # isomer_percents = [pm.Uniform("P" + str(isomer_id + 1)) for isomer_id in range(isomer_num)]
-#         # print("---------", isomer_percents)
-#         # print("---------", isomer_percents.shape, isomer_percents.type)
-#
-#         # isomer_percents = tt.as_tensor_variable(isomer_percents)
-#         # using a mixture distribution of multiple binomial distributions (?may not be always independent),
-#         # rather than using a single multinomial distribution
-#         # because read length has its own distribution
-#         # count = 0
-#         sub_path_freq_array = []
-#         num_fitting_sites_array = []
-#         n_array = []
-#         x_array = []
-#         for this_sub_path, this_sub_path_info in all_sub_paths.items():
-#             internal_len = get_internal_length_from_path(this_sub_path, assembly_graph)
-#             external_len_without_overlap = get_path_len_without_terminal_overlaps(this_sub_path, assembly_graph)
-#             left_id, right_id = get_id_range_in_increasing_values(
-#                 min_num=internal_len + 2, max_num=external_len_without_overlap,
-#                 increasing_numbers=align_len_at_path_sorted)
-#             if int((left_id + right_id) / 2) == (left_id + right_id) / 2.:
-#                 median_len = align_len_at_path_sorted[int((left_id + right_id) / 2)]
-#             else:
-#                 median_len = (align_len_at_path_sorted[int((left_id + right_id) / 2)] +
-#                               align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
-#             num_fitting_sites = get_fitting_sites_in_range(
-#                 read_len=median_len, input_path=this_sub_path, internal_len=internal_len, assembly_graph=assembly_graph)
-#             if num_fitting_sites < 1:
-#                 continue
-#             sub_path_freq_array.append(
-#                 [this_sub_path_info["from_paths"].get(go_isomer, 0.) for go_isomer in range(isomer_num)])
-#             num_fitting_sites_array.append([num_fitting_sites])
-#             n__num_reads_in_range = right_id + 1 - left_id
-#             n_array.append(n__num_reads_in_range)
-#             x__num_matched_reads = len(this_sub_path_info["mapped_records"])
-#             x_array.append(x__num_matched_reads)
-#             # count += 1
-#             # if count % 5 == 0:
-#             #     log_handler.info(str(count))
-#         sub_path_freq_array = np.array(sub_path_freq_array)
-#         num_fitting_sites_array = np.array(num_fitting_sites_array)
-#         n_array = np.array(n_array)
-#         x_array = np.array(x_array)
-#
-#         print("check 1")
-#         print(isomer_percents)
-#         print(sub_path_freq_array)
-#         print(isomer_lengths)
-#         print(num_fitting_sites_array)
-#         print(n_array)
-#         print(x_array)
-#         customized = pm.DensityDist("customized", mixture_binomial_loglike,
-#                                     observed={"isomer_percents": isomer_percents,
-#                                               "sub_path_freq": sub_path_freq_array,
-#                                               "isomer_lengths": isomer_lengths,
-#                                               "num_fitting_sites": num_fitting_sites_array,
-#                                               "n__num_reads_in_range": n_array,
-#                                               "x__num_matched_reads": x_array})
-#         print("check 2")
-#         step1 = pm.HamiltonianMC(vars=isomer_percents)
-#         step2 = pm.Metropolis(vars=isomer_percents)
-#         # sample from the distribution
-#         # start = pm.find_MAP(model=isomer_model)
-#         trace = pm.sample(n_generations, [step1, step2], tune=n_burn,
-#                           discard_tuned_samples=True)
-#         log_handler.info(pm.summary(trace))
-#
-
-
-
-
-
-
-
-# wrong with "mixture". The like is simply added up
-# def mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted, isomer_lengths,
-#          n_generations, n_burn, log_handler):
-#     with pm.Model() as isomer_model:
-#         isomer_percents = pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,))
-#         # isomer_percents = [pm.Uniform("P" + str(isomer_id + 1)) for isomer_id in range(isomer_num)]
-#         # isomer_percents /= sum(isomer_percents)
-#         # isomer_percents = tt.as_tensor_variable(isomer_percents)
-#
-#         # using a mixture distribution of multiple binomial distributions (?may not be always independent),
-#         # rather than using a single multinomial distribution
-#         # because read length has its own distribution
-#         components = []
-#         data = []
-#         # count = 0
-#         for this_sub_path, this_sub_path_info in all_sub_paths.items():
-#             internal_len = get_internal_length_from_path(this_sub_path, assembly_graph)
-#             external_len_without_overlap = get_path_len_without_terminal_overlaps(this_sub_path, assembly_graph)
-#             left_id, right_id = get_id_range_in_increasing_values(
-#                 min_num=internal_len + 2, max_num=external_len_without_overlap,
-#                 increasing_numbers=align_len_at_path_sorted)
-#             if int((left_id + right_id) / 2) == (left_id + right_id) / 2.:
-#                 median_len = align_len_at_path_sorted[int((left_id + right_id) / 2)]
-#             else:
-#                 median_len = (align_len_at_path_sorted[int((left_id + right_id) / 2)] +
-#                               align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
-#             num_fitting_sites = get_fitting_sites_in_range(
-#                 read_len=median_len, input_path=this_sub_path, internal_len=internal_len, assembly_graph=assembly_graph)
-#             if num_fitting_sites < 1:
-#                 continue
-#             total_starting_points = 0
-#             for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
-#                 total_starting_points += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
-#             total_length = 0
-#             for go_isomer, go_length in enumerate(isomer_lengths):
-#                 total_length += isomer_percents[go_isomer] * float(go_length)
-#             this_prob = total_starting_points / total_length
-#             n__num_reads_in_range = right_id + 1 - left_id
-#             x__num_matched_reads = len(this_sub_path_info["mapped_records"])
-#             components.append(pm.Binomial.dist(n=n__num_reads_in_range, p=this_prob))
-#             data.append(x__num_matched_reads)
-#             # count += 1
-#             # if count % 5 == 0:
-#             #     log_handler.info(str(count))
-#         # weights = pm.Dirichlet("w", a=np.array([1] * len(components)))
-#         pm.Mixture(name="likelihood", w=np.ones(len(components)), comp_dists=components, observed=data)
-#         # sample from the distribution
-#
-#         start = pm.find_MAP(model=isomer_model)
-#
-#         # ESS: ValueError: cannot convert float NaN to integer
-#         # trace = pm.sample_smc(n_generations, parallel=False)
-#
-#         # pymc3.exceptions.SamplingError: Bad initial energy
-#         trace = pm.sample(n_generations, tune=n_burn, discard_tuned_samples=True, cores=1, init='adapt_diag', start=start)
-#
-#         log_handler.info(pm.summary(trace))
-
-
 def mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted, isomer_lengths,
          n_generations, n_burn, log_handler):
     with pm.Model() as isomer_model:
         isomer_percents = pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,))
-        # isomer_percents = [pm.Uniform("P" + str(isomer_id + 1)) for isomer_id in range(isomer_num)]
-        # isomer_percents /= sum(isomer_percents)
-        # isomer_percents = tt.as_tensor_variable(isomer_percents)
-
-        # using a mixture distribution of multiple binomial distributions (?may not be always independent),
-        # rather than using a single multinomial distribution
-        # because read length has its own distribution
-        components = []
-        data = []
-        # count = 0
+        count = 0
+        likes = 0
         for this_sub_path, this_sub_path_info in all_sub_paths.items():
             internal_len = get_internal_length_from_path(this_sub_path, assembly_graph)
             external_len_without_overlap = get_path_len_without_terminal_overlaps(this_sub_path, assembly_graph)
@@ -428,27 +168,24 @@ def mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted, is
                 total_starting_points += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
             total_length = 0
             for go_isomer, go_length in enumerate(isomer_lengths):
-                total_length += isomer_percents[go_isomer] * float(go_length)
+                total_length += float(go_length) * isomer_percents[go_isomer]
             this_prob = total_starting_points / total_length
             n__num_reads_in_range = right_id + 1 - left_id
             x__num_matched_reads = len(this_sub_path_info["mapped_records"])
-            components.append(pm.Binomial.dist(n=n__num_reads_in_range, p=this_prob))
-            data.append(x__num_matched_reads)
-            # count += 1
-            # if count % 5 == 0:
-            #     log_handler.info(str(count))
-        # weights = pm.Dirichlet("w", a=np.array([1] * len(components)))
-        pm.Mixture(name="likelihood", w=np.ones(len(components)), comp_dists=components, observed=data)
+            count += 1
+            if count % 5 == 0:
+                log_handler.info(str(count))
+            likes += x__num_matched_reads * tt.log(this_prob) + \
+                     (n__num_reads_in_range - x__num_matched_reads) * tt.log(1 - this_prob)
+        pm.Potential("likelihood", likes)
+        # pm.Deterministic("likelihood", likes)
+        # pm.DensityDist?
+        # pm.Mixture(name="likelihood", w=np.ones(len(components)), comp_dists=components, observed=data)
+        # pm.Binomial("path_last", n=n__num_reads_in_range, p=this_prob, observed=x__num_matched_reads)
         # sample from the distribution
-
         start = pm.find_MAP(model=isomer_model)
-
-        # ESS: ValueError: cannot convert float NaN to integer
         # trace = pm.sample_smc(n_generations, parallel=False)
-
-        # pymc3.exceptions.SamplingError: Bad initial energy
         trace = pm.sample(n_generations, tune=n_burn, discard_tuned_samples=True, cores=1, init='adapt_diag', start=start)
-
         log_handler.info(pm.summary(trace))
 
 
@@ -602,7 +339,7 @@ def main():
             if options.do_bayesian:
                 log_handler.info("Running MCMC .. ")
                 mcmc(num_of_isomers, all_sub_paths, assembly_graph, align_len_at_path_sorted, isomer_lengths,
-                     n_generations=1000, n_burn=10, log_handler=log_handler)
+                     n_generations=10000, n_burn=100, log_handler=log_handler)
             else:
                 """ find proportion that maximize the likelihood """
                 symbol_dict_of_isomer_percents = \
