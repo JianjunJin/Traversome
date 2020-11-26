@@ -13,8 +13,12 @@ from ifragaria.assembly_parser import Assembly, ProcessingGraphFailed
 from ifragaria.alignment_parser import GraphAlignRecords
 from ifragaria.pip_control_func import simple_log, timed_log
 np.seterr(divide="ignore", invalid="ignore")
+import matplotlib.pyplot as plt
 import pymc3 as pm
 import theano.tensor as tt
+import theano
+
+theano.config.gcc.cxxflags = "-fbracket-depth=16000"  # will significantly slow down the compiling
 
 
 def get_options(description):
@@ -27,8 +31,8 @@ def get_options(description):
                       help="Output directory. ")
     parser.add_option("-B", dest="do_bayesian", action="store_true", default=False,
                       help="Do a bayesian analysis. ")
-    # parser.add_option("--out-seq", dest="out_seq", default=False, action="store_true",
-    #                   help="Output sequences with proportion >= 0.")
+    parser.add_option("--out-seq-prop", dest="out_seq_prop", default=0.001, type=float,
+                      help="(Currently working for ML only) Output sequences with proportion >= %default")
     # parser.add_option("-p", dest="paths",
     #                   help="Optional. Input file containing paths rather than exporting "
     #                        "all circular paths from the assembly graph. "
@@ -50,6 +54,7 @@ def get_options(description):
             raise IOError(options.gaf_file + " not found/valid!")
         if not os.path.exists(options.output_dir):
             os.mkdir(options.output_dir)
+        assert 0 <= options.out_seq_prop <= 1
         log_handler = simple_log(logging.getLogger(), options.output_dir, "ifragaria", file_handler_mode="a")
         log_handler.info(description)
         log_handler.info("Python " + str(sys.version).replace("\n", " "))
@@ -142,8 +147,9 @@ def get_path_length(input_path, assembly_graph):
     return circular_len + assembly_graph.overlap() * int(is_circular_path(input_path, assembly_graph))
 
 
-def mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted, isomer_lengths,
+def iso_mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted, isomer_lengths,
          n_generations, n_burn, log_handler):
+    log_handler.info(str(len(all_sub_paths)) + " subpaths in total")
     with pm.Model() as isomer_model:
         isomer_percents = pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,))
         count = 0
@@ -173,8 +179,8 @@ def mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted, is
             n__num_reads_in_range = right_id + 1 - left_id
             x__num_matched_reads = len(this_sub_path_info["mapped_records"])
             count += 1
-            if count % 5 == 0:
-                log_handler.info(str(count))
+            # if count % 5 == 0:
+            #     log_handler.info(str(count))
             likes += x__num_matched_reads * tt.log(this_prob) + \
                      (n__num_reads_in_range - x__num_matched_reads) * tt.log(1 - this_prob)
         pm.Potential("likelihood", likes)
@@ -185,8 +191,10 @@ def mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted, is
         # sample from the distribution
         start = pm.find_MAP(model=isomer_model)
         # trace = pm.sample_smc(n_generations, parallel=False)
-        trace = pm.sample(n_generations, tune=n_burn, discard_tuned_samples=True, cores=1, init='adapt_diag', start=start)
+        trace = pm.sample(
+            n_generations, tune=n_burn, discard_tuned_samples=True, cores=1, init='adapt_diag', start=start)
         log_handler.info(pm.summary(trace))
+    return trace
 
 
 def get_neg_likelihood_of_iso_freq(
@@ -253,8 +261,9 @@ def minimize_neg_likelihood(likelihood_function, num_isomers, verbose):
         result = optimize.minimize(
             fun=likelihood_function,
             x0=initials,
-            jac=False, method='SLSQP', constraints=constraints, bounds=[(-1.0e-9, 1.0)] * num_isomers,
+            jac=False, method='SLSQP', constraints=constraints, bounds=[(0., 1.0)] * num_isomers,
             options=other_optimization_options)
+        # bounds=[(-1.0e-9, 1.0)] * num_isomers will violate bound constraints and cause ValueError
         if result.success:
             success_runs.append(result)
             if len(success_runs) > 10:
@@ -338,8 +347,12 @@ def main():
             """ ML or Bayesian """
             if options.do_bayesian:
                 log_handler.info("Running MCMC .. ")
-                mcmc(num_of_isomers, all_sub_paths, assembly_graph, align_len_at_path_sorted, isomer_lengths,
-                     n_generations=10000, n_burn=100, log_handler=log_handler)
+                trace = iso_mcmc(num_of_isomers, all_sub_paths, assembly_graph, align_len_at_path_sorted, isomer_lengths,
+                     n_generations=10000, n_burn=1000, log_handler=log_handler)
+                plt.plot()
+                # call model arguments
+                pm.traceplot(trace)
+                plt.savefig(os.path.join(options.output_dir, "mcmc.pdf"))
             else:
                 """ find proportion that maximize the likelihood """
                 symbol_dict_of_isomer_percents = \
@@ -354,6 +367,14 @@ def main():
                     # for run_res in sorted(success_runs, key=lambda x: x.fun):
                     #     log_handler.info(str(run_res.fun) + str([round(m, 8) for m in run_res.x]))
                     log_handler.info("Proportion: %s Log-likelihood: %s" % (success_runs[0].x, -success_runs[0].fun))
+                    log_handler.info("Output seqs: ")
+                    with open(os.path.join(options.output_dir, "isomers.fasta"), "w") as output_handler:
+                        for go_isomer, this_prob in enumerate(success_runs[0].x):
+                            if this_prob > options.out_seq_prop:
+                                this_seq = assembly_graph.export_path(isomer_paths_with_labels[go_isomer][0])
+                                output_handler.write(">" + this_seq.label + " prop=%.4f" % this_prob + "\n" +
+                                                     this_seq.seq + "\n")
+                                log_handler.info(">" + this_seq.label + " prop=%.4f" % this_prob + "\n")
         log_handler = simple_log(log_handler, options.output_dir, "ifragaria")
         log_handler.info("\nTotal cost " + "%.2f" % (time.time() - time0) + " s")
         log_handler.info("Thank you!")
