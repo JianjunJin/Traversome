@@ -374,7 +374,7 @@ def main():
                                 this_seq = assembly_graph.export_path(isomer_paths_with_labels[go_isomer][0])
                                 output_handler.write(">" + this_seq.label + " prop=%.4f" % this_prob + "\n" +
                                                      this_seq.seq + "\n")
-                                log_handler.info(">" + this_seq.label + " prop=%.4f" % this_prob + "\n")
+                                log_handler.info(">" + this_seq.label + " prop=%.4f" % this_prob)
         log_handler = simple_log(log_handler, options.output_dir, "ifragaria")
         log_handler.info("\nTotal cost " + "%.2f" % (time.time() - time0) + " s")
         log_handler.info("Thank you!")
