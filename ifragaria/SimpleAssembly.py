@@ -5,7 +5,9 @@ Base Assembly class for parsing input graph files.
 """
 
 from loguru import logger
-from .utils import Vertex, VertexInfo, Sequence, SequenceList  # fasta funcs
+from .utils import Vertex, VertexInfo, Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
+from hashlib import sha256
+import os
 
 
 
@@ -475,7 +477,4 @@ class SimpleAssembly(object):
                             "L", vertex_name, ("-", "+")[this_end], next_v, ("-", "+")[not next_e],
                             str(self.__overlap if self.__overlap else 0) + "M"
                         ]) + "\n")
-
-
-
 

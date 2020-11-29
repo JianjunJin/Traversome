@@ -6,10 +6,14 @@ Assembly class object and associated class objects
 
 from loguru import logger
 from .SimpleAssembly import SimpleAssembly
-from .utils import Sequence, SequenceList, Vertex, VertexInfo  # fasta funcs
-
-
-INF = float("inf")
+from .GetAllCircularPaths import GetAllCircularPaths
+from .GetAllSortedPaths import GetAllPaths
+from .utils import Sequence, SequenceList, ProcessingGraphFailed, INF, smart_trans_for_sort, get_orf_lengths
+from copy import deepcopy
+from collections import OrderedDict
+from itertools import combinations, product
+import os
+import sys
 
 
 
@@ -159,80 +163,17 @@ class Assembly(SimpleAssembly):
             out.writelines(["\t".join(line) + "\n" for line in lines])
 
 
-
     def update_orf_total_len(self, limited_vertices=None):
-        """
-        Get ORF lengths and sum in both directions from all or a subset of vertices        
-        This is called in .get_all_paths() and .get_all_circular_paths()
-        """
-        # either select all vertices or a subset of vertices, and sort.
         if not limited_vertices:
             limited_vertices = sorted(self.vertex_info)
         else:
             limited_vertices = sorted(limited_vertices)
-
-        # iterate over vertices and store ORF lens in both directions 
         for vertex_name in limited_vertices:
-
-            # set 'orf' attr for this vertex to an empty dict
             self.vertex_info[vertex_name].other_attr["orf"] = {}
-
-            # calculate and store ORF lens for both directions
             for direction in (True, False):
-
-                # get list of lengths and sum for this ORF
                 this_orf_lens = get_orf_lengths(self.vertex_info[vertex_name].seq[direction])
-                orf_dict = {"lengths": this_orf_lens, "sum_len": sum(this_orf_lens)}
-                self.vertex_info[vertex_name].other_attr["orf"][direction] = orf_dict
-
-
-
-    def get_orf_lengths(
-        self,
-        sequence_string, 
-        threshold=200, 
-        which_frame=None,
-        here_stop_codons=None, 
-        here_start_codons=None):
-        """
-        :param sequence_string:
-        :param threshold: default: 200
-        :param which_frame: 1, 2, 3, or None
-        :param here_stop_codons: default: CLASSIC_STOP_CODONS
-        :param here_start_codons: default: CLASSIC_START_CODONS
-        :return: [len_orf1, len_orf2, len_orf3 ...] # longest accumulated orfs among all frame choices
-        """
-        assert which_frame in {0, 1, 2, None}
-        if which_frame is None:
-            test_frames = [0, 1, 2]
-        else:
-            test_frames = [which_frame]
-        if here_start_codons is None:
-            here_start_codons = CLASSIC_START_CODONS
-        if here_stop_codons is None:
-            here_stop_codons = CLASSIC_STOP_CODONS
-        orf_lengths = {}
-        
-        # 
-        for try_frame in test_frames:
-            orf_lengths[try_frame] = []
-            this_start = False
-            for go in range(try_frame, len(sequence_string), 3):
-                if this_start:
-                    if sequence_string[go:go + 3] not in here_stop_codons:
-                        orf_lengths[try_frame][-1] += 3
-                    else:
-                        if orf_lengths[try_frame][-1] < threshold:
-                            del orf_lengths[try_frame][-1]
-                        this_start = False
-                else:
-                    if sequence_string[go:go + 3] in here_start_codons:
-                        orf_lengths[try_frame].append(3)
-                        this_start = True
-                    else:
-                        pass
-        return sorted(orf_lengths.values(), key=lambda x: -sum(x))[0]
-
+                self.vertex_info[vertex_name].other_attr["orf"][direction] = {"lengths": this_orf_lens,
+                                                                              "sum_len": sum(this_orf_lens)}
 
 
     def update_vertex_clusters(self):
@@ -397,6 +338,74 @@ class Assembly(SimpleAssembly):
                             all_both_ends[this_ends].add((each_vertex, direction_remained))
         return [vertices for vertices in all_both_ends.values() if len(vertices) > 1]
 
+
+    def is_sequential_repeat(self, search_vertex_name, return_pair_in_the_trunk_path=True):
+        if search_vertex_name not in self.vertex_info:
+            raise ProcessingGraphFailed("Vertex name " + search_vertex_name + " not found!")
+        connection_set_t = self.vertex_info[search_vertex_name].connections[True]
+        connection_set_f = self.vertex_info[search_vertex_name].connections[False]
+        all_pairs_of_inner_circles = []
+
+        def path_without_leakage(start_v, start_e, terminating_end_set):
+            in_pipe_leak = False
+            circle_in_between = []
+            in_vertex_ends = set()
+            in_vertex_ends.add((start_v, start_e))
+            in_searching_con = [(start_v, not start_e)]
+            while in_searching_con:
+                in_search_v, in_search_e = in_searching_con.pop(0)
+                if (in_search_v, in_search_e) in terminating_end_set:
+                    # start from the same (next_t_v, next_t_e), merging to two different ends of connection_set_f
+                    if circle_in_between:
+                        in_pipe_leak = True
+                        break
+                    else:
+                        circle_in_between.append(((start_v, start_e), (in_search_v, in_search_e)))
+                elif (in_search_v, in_search_e) in connection_set_t:
+                    in_pipe_leak = True
+                    break
+                else:
+                    for n_in_search_v, n_in_search_e in self.vertex_info[in_search_v].connections[in_search_e]:
+                        if (n_in_search_v, n_in_search_e) in in_vertex_ends:
+                            pass
+                        else:
+                            in_vertex_ends.add((n_in_search_v, n_in_search_e))
+                            in_searching_con.append((n_in_search_v, not n_in_search_e))
+            if not in_pipe_leak:
+                return circle_in_between
+            else:
+                return []
+
+        # branching ends
+        if len(connection_set_t) == len(connection_set_f) == 2:
+            for next_t_v, next_t_e in list(connection_set_t):
+                this_inner_circle = path_without_leakage(next_t_v, next_t_e, connection_set_f)
+                if this_inner_circle:
+                    # check leakage in reverse direction
+                    reverse_v, reverse_e = this_inner_circle[0][1]
+                    not_leak = path_without_leakage(reverse_v, reverse_e, connection_set_t)
+                    if not_leak:
+                        all_pairs_of_inner_circles.extend(this_inner_circle)
+            # sort pairs by average depths(?)
+            all_pairs_of_inner_circles.sort(
+                key=lambda x: (self.vertex_info[x[0][0]].cov + self.vertex_info[x[1][0]].cov))
+            if all_pairs_of_inner_circles and return_pair_in_the_trunk_path:
+                # switch nearby vertices
+                # keep those prone to be located in the "trunk road" of the repeat
+                single_pair_in_main_path = []
+                if len(all_pairs_of_inner_circles) == 1:
+                    for next_v, next_e in list(connection_set_t) + list(connection_set_f):
+                        if (next_v, next_e) not in all_pairs_of_inner_circles[0]:
+                            single_pair_in_main_path.append((next_v, next_e))
+                    single_pair_in_main_path = tuple(single_pair_in_main_path)
+                else:
+                    # two circles share this sequential repeat,
+                    # return the one with a smaller average depth(?)
+                    single_pair_in_main_path = tuple(all_pairs_of_inner_circles[0])
+                return single_pair_in_main_path
+            return all_pairs_of_inner_circles
+        else:
+            return all_pairs_of_inner_circles
 
 
     def merge_all_possible_vertices(self, limited_vertices=None, copy_tags=True):
@@ -709,187 +718,6 @@ class Assembly(SimpleAssembly):
             raise ProcessingGraphFailed("No available " + database_name + " information found in " + tab_file)
 
 
-    def filter_by_coverage(
-        self, drop_num=1, database_n="embplant_pt", log_hard_cov_threshold=10., weight_factor=100., min_sigma_factor=0.1, min_cluster=1, terminal_extra_weight=5.,                        verbose=False, log_handler=None, debug=False):
-        changed = False
-        overlap = self.__overlap if self.__overlap else 0
-        log_hard_cov_threshold = abs(log(log_hard_cov_threshold))
-        vertices = sorted(self.vertex_info)
-        v_coverages = {this_v: self.vertex_info[this_v].cov / self.vertex_to_copy.get(this_v, 1) for this_v in vertices}
-        try:
-            max_tagged_cov = max([v_coverages[tagged_v] for tagged_v in self.tagged_vertices[database_n]])
-        except ValueError as e:
-            if log_handler:
-                log_handler.info("tagged vertices: " + str(self.tagged_vertices))
-            else:
-                sys.stdout.write("tagged vertices: " + str(self.tagged_vertices) + "\n")
-            raise e
-        # removing coverage with 10 times lower/greater than tagged_cov
-        removing_low_cov = [candidate_v
-                            for candidate_v in vertices
-                            if abs(log(self.vertex_info[candidate_v].cov / max_tagged_cov)) > log_hard_cov_threshold]
-        if removing_low_cov:
-            if log_handler and (debug or verbose):
-                log_handler.info("removing extremely outlying coverage contigs: " + str(removing_low_cov))
-            elif verbose or debug:
-                sys.stdout.write("removing extremely outlying coverage contigs: " + str(removing_low_cov) + "\n")
-            self.remove_vertex(removing_low_cov)
-            changed = True
-        merged = self.merge_all_possible_vertices()
-        if merged:
-            changed = True
-        vertices = sorted(self.vertex_info)
-        v_coverages = {this_v: self.vertex_info[this_v].cov / self.vertex_to_copy.get(this_v, 1)
-                       for this_v in vertices}
-
-        coverages = np.array([v_coverages[this_v] for this_v in vertices])
-        cover_weights = np.array([(self.vertex_info[this_v].len - overlap)
-                                  # multiply by copy number
-                                  * self.vertex_to_copy.get(this_v, 1)
-                                  # extra weight to short non-target
-                                  * (terminal_extra_weight if self.vertex_info[this_v].is_terminal() else 1)
-                                  for this_v in vertices])
-        tag_kinds = [tag_kind for tag_kind in self.tagged_vertices if self.tagged_vertices[tag_kind]]
-        tag_kinds.sort(key=lambda x: x != database_n)
-        set_cluster = {}
-        for v_id, vertex_name in enumerate(vertices):
-            for go_tag, this_tag in enumerate(tag_kinds):
-                if vertex_name in self.tagged_vertices[this_tag]:
-                    if v_id not in set_cluster:
-                        set_cluster[v_id] = set()
-                    set_cluster[v_id].add(go_tag)
-        min_tag_kind = {0}
-        for v_id in set_cluster:
-            if 0 not in set_cluster[v_id]:
-                min_tag_kind |= set_cluster[v_id]
-        min_cluster = max(min_cluster, len(min_tag_kind))
-
-        # old way:
-        # set_cluster = {v_coverages[tagged_v]: 0 for tagged_v in self.tagged_vertices[mode]}
-
-        # gmm_scheme = gmm_with_em_aic(coverages, maximum_cluster=6, cluster_limited=set_cluster,
-        #                              min_sigma_factor=min_sigma_factor)
-        if log_handler and (debug or verbose):
-            log_handler.info("Vertices: " + str(vertices))
-            log_handler.info("Coverages: " + str([float("%.1f" % cov_x) for cov_x in coverages]))
-        elif verbose or debug:
-            sys.stdout.write("Vertices: " + str(vertices) + "\n")
-            sys.stdout.write("Coverages: " + str([float("%.1f" % cov_x) for cov_x in coverages]) + "\n")
-        gmm_scheme = weighted_gmm_with_em_aic(coverages, data_weights=cover_weights,
-                                              minimum_cluster=min_cluster, maximum_cluster=6,
-                                              cluster_limited=set_cluster, min_sigma_factor=min_sigma_factor,
-                                              log_handler=log_handler, verbose_log=verbose)
-        cluster_num = gmm_scheme["cluster_num"]
-        parameters = gmm_scheme["parameters"]
-        # for debug
-        # print('testing', end="\n")
-        # for temp in parameters:
-        #     print("  ", temp, end="\n")
-        labels = gmm_scheme["labels"]
-        if log_handler and (debug or verbose):
-            log_handler.info("Labels: " + str(labels))
-        elif verbose or debug:
-            sys.stdout.write("Labels: " + str(labels) + "\n")
-
-        # 1
-        selected_label_type = list(
-            set([lb for go, lb in enumerate(labels) if vertices[go] in self.tagged_vertices[database_n]]))
-        if len(selected_label_type) > 1:
-            label_weights = {}
-            # for lb in selected_label_type:
-            #     this_add_up = 0
-            #     for go in np.where(labels == lb)[0]:
-            #         this_add_up += self.vertex_info[vertices[go]].get("weight", {}).get(mode, 0)
-            #     label_weights[lb] = this_add_up
-            label_weights = {lb: sum([self.vertex_info[vertices[go]].other_attr.get("weight", {}).get(database_n, 0)
-                                      for go in np.where(labels == lb)[0]])
-                             for lb in selected_label_type}
-            selected_label_type.sort(key=lambda x: -label_weights[x])
-            remained_label_type = {selected_label_type[0]}
-            for candidate_lb_type in selected_label_type[1:]:
-                if label_weights[candidate_lb_type] * weight_factor >= selected_label_type[0]:
-                    remained_label_type.add(candidate_lb_type)
-                else:
-                    break
-            extra_kept = set()
-            for candidate_lb_type in selected_label_type:
-                if candidate_lb_type not in remained_label_type:
-                    can_mu = parameters[candidate_lb_type]["mu"]
-                    for remained_l in remained_label_type:
-                        if abs(can_mu - parameters[remained_l]["mu"]) < 2 * parameters[remained_l]["sigma"]:
-                            extra_kept.add(candidate_lb_type)
-                            break
-            remained_label_type |= extra_kept
-        else:
-            remained_label_type = {selected_label_type[0]}
-        if debug or verbose:
-            if log_handler:
-                log_handler.info("\t".join(["Mu" + str(go) + ":" + str(parameters[lab_tp]["mu"]) +
-                                            " Sigma" + str(go) + ":" + str(parameters[lab_tp]["sigma"])
-                                            for go, lab_tp in enumerate(remained_label_type)]))
-            else:
-                sys.stdout.write("\t".join(["Mu" + str(go) + ":" + str(parameters[lab_tp]["mu"]) +
-                                            " Sigma" + str(go) + ":" + str(parameters[lab_tp]["sigma"])
-                                            for go, lab_tp in enumerate(remained_label_type)]) + "\n")
-
-        # 2
-        # exclude_label_type = set()
-        # if len(tag_kinds) > 1:
-        #     for go_l, this_label in enumerate(labels):
-        #         for this_tag in tag_kinds[1:]:
-        #             if vertices[go_l] in self.tagged_vertices[this_tag]:
-        #                 exclude_label_type.add(this_label)
-        #                 break
-        # exclude_label_type = sorted(exclude_label_type)
-        # if exclude_label_type:
-        #     check_ex = 0
-        #     while check_ex < len(exclude_label_type):
-        #         if exclude_label_type[check_ex] in remained_label_type:
-        #             if debug or verbose:
-        #                 if log_handler:
-        #                     log_handler.info("label " + str(exclude_label_type[check_ex]) + " kept")
-        #                 else:
-        #                     sys.stdout.write("label " + str(exclude_label_type[check_ex]) + " kept\n")
-        #             del exclude_label_type[check_ex]
-        #         else:
-        #             check_ex += 1
-
-        candidate_dropping_label_type = {l_t: inf for l_t in set(range(cluster_num)) - remained_label_type}
-        for lab_tp in candidate_dropping_label_type:
-            check_mu = parameters[lab_tp]["mu"]
-            check_sigma = parameters[lab_tp]["sigma"]
-            for remained_l in remained_label_type:
-                rem_mu = parameters[remained_l]["mu"]
-                rem_sigma = parameters[remained_l]["sigma"]
-                this_dist = abs(rem_mu - check_mu) - 2 * (check_sigma + rem_sigma)
-                candidate_dropping_label_type[lab_tp] = min(candidate_dropping_label_type[lab_tp], this_dist)
-        dropping_type = sorted(candidate_dropping_label_type, key=lambda x: -candidate_dropping_label_type[x])
-        drop_num = max(len(tag_kinds) - 1, drop_num)
-        dropping_type = dropping_type[:drop_num]
-        if debug or verbose:
-            if log_handler:
-                for lab_tp in dropping_type:
-                    if candidate_dropping_label_type[lab_tp] < 0:
-                        log_handler.warning("Indistinguishable vertices "
-                                            + str([vertices[go] for go in np.where(labels == lab_tp)[0]])
-                                            + " removed!")
-            else:
-                for lab_tp in dropping_type:
-                    if candidate_dropping_label_type[lab_tp] < 0:
-                        sys.stdout.write("Warning: indistinguishable vertices "
-                                         + str([vertices[go] for go in np.where(labels == lab_tp)[0]])
-                                         + " removed!\n")
-        vertices_to_del = {vertices[go] for go, lb in enumerate(labels) if lb in set(dropping_type)}
-        if vertices_to_del:
-            changed = True
-            if verbose or debug:
-                if log_handler:
-                    log_handler.info("removing outlying coverage contigs: " + str(vertices_to_del))
-                else:
-                    sys.stdout.write("removing outlying coverage contigs: " + str(vertices_to_del) + "\n")
-            self.remove_vertex(vertices_to_del)
-        return changed, [(parameters[lab_tp]["mu"], parameters[lab_tp]["sigma"]) for lab_tp in remained_label_type]
-
 
     def exclude_other_hits(self, database_n):
         vertices_to_exclude = []
@@ -933,7 +761,7 @@ class Assembly(SimpleAssembly):
         for sub_id in rm_sub_ids[::-1]:
             del self.vertex_clusters[sub_id]
         # searching within a certain length scope
-        if limit_extending_len not in (None, inf):
+        if limit_extending_len not in (None, INF):
             if extending_len_weighted_by_depth:
                 explorers = {(v_n, v_e): (limit_extending_len - bait_offsets.get((v_n, v_e), 0),
                                           self.vertex_info[v_n].cov)
@@ -993,182 +821,23 @@ class Assembly(SimpleAssembly):
             self.remove_vertex(rm_contigs, update_cluster=True)
 
 
-    def generate_consensus_vertex(self, vertices, directions, copy_tags=True, check_parallel_vertices=True, log_handler=None):
-        if check_parallel_vertices:
-            connection_type = None
-            seq_len = None
-            if not len(vertices) == len(set(vertices)) == len(directions):
-                raise ProcessingGraphFailed("Cannot generate consensus (1)!")
-            for go_v, this_v in enumerate(vertices):
-                if seq_len:
-                    if seq_len != len(self.vertex_info[this_v].seq[True]):
-                        raise ProcessingGraphFailed("Cannot generate consensus (2)!")
-                else:
-                    seq_len = len(self.vertex_info[this_v].seq[True])
-                this_cons = self.vertex_info[this_v].connections
-                this_ends = tuple([tuple(sorted(this_cons[[directions[go_v]]])),
-                                   tuple(sorted(this_cons[not [directions[go_v]]]))])
-                if connection_type:
-                    if connection_type != this_ends:
-                        raise ProcessingGraphFailed("Cannot generate consensus (3)!")
-                else:
-                    connection_type = this_ends
-
-        if len(vertices) > 1:
-            new_vertex = "(" + "|".join(vertices) + ")"
-            self.vertex_info[new_vertex] = deepcopy(self.vertex_info[vertices[0]])
-            self.vertex_info[new_vertex].name = new_vertex
-            self.vertex_info[new_vertex].cov = sum([self.vertex_info[v].cov for v in vertices])
-            self.vertex_info[new_vertex].fastg_form_name = None
-            # if "long" in self.vertex_info[new_vertex]:
-            #     del self.vertex_info[new_vertex]["long"]
-
-            self.merging_history[new_vertex] = set()
-            for candidate_v in vertices:
-                if candidate_v in self.merging_history:
-                    for sub_v_n in self.merging_history[candidate_v]:
-                        self.merging_history[new_vertex].add(sub_v_n)
-                else:
-                    self.merging_history[new_vertex].add(candidate_v)
-            for candidate_v in vertices:
-                if candidate_v in self.merging_history:
-                    del self.merging_history[candidate_v]
-
-            for new_end in (True, False):
-                for n_n_v, n_n_e in self.vertex_info[new_vertex].connections[new_end]:
-                    self.vertex_info[n_n_v].connections[n_n_e][(new_vertex, new_end)] = None
-
-            consensus_s = generate_consensus(
-                *[self.vertex_info[v].seq[directions[go]] for go, v in enumerate(vertices)])
-            self.vertex_info[new_vertex].seq[directions[0]] = consensus_s
-            self.vertex_info[new_vertex].seq[not directions[0]] = complementary_seq(consensus_s)
-            if copy_tags:
-                for db_n in self.tagged_vertices:
-                    if vertices[0] in self.tagged_vertices[db_n]:
-                        self.tagged_vertices[db_n].add(new_vertex)
-                        self.tagged_vertices[db_n].remove(vertices[0])
-
-            # tags
-            if copy_tags:
-                for other_vertex in vertices[1:]:
-                    if "tags" in self.vertex_info[other_vertex].other_attr:
-                        if "tags" not in self.vertex_info[new_vertex].other_attr:
-                            self.vertex_info[new_vertex].other_attr["tags"] = \
-                                deepcopy(self.vertex_info[other_vertex].other_attr["tags"])
-                        else:
-                            for db_n in self.vertex_info[other_vertex].other_attr["tags"]:
-                                if db_n not in self.vertex_info[new_vertex].other_attr["tags"]:
-                                    self.vertex_info[new_vertex].other_attr["tags"][db_n] \
-                                        = deepcopy(self.vertex_info[other_vertex].other_attr["tags"][db_n])
-                                else:
-                                    self.vertex_info[new_vertex].other_attr["tags"][db_n] \
-                                        |= self.vertex_info[other_vertex].other_attr["tags"][db_n]
-                    if "weight" in self.vertex_info[other_vertex].other_attr:
-                        if "weight" not in self.vertex_info[new_vertex].other_attr:
-                            self.vertex_info[new_vertex].other_attr["weight"] \
-                                = deepcopy(self.vertex_info[other_vertex].other_attr["weight"])
-                        else:
-                            for db_n in self.vertex_info[other_vertex].other_attr["weight"]:
-                                if db_n not in self.vertex_info[new_vertex].other_attr["weight"]:
-                                    self.vertex_info[new_vertex].other_attr["weight"][db_n] \
-                                        = self.vertex_info[other_vertex].other_attr["weight"][db_n]
-                                else:
-                                    self.vertex_info[new_vertex].other_attr["weight"][db_n] \
-                                        += self.vertex_info[other_vertex].other_attr["weight"][db_n]
-                    for db_n in self.tagged_vertices:
-                        if other_vertex in self.tagged_vertices[db_n]:
-                            self.tagged_vertices[db_n].add(new_vertex)
-                            self.tagged_vertices[db_n].remove(other_vertex)
-            self.remove_vertex(vertices)
-            if log_handler:
-                log_handler.info("Consensus made: " + new_vertex)
-            else:
-                log_handler.info("Consensus made: " + new_vertex + "\n")
-
-
-    def find_target_graph(self):
+    def get_all_circular_paths(self, mode="embplant_pt", reverse_start_direction_for_pt=False):
         """
-
+        :param mode:
+        :param library_info: not used currently
+        :param reverse_start_direction_for_pt:
+        :return: sorted_paths
         """
-        pass #FindTargetGraph().run()
-
-
-    def peel_subgraph(self, subgraph, mode="", subgraph_was_merged=False, log_handler=None, verbose=False):
-        """
-        Not sure yet where this is called...?
-        """
-        assert isinstance(subgraph, Assembly)
-        if subgraph_was_merged:
-            subgraph_vertices = set()
-            for merged_v_name in subgraph.vertex_info:
-                if merged_v_name in subgraph.merging_history:
-                    subgraph_vertices |= subgraph.merging_history[merged_v_name]
-                else:
-                    subgraph_vertices.add(merged_v_name)
-        else:
-            subgraph_vertices = set(subgraph.vertex_info)
-        limited_vertices = set(self.vertex_info) & set(subgraph_vertices)
-        if not limited_vertices:
-            if log_handler:
-                log_handler.warning("No overlapped vertices found for peeling!")
-            else:
-                sys.stdout.write("No overlapped vertices found for peeling!\n")
-            if verbose:
-                if log_handler:
-                    log_handler.warning("graph vertices: " + str(sorted(self.vertex_info)))
-                    log_handler.warning("subgraph vertices: " + str(sorted(subgraph.vertex_info)))
-                else:
-                    sys.stdout.write("graph vertices: " + str(sorted(self.vertex_info)))
-                    sys.stdout.write("subgraph vertices: " + str(sorted(subgraph.vertex_info)))
-        average_cov = self.estimate_copy_and_depth_by_cov(
-            limited_vertices, mode=mode, re_initialize=True, verbose=verbose)
-        vertices_peeling_ratios = {}
-        checked = set()
-        for peel_name in sorted(limited_vertices):
-            for peel_end, peel_connection_set in self.vertex_info[peel_name].connections.items():
-                if (peel_name, not peel_end) in checked:
-                    continue
-                else:
-                    checked.add((peel_name, not peel_end))
-                for (external_v_n, external_v_e) in sorted(peel_connection_set):
-                    if external_v_n in subgraph_vertices:
-                        continue
-                    if self.vertex_to_float_copy[peel_name] > self.vertex_to_copy[peel_name]:
-                        # only peel the average part
-                        vertices_peeling_ratios[peel_name] = \
-                            1 - self.vertex_to_copy[peel_name] / self.vertex_to_float_copy[peel_name]
-                        forward_peeling = [(next_n, not next_e)
-                                           for next_n, next_e in self.vertex_info[peel_name].connections[not peel_end]
-                                           if next_n in limited_vertices and (next_n, not next_e) not in checked]
-                        while forward_peeling:
-                            next_name, next_end = forward_peeling.pop(0)
-                            if self.vertex_to_float_copy[next_name] > self.vertex_to_copy[next_name]:
-                                vertices_peeling_ratios[next_name] = \
-                                    1 - self.vertex_to_copy[next_name] / self.vertex_to_float_copy[next_name]
-                                checked.add((next_name, next_end))
-                                forward_peeling.extend(
-                                    [(nx_nx_n, not nx_nx_e)
-                                     for nx_nx_n, nx_nx_e in self.vertex_info[next_name].connections[next_end]
-                                     if nx_nx_n in limited_vertices and (nx_nx_n, not nx_nx_e) not in checked])
-        remove_vertices = {del_v for del_v in limited_vertices if del_v not in vertices_peeling_ratios}
-        self.remove_vertex(remove_vertices)
-        for peel_this_n in sorted(vertices_peeling_ratios):
-            self.vertex_info[peel_this_n].cov *= vertices_peeling_ratios[peel_this_n]
-            if "weight" in self.vertex_info[peel_this_n].other_attr and \
-                    mode in self.vertex_info[peel_this_n].other_attr["weight"]:
-                self.vertex_info[peel_this_n].other_attr["weight"][mode] *= vertices_peeling_ratios[peel_this_n]
-
+        GetAllCircularPaths(self, mode=mode, reverse_start_direction_for_pt=reverse_start_direction_for_pt)
 
 
     # BRANCH OUT TO CLASS, FEWER ARGS
     def get_all_paths(self, mode="embplant_pt", log_handler=None):
         """
-        
-        Returns
-        --------
-        sorted_paths
+        :param mode:
+        :param log_handler:
+        :return: sorted_paths
         """
-
         pass
         #GetAllPaths()
 
@@ -1206,7 +875,7 @@ class Assembly(SimpleAssembly):
 
 
 
-        def directed_graph_solver(ongoing_paths, next_connections, vertices_left, in_all_start_ve, undirected_vertices):
+        def directed_graph_solver(ongoing_paths, next_connections, vertices_left, _all_start_ve, undirected_vertices):
             # print("-----------------------------")
             # print("ongoing_path", ongoing_path)
             # print("next_connect", next_connections)
@@ -1242,10 +911,10 @@ class Assembly(SimpleAssembly):
                                 new_connections[1][0]:
                             new_connections.sort(
                                 key=lambda x: self.vertex_info[x[0]].other_attr["orf"][x[1]]["sum_len"])
-                        directed_graph_solver(new_paths, new_connections, new_left, in_all_start_ve,
+                        directed_graph_solver(new_paths, new_connections, new_left, _all_start_ve,
                                               undirected_vertices)
             if not find_next:
-                new_all_start_ve = deepcopy(in_all_start_ve)
+                new_all_start_ve = deepcopy(_all_start_ve)
                 while new_all_start_ve:
                     new_start_vertex, new_start_end = new_all_start_ve.pop(0)
                     if new_start_vertex in vertices_left:
@@ -1278,7 +947,7 @@ class Assembly(SimpleAssembly):
         #         or a single copy vertex in a closed graph/subgraph
         self.update_orf_total_len()
 
-        # 2019-12-28 palindromic repeats
+        # palindromic repeats
         palindromic_repeats = set()
         log_palindrome = False
         for vertex_n in self.vertex_info:
@@ -1373,20 +1042,6 @@ class Assembly(SimpleAssembly):
                                 for ad_id, acc_distance
                                 in enumerate(sorted(set([x[1] for x in sorted_paths]), reverse=True))}
                 if len(pattern_dict) > 1:
-                    if log_handler:
-                        if mode == "embplant_pt":
-                            log_handler.warning("Multiple repeat patterns appeared in your data, "
-                                                "a more balanced pattern (always the repeat_pattern1) would be "
-                                                "suggested for plastomes with inverted repeats!")
-                        else:
-                            log_handler.warning("Multiple repeat patterns appeared in your data.")
-                    else:
-                        if mode == "embplant_pt":
-                            sys.stdout.write("Warning: Multiple repeat patterns appeared in your data, "
-                                             "a more balanced pattern (always the repeat_pattern1) would be suggested "
-                                             "for plastomes with inverted repeats!\n")
-                        else:
-                            sys.stdout.write("Warning: Multiple repeat patterns appeared in your data.\n")
                     sorted_paths = [(this_path, ".repeat_pattern" + str(pattern_dict[acc_distance]))
                                     for this_path, acc_distance, foo_id in sorted_paths]
                 else:
@@ -1394,35 +1049,6 @@ class Assembly(SimpleAssembly):
             else:
                 sorted_paths = [(this_path, "") for this_path in sorted(paths)]
 
-            if mode == "embplant_pt":
-                if len(sorted_paths) > 2 and \
-                        not (100000 < sum(
-                            [len(self.export_path(part_p).seq) for part_p in sorted_paths[0][0]]) < 200000):
-                    if log_handler:
-                        log_handler.warning("Multiple structures (gene order) with abnormal plastome length produced!")
-                        log_handler.warning("Please check the assembly graph and selected graph to confirm.")
-                    else:
-                        sys.stdout.write(
-                            "Warning: Multiple structures (gene order) with abnormal plastome length produced!\n")
-                        sys.stdout.write("Please check the assembly graph and selected graph to confirm.\n")
-                elif len(sorted_paths) > 2:
-                    if log_handler:
-                        log_handler.warning("Multiple structures (gene order) produced!")
-                        log_handler.warning("Please check the existence of those isomers "
-                                            "by using reads mapping (library information) or longer reads.")
-                    else:
-                        sys.stdout.write("Warning: Multiple structures (gene order) produced!\n")
-                        sys.stdout.write("Please check the existence of those isomers by "
-                                         "using reads mapping (library information) or longer reads.\n")
-                elif len(sorted_paths) > 1:
-                    if log_handler:
-                        log_handler.warning("More than one structure (gene order) produced ...")
-                        log_handler.warning("Please check the final result to confirm whether they are "
-                                            " simply different in SSC direction (two flip-flop configurations)!")
-                    else:
-                        sys.stdout.write("More than one structure (gene order) produced ...\n")
-                        sys.stdout.write("Please check the final result to confirm whether they are "
-                                         " simply different in SSC direction (two flip-flop configurations)!\n")
             return sorted_paths
 
 

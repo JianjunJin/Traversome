@@ -4,42 +4,42 @@
 
 
 class GetAllPaths(object):
-	"""
+    """
 
-	"""
-	def __init__(self, mode="embplant_pt", log_handler=None):
-		self.mode = mode
-		self.log_handler = log_handler		
+    """
+    def __init__(self, mode="embplant_pt", log_handler=None):
+        self.mode = mode
+        self.log_handler = log_handler
 
 
 
     def standardize_paths(self, raw_paths, undirected_vertices):
-    	"""
+        """
 
-    	"""
+        """
 
-		# ...
+        # ...
         if undirected_vertices:
             corrected_paths = [
-	            [(this_v, True) if this_v in undirected_vertices 
-		         else (this_v, this_e) for this_v, this_e in path_part]
+                [(this_v, True) if this_v in undirected_vertices
+                 else (this_v, this_e) for this_v, this_e in path_part]
                 for path_part in raw_paths
             ]
         else:
             corrected_paths = deepcopy(raw_paths)
 
-		# ...
+        # ...
         here_standardized_path = []
         for part_path in corrected_paths:
 
-			# ...
+            # ...
             if undirected_vertices:
                 rev_part = [(this_v, True) if this_v in undirected_vertices else (this_v, not this_e)
                             for this_v, this_e in part_path[::-1]]
             else:
                 rev_part = [(this_v, not this_e) for this_v, this_e in part_path[::-1]]
 
-			# ...
+            # ...
             if (part_path[0][0], not part_path[0][1]) \
                     in self.vertex_info[part_path[-1][0]].connections[part_path[-1][1]]:
                 # circular
@@ -56,7 +56,7 @@ class GetAllPaths(object):
             else:
                 standard_part = tuple(sorted([part_path, rev_part], key=lambda x: smart_trans_for_sort(x))[0])
             
-			# store this part in the path
+            # store this part in the path
             here_standardized_path.append(standard_part)
 
         return corrected_paths, tuple(sorted(here_standardized_path, key=lambda x: smart_trans_for_sort(x)))

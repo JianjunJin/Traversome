@@ -21,11 +21,11 @@ CIGAR_ALPHA_REG = "([MIDNSHPX=])"
 class GAFRecord(object):
     """
     Multiple GAFRecord objects make up a GraphAlignRecords object.
-    # ref: http://www.liheng.org/downloads/rGFA-GAF.pdf
+    ref: http://www.liheng.org/downloads/rGFA-GAF.pdf
     """
     def __init__(self, record_line_split, parse_cigar=False):
 
-        # store information from the ..
+        # store information
         self.query_name = record_line_split[0]
         self.query_len = int(record_line_split[1])
         self.q_start = int(record_line_split[2])
@@ -70,7 +70,7 @@ class GAFRecord(object):
         return path_list
 
 
-    def split_cigar_str(cigar_str):
+    def split_cigar_str(self):
         cigar_str = self.optional_fields['cg']
         cigar_split = re.split(CIGAR_ALPHA_REG, cigar_str)[:-1]  # empty end
         cigar_list = []

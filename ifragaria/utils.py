@@ -47,38 +47,7 @@ def complementary_seqs(input_seq_iter):
 ECHO_DIRECTION = ["_tail", "_head"]
 CLASSIC_START_CODONS = {"ATG", "ATC", "ATA", "ATT", "GTG", "TTG"}
 CLASSIC_STOP_CODONS = {"TAA", "TAG", "TGA"}
-
-DEGENERATE_BASES = {"N", "V", "H", "D", "B", "Y", "R", "K", "M", "S", "W"}
-
-DEGENERATE_DICT = {  # degenerate
-    "N": ["A", "C", "G", "T"],
-    "V": ["A", "C", "G"], "H": ["A", "C", "T"], "D": ["A", "G", "T"], "B": ["C", "G", "T"],
-    "Y": ["C", "T"], "R": ["A", "G"], "K": ["G", "T"], "M": ["A", "C"],
-    "S": ["C", "G"], "W": ["A", "T"],
-    "A": ["A"], "C": ["C"], "G": ["G"], "T": ["T"],
-    #  consensus
-    ('A', 'C', 'G', 'T'): 'N',
-    ('A', 'C', 'G'): 'V', ('A', 'C', 'T'): 'H', ('A', 'G', 'T'): 'D', ('C', 'G', 'T'): 'B',
-    ('C', 'T'): 'Y', ('A', 'G'): 'R', ('G', 'T'): 'K', ('A', 'C'): 'M',
-    ('C', 'G'): 'S', ('A', 'T'): 'W',
-    ('A',): 'A', ('C',): 'C', ('G',): 'G', ('T',): 'T',
-}
-
-DEGENERATE_DICT_DIGIT = {  
-    # degenerate
-    "N": [1, 2, 4, 8],
-    "V": [1, 2, 4], "H": [1, 2, 8], "D": [1, 4, 8], "B": [2, 4, 8],
-    "Y": [2, 8], "R": [1, 4], "K": [4, 8], "M": [1, 2],
-    "S": [2, 4], "W": [1, 8],
-    "A": [1], "C": [2], "G": [4], "T": [8],
-    #  consensus
-    15: 'N',
-    7: 'V', 11: 'H', 13: 'D', 14: 'B',
-    10: 'Y', 5: 'R', 12: 'K', 3: 'M',
-    6: 'S', 9: 'W',
-    1: "A", 2: "C", 4: "G", 8: "T",
-}
-
+INF = float("inf")
 
 
 ########################################################################
@@ -489,8 +458,8 @@ def weighted_gmm_with_em_aic(
         norm_parameters = updating_parameter(data_array, data_weights, labels,
                                              [{"mu": 0, "sigma": 1, "percent": total_cluster_num/data_len}
                                               for foo in range(total_cluster_num)])
-        loglike_shift = inf
-        prev_loglike = -inf
+        loglike_shift = INF
+        prev_loglike = -INF
         epsilon = 0.01
         count_iterations = 0
         best_loglike = prev_loglike
@@ -532,18 +501,6 @@ def weighted_gmm_with_em_aic(
 
 
 
-def generate_consensus(*seq_str):
-    consensus_res = []
-    seq_num = len(seq_str)
-    for go_to_base in range(len(seq_str[0])):
-        this_base_set = set()
-        for go_to_seq in range(seq_num):
-            this_base_set.update(DEGENERATE_DICT_DIGIT.get(seq_str[go_to_seq][go_to_base], []))
-        consensus_res.append(DEGENERATE_DICT_DIGIT[sum(this_base_set)])
-    return "".join(consensus_res)
-
-
-
 def generate_index_combinations(index_list):
     if not index_list:
         yield []
@@ -570,3 +527,43 @@ def smart_trans_for_sort(candidate_item):
                 except ValueError:
                     pass
         return all_e
+
+
+def get_orf_lengths(sequence_string, threshold=200, which_frame=None,
+                    here_stop_codons=None, here_start_codons=None):
+    """
+    :param sequence_string:
+    :param threshold: default: 200
+    :param which_frame: 1, 2, 3, or None
+    :param here_stop_codons: default: CLASSIC_STOP_CODONS
+    :param here_start_codons: default: CLASSIC_START_CODONS
+    :return: [len_orf1, len_orf2, len_orf3 ...] # longest accumulated orfs among all frame choices
+    """
+    assert which_frame in {0, 1, 2, None}
+    if which_frame is None:
+        test_frames = [0, 1, 2]
+    else:
+        test_frames = [which_frame]
+    if here_start_codons is None:
+        here_start_codons = CLASSIC_START_CODONS
+    if here_stop_codons is None:
+        here_stop_codons = CLASSIC_STOP_CODONS
+    orf_lengths = {}
+    for try_frame in test_frames:
+        orf_lengths[try_frame] = []
+        this_start = False
+        for go in range(try_frame, len(sequence_string), 3):
+            if this_start:
+                if sequence_string[go:go + 3] not in here_stop_codons:
+                    orf_lengths[try_frame][-1] += 3
+                else:
+                    if orf_lengths[try_frame][-1] < threshold:
+                        del orf_lengths[try_frame][-1]
+                    this_start = False
+            else:
+                if sequence_string[go:go + 3] in here_start_codons:
+                    orf_lengths[try_frame].append(3)
+                    this_start = True
+                else:
+                    pass
+    return sorted(orf_lengths.values(), key=lambda x: -sum(x))[0]

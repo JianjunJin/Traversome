@@ -16,6 +16,13 @@ pip install -e . --no-deps
 ```
 
 ### Command line interface (CLI)
+
+Temporary usage:
+```bash
+python ifragaria/estimate_isomer_frequencies.py -g graph.gfa -a align.gaf -o .
+```
+
+future: 
 ```bash
 ifragaria -g graph.gfa -a align.gaf -o .
 ```
