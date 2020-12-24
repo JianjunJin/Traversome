@@ -20,7 +20,7 @@ MODE = {
 
 
 
-class EstCopyDepthFromCov(object):
+class EstMultiplicityFromCov(object):
     """
     Use seq coverage data to estimate copy and depth.
     """
@@ -70,7 +70,7 @@ class EstCopyDepthFromCov(object):
         if not self.avgcov:
             self.get_avg_cov()
         else:
-            self.given_average_cov()
+            self.given_avg_cov()
 
 
     def initialize(self):
@@ -196,8 +196,8 @@ class EstCopyDepthFromCov(object):
                     del self.copyv[old_copy]
 
             # ...
-            this_float_copy = self.verts[vertex_name].cov / self.avg_cov
-            this_copy = min(max(1, int(round(this_float_copy, 0))), max_majority_copy)
+            this_float_copy = self.verts[vertex_name].cov / self.avgcov
+            this_copy = min(max(1, int(round(this_float_copy, 0))), self.max_majority_copy)
 
             self.vcopy[vertex_name] = this_float_copy
             self.vcopy[vertex_name] = this_copy
@@ -205,5 +205,5 @@ class EstCopyDepthFromCov(object):
                 self.copyv[this_copy] = set()
             self.copyv[this_copy].add(vertex_name)
 
-        self.copydepth = avg_cov
+        self.copydepth = self.avgcov
 

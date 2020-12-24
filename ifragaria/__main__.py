@@ -8,7 +8,7 @@ import os
 import sys
 from optparse import OptionParser
 
-from .ifragaria import Fragaria
+from .ifragaria import iFragaria
 
 
 
@@ -34,6 +34,12 @@ def get_options():
         dest="output_dir",
         help="Output directory. ",
     )
+    parser.add_option(
+        "--out-seq-prop",
+        dest="out_seq_prop",
+        default=0.001,
+        type=float,
+        help="(Currently working for ML only) Output sequences with proportion >= %default")
     parser.add_option(
         "-B", 
         dest="do_bayesian", 
@@ -72,6 +78,7 @@ def get_options():
         raise IOError(options.gaf_file + " not found/valid!")
     if not os.path.exists(options.output_dir):
         os.mkdir(options.output_dir)
+    assert 0 <= options.out_seq_prop <= 1
 
     return options
 
@@ -83,10 +90,12 @@ def main():
     opts = get_options()
 
     # create object with params
-    frag = Fragaria(
+    frag = iFragaria(
         gfa=opts.graph_file, 
         gaf=opts.gaf_file, 
-        outdir=opts.output_dir, 
+        outdir=opts.output_dir,
+        do_bayesian=opts.do_bayesian,
+        out_prob_threshold=opts.out_seq_prop,
         keep_temp=opts.keep_temp,
         loglevel=opts.loglevel
     )

@@ -1,48 +1,33 @@
 
 from loguru import logger
-from .utils import ProcessingGraphFailed
+from ifragaria.utils import ProcessingGraphFailed
 from copy import deepcopy
 from itertools import combinations
 
 
 
-class GetAllCircularPaths(object):
+class GetAllCircularIsomers(object):
+    """
+    All isomers are defined to have the same contig composition.
+    """
 
-    def __init__(self, graph, mode="embplant_pt", reverse_start_direction_for_pt=False):
+    def __init__(self, graph, mode="embplant_pt", re_estimate_multiplicity=False):
         self.graph = graph
         self.mode = mode
+        self.__re_estimate_multiplicity = re_estimate_multiplicity
         self.__paths = list()
         self.__paths_set = set()
         self.__start_vertex = None
         self.__start_direction = None
-        self.__reverse_start_direction_for_pt = reverse_start_direction_for_pt
 
 
     def run(self):
+        if self.__re_estimate_multiplicity or not self.graph.copy_to_vertex:
+            self.graph.estimate_multiplicity_by_cov(mode=self.mode)
+            self.graph.estimate_multiplicity_precisely()
+
         # for palindromic repeats
-        palindromic_repeats = set()
-        log_palindrome = False
-        for vertex_n in self.graph.vertex_info:
-            if self.graph.vertex_info[vertex_n].seq[True] == self.graph.vertex_info[vertex_n].seq[False]:
-                forward_c = deepcopy(self.graph.vertex_info[vertex_n].connections[True])
-                reverse_c = deepcopy(self.graph.vertex_info[vertex_n].connections[False])
-                # This is heuristic
-                # In the rarely-used expression way, a contig connect itself in one end:
-                # (vertex_n, True) in forward_c or (vertex_n, False) in reverse_c
-                if forward_c and \
-                        ((forward_c == reverse_c) or
-                         ((vertex_n, True) in forward_c) or
-                         ((vertex_n, False) in reverse_c)):
-                    log_palindrome = True
-                    if len(forward_c) == len(reverse_c) == 2:  # simple palindromic repeats, prune repeated connections
-                        for go_d, (nb_vertex, nb_direction) in enumerate(tuple(forward_c)):
-                            del self.graph.vertex_info[nb_vertex].connections[nb_direction][(vertex_n, bool(go_d))]
-                            del self.graph.vertex_info[vertex_n].connections[bool(go_d)][(nb_vertex, nb_direction)]
-                    elif len(forward_c) == len(reverse_c) == 1:  # connect to the same inverted repeat
-                        pass
-                    else:  # complicated, recorded
-                        palindromic_repeats.add(vertex_n)
-        if log_palindrome:
+        if self.graph.detect_palindromic_repeats(redo=False):
             logger.warning("Palindromic repeats detected. "
                            "Different paths generating identical sequence will be merged.")
 
@@ -70,7 +55,7 @@ class GetAllCircularPaths(object):
         if vertex_to_copy[self.__start_vertex] <= 0:
             del vertex_to_copy[self.__start_vertex]
         self.__circular_directed_graph_solver(first_path, first_connections, vertex_to_copy, do_check_all_start_kinds,
-                                              palindromic_repeats)
+                                              self.graph.palindromic_repeats)
 
         if not self.__paths:
             raise ProcessingGraphFailed("Detecting path(s) from remaining graph failed!")
@@ -79,7 +64,7 @@ class GetAllCircularPaths(object):
             # modify start_vertex based on the whole path, if starting from a single copy vertex
             def reseed_a_path(input_path, input_unique_vertex):
                 if input_unique_vertex not in input_path:
-                    new_path = [(element_v, not element_e) for (element_v, element_e) in input_path[::-1]]
+                    new_path = self.graph.reverse_path(input_path)
                 else:
                     new_path = input_path
                 reseed_from = new_path.index(input_unique_vertex)
@@ -103,7 +88,7 @@ class GetAllCircularPaths(object):
                     # picking the sub-path with the longest length with strand of least orfs as the new start point
                     branching_single_copy_vertices = sorted(branching_single_copy_vertices)
                     for go_p, each_path in enumerate(self.__paths):
-                        reverse_path = [(element_v, not element_e) for (element_v, element_e) in each_path[::-1]]
+                        reverse_path = self.graph.reverse_path(each_path)
                         sub_paths_for_checking = []
                         for (left_v, left_e), (right_v, right_e) in branching_single_copy_vertices:
                             if (left_v, left_e) in each_path:
@@ -149,8 +134,8 @@ class GetAllCircularPaths(object):
                             sorted(candidate_single_copy_vertices,
                                    key=lambda x: (-self.graph.vertex_info[x[0]].len,
                                                   self.graph.vertex_info[x[0]].other_attr["orf"][x[1]]["sum_len"],x))[0]
-                        if self.__reverse_start_direction_for_pt:
-                            self.__start_direction = not self.__start_direction
+                        # if self.__reverse_start_direction_for_pt:
+                        #     self.__start_direction = not self.__start_direction
                     else:
                         # picking the vertex with the longest length with strand of most orfs
                         self.__start_vertex, self.__start_direction = \
@@ -213,11 +198,7 @@ class GetAllCircularPaths(object):
                 new_path = [(this_v, True) if this_v in palindromic_repeat_vertices else (this_v, this_e)
                             for this_v, this_e in new_path]
             if check_all_kinds:
-                if palindromic_repeat_vertices:
-                    rev_path = [(this_v, True) if this_v in palindromic_repeat_vertices else (this_v, not this_e)
-                                for this_v, this_e in new_path[::-1]]
-                else:
-                    rev_path = [(this_v, not this_e) for this_v, this_e in new_path[::-1]]
+                rev_path = self.graph.reverse_path(new_path)
                 this_path_derived = [new_path, rev_path]
                 for change_start in range(1, len(new_path)):
                     this_path_derived.append(new_path[change_start:] + new_path[:change_start])
@@ -250,12 +231,7 @@ class GetAllCircularPaths(object):
                                 (this_v, True) if this_v in palindromic_repeat_vertices else (this_v, this_e)
                                 for this_v, this_e in new_path]
                         if check_all_kinds:
-                            if palindromic_repeat_vertices:
-                                rev_path = [(this_v, True) if this_v in palindromic_repeat_vertices else
-                                            (this_v, not this_e)
-                                            for this_v, this_e in new_path[::-1]]
-                            else:
-                                rev_path = [(this_v, not this_e) for this_v, this_e in new_path[::-1]]
+                            rev_path = self.graph.reverse_path(new_path)
                             this_path_derived = [new_path, rev_path]
                             for change_start in range(1, len(new_path)):
                                 this_path_derived.append(new_path[change_start:] + new_path[:change_start])

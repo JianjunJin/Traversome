@@ -11,7 +11,7 @@ conda install numpy pandas scipy pymc3 sympy -c conda-forge
 
 ### Install devel version of ifragaria
 ```bash
-git clone -b modular https://github.com/dereneaton/Fragaria
+git clone -b modular https://github.com/Kinggerm/iFragaria
 pip install -e . --no-deps
 ```
 

@@ -5,9 +5,14 @@ Maximum Likelihood Optimization
 """
 
 from loguru import logger
+from itertools import product
+from ifragaria.utils import ProcessingGraphFailed, INF, reduce_list_with_gcd
 from scipy import optimize
+from copy import deepcopy
+from sympy import Symbol, solve, lambdify
 import numpy as np
-from sympy import Symbol, log, solve, lambdify
+import random
+
 
 
 
@@ -15,9 +20,9 @@ ECHO_DIRECTION = ["_tail", "_head"]
 
 
 
-class EstCopyDepthPrecise(object):
+class EstMultiplicityPrecise(object):
     """
-    This fits the ML model 
+
     """
     def __init__(
         self, 
@@ -25,8 +30,8 @@ class EstCopyDepthPrecise(object):
         maximum_copy_num=8, 
         broken_graph_allowed=False, 
         return_new_graphs=False, 
-        name="target",
-        ):
+        label="target",
+        debug=False):
 
         # link to data from the graph
         self.graph = graph
@@ -36,17 +41,20 @@ class EstCopyDepthPrecise(object):
         self.maximum_copy_num = maximum_copy_num
         self.broken_graph_allowed = broken_graph_allowed
         self.return_new_graphs = return_new_graphs
-        self.name = name
+        self.label = label
+        self.debug = debug  # pass to optimizer
 
         # attrs to fill
         self.vertlist = sorted(self.vertex_info)
         self.vertex_to_symbols = {i: Symbol("V{}".format(i), integer=True) for i in self.vertlist}
         self.symbols_to_vertex = {self.vertex_to_symbols[i]: i for i in self.vertlist}
+        self.free_copy_variables = []
         self.extra_str_to_symbol = {}
         self.extra_symbol_to_str = {}
         self.formulae = []
         self.all_v_symbols = []
         self.all_symbols = []
+        self.copy_solution = {}
 
 
 
@@ -60,8 +68,8 @@ class EstCopyDepthPrecise(object):
         """
         # bail out if vert list len is 1
         if len(self.vertlist) == 1:
-            cov_ = self.vertex_info[vertlist[0]].cov
-            logger.debug("Avg {} kmer-coverage = {}".format(self.name, round(cov_, 2)))
+            cov_ = self.vertex_info[self.vertlist[0]].cov
+            logger.debug("Avg {} kmer-coverage = {}".format(self.label, round(cov_, 2)))
             if self.return_new_graphs:
                 return [{"graph": deepcopy(self.graph), "cov": cov_}]
             return
@@ -72,7 +80,10 @@ class EstCopyDepthPrecise(object):
         self.add_self_loop_formulae()
         self.add_limit_formulae()
         self.sympy_solve_equations()
-        # self.scipy_optimize_model()
+        if self.return_new_graphs:
+            return self.optimize_model()
+        else:
+            self.optimize_model()
 
 
 
@@ -228,6 +239,7 @@ class EstCopyDepthPrecise(object):
         self.maximum_copy_num = min(
             self.maximum_copy_num, 
             int(2 * np.ceil(max(all_coverages) / min(all_coverages)))
+            # add the latter one to avoid the influence of bloated self.maximum_copy_num
         )
         logger.info("Maximum multiplicity: {}".format(self.maximum_copy_num))
 
@@ -235,8 +247,8 @@ class EstCopyDepthPrecise(object):
 
     def build_formulas(self):
         """
-        Traverses edges between vertices to build formulae for... which are
-        then reduced by sympy ...
+        Traverses edges between vertices to build formulae for relationship between contig copies
+        which will then reduced by sympy
         """
 
         # list to store formulae
@@ -288,7 +300,7 @@ class EstCopyDepthPrecise(object):
                         if formulized:
                             formulae.append(this_formula)
 
-                    elif broken_graph_allowed:
+                    elif self.broken_graph_allowed:
                         # Extra limitation to force terminal vertex to have only one copy, to avoid over-estimation
                         # Under-estimation would not be a problem here,
                         # because the True-multiple-copy vertex would simply have no other connections,
@@ -318,7 +330,7 @@ class EstCopyDepthPrecise(object):
 
                     # store symbol and psuedo vertex name in dict and revdict
                     self.extra_str_to_symbol[pseudo_self_loop_str] = Symbol(pseudo_self_loop_str, integer=True)
-                    self.extra_symbol_to_str[extra_str_to_symbol[pseudo_self_loop_str]] = pseudo_self_loop_str
+                    self.extra_symbol_to_str[self.extra_str_to_symbol[pseudo_self_loop_str]] = pseudo_self_loop_str
 
                 # subtract psuedovertex from this vertex
                 this_formula = self.vertex_to_symbols[vname] - self.extra_str_to_symbol[pseudo_self_loop_str]
@@ -352,13 +364,13 @@ class EstCopyDepthPrecise(object):
                 if from_v != to_v:
 
                     # create a new extra symbol
-                    new_str = "E" + str(len(extra_str_to_symbol))
+                    new_str = "E" + str(len(self.extra_str_to_symbol))
                     self.extra_str_to_symbol[new_str] = Symbol(new_str, integer=True)
-                    self.extra_symbol_to_str[extra_str_to_symbol[new_str]] = new_str
+                    self.extra_symbol_to_str[self.extra_str_to_symbol[new_str]] = new_str
 
                     # write as a formula and add to formulae list
                     this_formula = (
-                        self.vertex_to_symbols[vertex_name] - \
+                        self.vertex_to_symbols[vname] -
                         self.vertex_to_symbols[from_v] * self.extra_str_to_symbol[new_str]
                     )
                     self.formulae.append(this_formula)
@@ -376,42 +388,42 @@ class EstCopyDepthPrecise(object):
         Uses sympy algebra to reduce the equation to solve.
         """
         # solve the equations or replace with empty dict
-        copy_solution = solve(self.formulae, self.all_v_symbols)
-        copy_solution = copy_solution if copy_solution else {}
+        self.copy_solution = solve(self.formulae, self.all_v_symbols)
+        self.copy_solution = self.copy_solution if self.copy_solution else {}
      
         # delete 0 containing set, even for self-loop vertex
-        if isinstance(copy_solution, list):
+        if isinstance(self.copy_solution, list):
             go_solution = 0
-            while go_solution < len(copy_solution):
-                if 0 in set(copy_solution[go_solution].values()):
-                    del copy_solution[go_solution]
+            while go_solution < len(self.copy_solution):
+                if 0 in set(self.copy_solution[go_solution].values()):
+                    del self.copy_solution[go_solution]
                 else:
                     go_solution += 1
-        logger.info("solved: {}".format(copy_solution))
+        logger.info("solved: {}".format(self.copy_solution))
 
         # check if anything is left after removing 0 sets
-        if not copy_solution:
+        if not self.copy_solution:
             raise ProcessingGraphFailed(
                 "Incomplete/Complicated/Unsolvable {} graph (1)!"
-                .format(self.name))
+                .format(self.label))
 
         # check if too many solutions
-        elif isinstance(copy_solution, list):
-            if len(copy_solution) > 2:
+        elif isinstance(self.copy_solution, list):
+            if len(self.copy_solution) > 2:
                 raise ProcessingGraphFailed(
                     "Incomplete/Complicated/Unsolvable {} graph (2)!"
-                    .format(self.name))
+                    .format(self.label))
             else:
-                copy_solution = copy_solution[0]
+                self.copy_solution = self.copy_solution[0]
 
         # check for all variables in solution
-        free_copy_variables = list()
+        self.free_copy_variables = []
         for symbol_used in self.all_symbols:
-            if symbol_used not in copy_solution:
-                free_copy_variables.append(symbol_used)
-                copy_solution[symbol_used] = symbol_used
-        logger.info("copy equations: " + str(copy_solution))
-        logger.info("free variables: " + str(free_copy_variables))
+            if symbol_used not in self.copy_solution:
+                self.free_copy_variables.append(symbol_used)
+                self.copy_solution[symbol_used] = symbol_used
+        logger.debug("copy equations: " + str(self.copy_solution))
+        logger.debug("free variables: " + str(self.free_copy_variables))
 
         # minimizing equation-based copy's deviations from coverage-based copy values.
         least_square_expr = 0
@@ -422,14 +434,14 @@ class EstCopyDepthPrecise(object):
             this_copy = self.graph.vertex_to_float_copy[this_vertex]
 
             # get the sum of squared differences
-            least_square_expr += (copy_solution[symbol_used] - this_copy) ** 2  # * self.vertex_info[this_vertex]["len"]
+            least_square_expr += (self.copy_solution[symbol_used] - this_copy) ** 2  # * self.vertex_info[this_vertex]["len"]
 
         # make this into a sympy equation
-        least_square_function = lambdify(args=free_copy_variables, expr=least_square_expr)
+        least_square_function = lambdify(args=self.free_copy_variables, expr=least_square_expr)
         logger.debug("least squares equation: {}".format(least_square_expr))
 
         # for safe running
-        if len(free_copy_variables) > 10:
+        if len(self.free_copy_variables) > 10:
             raise ProcessingGraphFailed("Free variable > 10 is not accepted yet!")
 
         # for compatibility between scipy and sympy
@@ -442,52 +454,51 @@ class EstCopyDepthPrecise(object):
 
 
 
-    def scipy_optimize_model(self):
+    def optimize_model(self):
         """
         Uses scipy to optimize parameters of the model to fit the data.
         """
         # If the number of free variables is small then use brute force
-        if maximum_copy_num ** len(free_copy_variables) < 5E6:
+        max_cn = self.maximum_copy_num
+        if self.maximum_copy_num ** len(self.free_copy_variables) < 5E6:
             # sometimes, SLSQP ignores bounds and constraints
-            copy_results = minimize_brute_force(
+            copy_results = self.minimize_brute_force(
                 func=self.least_square_function_v, 
-                range_list=[range(1, maximum_copy_num + 1)] * len(free_copy_variables),
-                constraint_list=({'type': 'ineq', 'fun': constraint_min_function_for_customized_brute},
-                                 {'type': 'eq', 'fun': constraint_int_function},
-                                 {'type': 'ineq', 'fun': constraint_max_function}),
-                display_p=verbose,
+                range_list=[range(1, max_cn + 1)] * len(self.free_copy_variables),
+                constraint_list=({'type': 'ineq', 'fun': self.__constraint_min_function_for_customized_brute},
+                                 {'type': 'eq', 'fun': self.__constraint_int_function},
+                                 {'type': 'ineq', 'fun': self.__constraint_max_function}),
             )
-
         # large number of variables so we will use SLSQP...
         else:
-            constraints = ({'type': 'ineq', 'fun': constraint_min_function},
-                           {'type': 'eq', 'fun': constraint_int_function},
-                           {'type': 'ineq', 'fun': constraint_max_function})
+            constraints = ({'type': 'ineq', 'fun': self.__constraint_min_function},
+                           {'type': 'eq', 'fun': self.__constraint_int_function},
+                           {'type': 'ineq', 'fun': self.__constraint_max_function})
             copy_results = set()
-            best_fun = inf
+            best_fun = INF
 
             # fit iteratively 
-            for initial_copy in range(maximum_copy_num * 2 + 1):
+            for initial_copy in range(max_cn * 2 + 1):
 
                 # select initial values based relative to max copy num
-                if initial_copy < maximum_copy_num:
+                if initial_copy < max_cn:
                     initials = np.array(
-                        [initial_copy + 1] * len(free_copy_variables)
+                        [initial_copy + 1] * len(self.free_copy_variables)
                     )
-                elif initial_copy < maximum_copy_num * 2:
+                elif initial_copy < max_cn * 2:
                     initials = np.array([
-                        random.randint(1, maximum_copy_num)
-                        ] * len(free_copy_variables)
+                        random.randint(1, max_cn)
+                        ] * len(self.free_copy_variables)
                     )
                 else:
                     initials = np.array([
-                        self.vertex_to_copy.get(
+                        self.graph.vertex_to_copy.get(
                             self.symbols_to_vertex.get(symb, False), 2)
-                        for symb in free_copy_variables]
+                        for symb in self.free_copy_variables]
                     )
 
                 # get bounds on parameters between (1, maxcopy)
-                bounds = [(1, maximum_copy_num) for _ in range(len(free_copy_variables))]
+                bounds = [(1, max_cn) for _ in range(len(self.free_copy_variables))]
                 
                 # try to fit the model but allow it to fail
                 try:
@@ -498,7 +509,7 @@ class EstCopyDepthPrecise(object):
                         method='SLSQP', 
                         bounds=bounds, 
                         constraints=constraints, 
-                        options={'disp': verbose, "maxiter": 100},
+                        options={'disp': self.debug, "maxiter": 100},
                     )
                 except Exception:
                     continue
@@ -524,17 +535,17 @@ class EstCopyDepthPrecise(object):
         elif len(copy_results) > 1:
             # draftly sort results by freedom vertices
             copy_results = sorted(copy_results, key=lambda
-                x: sum([(x[go_sym] - self.vertex_to_float_copy[symbols_to_vertex[symb_used]]) ** 2
-                        for go_sym, symb_used in enumerate(free_copy_variables)
-                        if symb_used in symbols_to_vertex]))
+                x: sum([(x[go_sym] - self.graph.vertex_to_float_copy[self.symbols_to_vertex[symb_used]]) ** 2
+                        for go_sym, symb_used in enumerate(self.free_copy_variables)
+                        if symb_used in self.symbols_to_vertex]))
         else:
             raise ProcessingGraphFailed(
                 "Incomplete/Complicated/Unsolvable {} graph (3)!"
-                .format(target_name_for_log)
+                .format(self.label)
             )
 
         # optionally return the new graph 
-        if return_new_graphs:
+        if self.return_new_graphs:
 
             # produce all possible vertex copy combinations
             final_results = []
@@ -545,15 +556,15 @@ class EstCopyDepthPrecise(object):
                 
                 # ...
                 free_copy_variables_dict = {
-                    free_copy_variables[i]: int(this_copy)
+                    self.free_copy_variables[i]: int(this_copy)
                     for i, this_copy in enumerate(copy_result)
                 }
 
                 # simplify copy values # 2020-02-22 added to avoid multiplicities res such as: [4, 8, 4]
                 all_copies = []
-                for this_symbol in all_v_symbols:
-                    vertex_name = symbols_to_vertex[this_symbol]
-                    this_copy = int(copy_solution[this_symbol].evalf(subs=free_copy_variables_dict, chop=True))
+                for this_symbol in self.all_v_symbols:
+                    vertex_name = self.symbols_to_vertex[this_symbol]
+                    this_copy = int(self.copy_solution[this_symbol].evalf(subs=free_copy_variables_dict, chop=True))
                     if this_copy <= 0:
                         raise ProcessingGraphFailed("Cannot identify copy number of " + vertex_name + "!")
                     all_copies.append(this_copy)
@@ -561,20 +572,16 @@ class EstCopyDepthPrecise(object):
                 # ...
                 if len(all_copies) == 0:
                     raise ProcessingGraphFailed(
-                        "Incomplete/Complicated/Unsolvable " + target_name_for_log + " graph (4)!")
+                        "Incomplete/Complicated/Unsolvable " + self.label + " graph (4)!")
                 elif len(all_copies) == 1:
                     all_copies = [1]
                 elif min(all_copies) == 1:
                     pass
                 else:
                     new_all_copies = reduce_list_with_gcd(all_copies)
-                    if verbose and new_all_copies != all_copies:
-                        if log_handler:
-                            log_handler.info("Estimated copies: " + str(all_copies))
-                            log_handler.info("Reduced copies: " + str(new_all_copies))
-                        else:
-                            sys.stdout.write("Estimated copies: " + str(all_copies) + "\n")
-                            sys.stdout.write("Reduced copies: " + str(new_all_copies) + "\n")
+                    if self.debug and new_all_copies != all_copies:
+                        logger.debug("Estimated copies: " + str(all_copies))
+                        logger.debug("Reduced copies: " + str(new_all_copies))
                     all_copies = new_all_copies
                 all_copies = tuple(all_copies)
                 if all_copies not in all_copy_sets:
@@ -583,9 +590,9 @@ class EstCopyDepthPrecise(object):
                     continue
 
                 # record new copy values
-                final_results.append({"graph": deepcopy(self)})
-                for go_s, this_symbol in enumerate(all_v_symbols):
-                    vertex_name = symbols_to_vertex[this_symbol]
+                final_results.append({"graph": deepcopy(self.graph)})
+                for go_s, this_symbol in enumerate(self.all_v_symbols):
+                    vertex_name = self.symbols_to_vertex[this_symbol]
                     if vertex_name in final_results[go_res]["graph"].vertex_to_copy:
                         old_copy = final_results[go_res]["graph"].vertex_to_copy[vertex_name]
                         final_results[go_res]["graph"].copy_to_vertex[old_copy].remove(vertex_name)
@@ -600,8 +607,8 @@ class EstCopyDepthPrecise(object):
                 # re-estimate baseline depth
                 total_product = 0.
                 total_len = 0
-                for vertex_name in vertices_list:
-                    this_len = (self.vertex_info[vertex_name].len - self.__overlap + 1) \
+                for vertex_name in self.vertlist:
+                    this_len = (self.vertex_info[vertex_name].len - self.graph.overlap() + 1) \
                                * final_results[go_res]["graph"].vertex_to_copy.get(vertex_name, 1)
                     this_cov = self.vertex_info[vertex_name].cov \
                                / final_results[go_res]["graph"].vertex_to_copy.get(vertex_name, 1)
@@ -611,19 +618,19 @@ class EstCopyDepthPrecise(object):
             return final_results
 
 
-        # not returning the graph, so ...
+        # not returning the graph, so record new values to the original graph object
         else:
             # produce the first-ranked copy combination
             free_copy_variables_dict = {
-                free_copy_variables[i]: int(this_copy)
+                self.free_copy_variables[i]: int(this_copy)
                 for i, this_copy in enumerate(copy_results[0])
             }
 
-            # simplify copy values # 2020-02-22 added to avoid multiplicities res such as: [4, 8, 4]
+            # simplify copy values; avoid multiplicities res such as: [4, 8, 4]
             all_copies = []
-            for this_symbol in all_v_symbols:
-                vertex_name = symbols_to_vertex[this_symbol]
-                this_copy = int(copy_solution[this_symbol].evalf(subs=free_copy_variables_dict, chop=True))
+            for this_symbol in self.all_v_symbols:
+                vertex_name = self.symbols_to_vertex[this_symbol]
+                this_copy = int(self.copy_solution[this_symbol].evalf(subs=free_copy_variables_dict, chop=True))
                 if this_copy <= 0:
                     raise ProcessingGraphFailed("Cannot identify copy number of " + vertex_name + "!")
                 all_copies.append(this_copy)
@@ -631,121 +638,111 @@ class EstCopyDepthPrecise(object):
             # 
             if len(all_copies) == 0:
                 raise ProcessingGraphFailed(
-                    "Incomplete/Complicated/Unsolvable " + target_name_for_log + " graph (4)!")
+                    "Incomplete/Complicated/Unsolvable " + self.label + " graph (4)!")
             elif len(all_copies) == 1:
                 all_copies = [1]
             elif min(all_copies) == 1:
                 pass
             else:
                 new_all_copies = reduce_list_with_gcd(all_copies)
-                if verbose and new_all_copies != all_copies:
-                    if log_handler:
-                        log_handler.info("Estimated copies: " + str(all_copies))
-                        log_handler.info("Reduced copies: " + str(new_all_copies))
-                    else:
-                        sys.stdout.write("Estimated copies: " + str(all_copies) + "\n")
-                        sys.stdout.write("Reduced copies: " + str(new_all_copies) + "\n")
+                if self.debug and new_all_copies != all_copies:
+                    logger.debug("Estimated copies: " + str(all_copies))
+                    logger.debug("Reduced copies: " + str(new_all_copies))
                 all_copies = new_all_copies
 
             # record new copy values
-            for go_s, this_symbol in enumerate(all_v_symbols):
-                vertex_name = symbols_to_vertex[this_symbol]
-                if vertex_name in self.vertex_to_copy:
-                    old_copy = self.vertex_to_copy[vertex_name]
-                    self.copy_to_vertex[old_copy].remove(vertex_name)
-                    if not self.copy_to_vertex[old_copy]:
-                        del self.copy_to_vertex[old_copy]
+            for go_s, this_symbol in enumerate(self.all_v_symbols):
+                vertex_name = self.symbols_to_vertex[this_symbol]
+                if vertex_name in self.graph.vertex_to_copy:
+                    old_copy = self.graph.vertex_to_copy[vertex_name]
+                    self.graph.copy_to_vertex[old_copy].remove(vertex_name)
+                    if not self.graph.copy_to_vertex[old_copy]:
+                        del self.graph.copy_to_vertex[old_copy]
                 this_copy = all_copies[go_s]
-                self.vertex_to_copy[vertex_name] = this_copy
-                if this_copy not in self.copy_to_vertex:
-                    self.copy_to_vertex[this_copy] = set()
-                self.copy_to_vertex[this_copy].add(vertex_name)
+                self.graph.vertex_to_copy[vertex_name] = this_copy
+                if this_copy not in self.graph.copy_to_vertex:
+                    self.graph.copy_to_vertex[this_copy] = set()
+                self.graph.copy_to_vertex[this_copy].add(vertex_name)
 
 
-            if debug or verbose:
-                # re-estimate baseline depth
-                total_product = 0.
-                total_len = 0
-                overlap = self.__overlap if self.__overlap else 0
-                for vertex_name in vertices_list:
-                    this_len = (self.vertex_info[vertex_name].len - overlap + 1) \
-                               * self.vertex_to_copy.get(vertex_name, 1)
-                    this_cov = self.vertex_info[vertex_name].cov / self.vertex_to_copy.get(vertex_name, 1)
-                    total_len += this_len
-                    total_product += this_len * this_cov
-                new_val = total_product / total_len
-                if log_handler:
-                    log_handler.info("Average " + target_name_for_log + " kmer-coverage = " + str(round(new_val, 2)))
-                else:
-                    sys.stdout.write(
-                        "Average " + target_name_for_log + " kmer-coverage = " + str(round(new_val, 2)) + "\n")
+            # re-estimate baseline depth
+            total_product = 0.
+            total_len = 0
+            overlap = self.graph.overlap() if self.graph.overlap() else 0
+            for vertex_name in self.vertlist:
+                this_len = (self.vertex_info[vertex_name].len - overlap + 1) \
+                           * self.graph.vertex_to_copy.get(vertex_name, 1)
+                this_cov = self.vertex_info[vertex_name].cov / self.graph.vertex_to_copy.get(vertex_name, 1)
+                total_len += this_len
+                total_product += this_len * this_cov
+            new_val = total_product / total_len
+            logger.debug("Average " + self.label + " kmer-coverage = " + str(round(new_val, 2)))
 
 
 
 
 
 
-    def constraint_min_function(x):
+    def __constraint_min_function(self, x):
         """
         create constraints by creating inequations: the copy of every contig has to be >= 1
         """
-        replacements = [(symbol_used, x[go_sym]) for go_sym, symbol_used in enumerate(free_copy_variables)]
-        expression_array = np.array([copy_solution[this_sym].subs(replacements) for this_sym in all_symbols])
-        min_copy = np.array([1.001] * len(all_v_symbols) + [2.001] * len(extra_symbol_to_str))
+        replacements = [(symbol_used, x[go_sym]) for go_sym, symbol_used in enumerate(self.free_copy_variables)]
+        expression_array = np.array([self.copy_solution[this_sym].subs(replacements) for this_sym in self.all_symbols])
+        min_copy = np.array([1.001] * len(self.all_v_symbols) + [2.001] * len(self.extra_symbol_to_str))
         # effect: expression_array >= int(min_copy)
         return expression_array - min_copy
 
 
 
-    def constraint_min_function_for_customized_brute(x):
+    def __constraint_min_function_for_customized_brute(self, x):
         """
 
         """
         replacements = [
             (symbol_used, x[go_sym]) 
-            for (go_sym, symbol_used) in enumerate(free_copy_variables)
+            for (go_sym, symbol_used) in enumerate(self.free_copy_variables)
         ]
         expression_array = np.array([
-            copy_solution[this_sym].subs(replacements) 
-            for this_sym in all_symbols
+            self.copy_solution[this_sym].subs(replacements)
+            for this_sym in self.all_symbols
         ])
-        min_copy = np.array([1.0] * len(all_v_symbols) + [2.0] * len(extra_symbol_to_str))
+        min_copy = np.array([1.0] * len(self.all_v_symbols) + [2.0] * len(self.extra_symbol_to_str))
         # effect: expression_array >= min_copy
         return expression_array - min_copy
 
 
 
-    def constraint_max_function(x):
+    def __constraint_max_function(self, x):
         """
 
         """
-        replacements = [(symbol_used, x[go_sym]) for go_sym, symbol_used in enumerate(free_copy_variables)]
-        expression_array = np.array([copy_solution[this_sym].subs(replacements) for this_sym in all_symbols])
-        max_copy = np.array([maximum_copy_num] * len(all_v_symbols) +
-                            [maximum_copy_num * 2] * len(extra_symbol_to_str))
+        replacements = [(symbol_used, x[go_sym]) for go_sym, symbol_used in enumerate(self.free_copy_variables)]
+        expression_array = np.array([self.copy_solution[this_sym].subs(replacements) for this_sym in self.all_symbols])
+        max_copy = np.array([self.maximum_copy_num] * len(self.all_v_symbols) +
+                            [self.maximum_copy_num * 2] * len(self.extra_symbol_to_str))
         # effect: expression_array <= max_copy
         return max_copy - expression_array
 
 
 
-    def constraint_int_function(x):
-        replacements = [(symbol_used, x[go_sym]) for go_sym, symbol_used in enumerate(free_copy_variables)]
-        expression_array = np.array([copy_solution[this_sym].subs(replacements) for this_sym in all_symbols])
+    def __constraint_int_function(self, x):
+        replacements = [(symbol_used, x[go_sym]) for go_sym, symbol_used in enumerate(self.free_copy_variables)]
+        expression_array = np.array([self.copy_solution[this_sym].subs(replacements) for this_sym in self.all_symbols])
         # diff = np.array([0] * len(all_symbols))
         return sum([abs(every_copy - int(every_copy)) for every_copy in expression_array])
 
 
 
 
-    def minimize_brute_force(
+    def minimize_brute_force(self,
         func, 
         range_list, 
         constraint_list, 
         round_digit=4, 
-        display_p=True,
         ):
 
-        best_fun_val = inf
+        best_fun_val = INF
         best_para_val = []
         count_round = 0
         count_valid = 0
@@ -783,9 +780,9 @@ class EstCopyDepthPrecise(object):
             else:
                 pass
 
-        logger.info("Brute valid/candidate rounds: {}/{}".format(count_valid, count_round))
-        logger.info("Brute best function value: {}".format(best_fun_val))
-        logger.info("Best solution: {}".format(best_para_val))
+        logger.debug("Brute valid/candidate rounds: {}/{}".format(count_valid, count_round))
+        logger.debug("Brute best function value: {}".format(best_fun_val))
+        logger.debug("Best solution: {}".format(best_para_val))
         return best_para_val
 
 

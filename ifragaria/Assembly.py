@@ -5,13 +5,14 @@ Assembly class object and associated class objects
 """
 
 from loguru import logger
-from .SimpleAssembly import SimpleAssembly
-from .GetAllCircularPaths import GetAllCircularPaths
-from .GetAllSortedPaths import GetAllPaths
-from .utils import Sequence, SequenceList, ProcessingGraphFailed, INF, smart_trans_for_sort, get_orf_lengths
+from ifragaria.SimpleAssembly import SimpleAssembly
+from ifragaria.GetAllCircularIsomers import GetAllCircularIsomers
+from ifragaria.GetAllIsomers import GetAllIsomers
+from ifragaria.EstMultiplicityFromCov import EstMultiplicityFromCov
+from ifragaria.EstMultiplicityPrecise import EstMultiplicityPrecise
+from ifragaria.utils import Sequence, SequenceList, ProcessingGraphFailed, INF, get_orf_lengths, smart_trans_for_sort
 from copy import deepcopy
 from collections import OrderedDict
-from itertools import combinations, product
 import os
 import sys
 
@@ -21,7 +22,7 @@ class Assembly(SimpleAssembly):
     """
     Main class object for storing and 
     """
-    def __init__(self, graph_file=None, min_cov=0., max_cov=INF, overlap=None):
+    def __init__(self, graph_file=None, min_cov=0., max_cov=INF, overlap=None, record_reversed_paths=True):
         """
         :param graph_file:
         :param min_cov:
@@ -43,6 +44,12 @@ class Assembly(SimpleAssembly):
         self.__inverted_repeat_vertex = {}
         self.merging_history = {}
 
+        # optional
+        self.palindromic_repeats = None
+        self.__palindromic_repeat_detected = False
+        self.__record_reversed_paths_to_mem = record_reversed_paths
+        self.__reverse_paths = {}
+
         # summarize init
         logger.debug("init graph: self.vertex_clusters={}".format(self.vertex_clusters))
 
@@ -58,7 +65,7 @@ class Assembly(SimpleAssembly):
         for old_name in those_vertices:
             new_name = name_trans[old_name]
             this_v_info = deepcopy(self.vertex_info[old_name])
-            this_v_info.name = new_name
+            this_v_info.label = new_name
             this_v_info.connections = {True: OrderedDict(), False: OrderedDict()}
             for this_end in self.vertex_info[old_name].connections:
                 for next_name, next_end in self.vertex_info[old_name].connections[this_end]:
@@ -66,7 +73,6 @@ class Assembly(SimpleAssembly):
             this_v_info.fill_fastg_form_name()
             new_graph.vertex_info[new_name] = this_v_info
         return new_graph, name_trans
-
 
 
     def write_to_fastg(
@@ -128,41 +134,6 @@ class Assembly(SimpleAssembly):
                     "Merged graph cannot be written as fastg format file, please try gfa format!")
 
 
-
-    def write_out_tags(self, db_names, out_file):
-        """
-        Called from within major func find_target_graph()
-        """
-        # build a UNION of tagged vertices in db_names and sort them.
-        tagged_vertices = set()
-        for db_n in db_names:
-            tagged_vertices |= self.tagged_vertices[db_n]
-        tagged_vertices = sorted(tagged_vertices)
-
-        # column headers for tags to be written to file
-        lines = [["EDGE", "database", "database_weight", "loci"]]
-        
-        # iterate over tagged vertices set to fill 'lines' as a dataframe like list
-        for this_vertex in tagged_vertices:
-            if "tags" in self.vertex_info[this_vertex].other_attr:
-                all_tags = self.vertex_info[this_vertex].other_attr["tags"]
-                all_tag_list = sorted(all_tags)
-                all_weights = self.vertex_info[this_vertex].other_attr["weight"]
-                lines.append([this_vertex,
-                              ";".join(all_tag_list),
-                              ";".join([tag_n + "(" + str(all_weights[tag_n]) + ")" for tag_n in all_tag_list]),
-                              ";".join([",".join(sorted(all_tags[tag_n])) for tag_n in all_tag_list])])
-            else:
-                here_tags = {tag_n for tag_n in db_names if this_vertex in self.tagged_vertices[tag_n]}
-                lines.append([this_vertex,
-                              ";".join(sorted(here_tags)),
-                              "", ""])
-
-        # write items tab-delimited for each line to out_file handle
-        with open(out_file, "w") as out:
-            out.writelines(["\t".join(line) + "\n" for line in lines])
-
-
     def update_orf_total_len(self, limited_vertices=None):
         if not limited_vertices:
             limited_vertices = sorted(self.vertex_info)
@@ -218,7 +189,6 @@ class Assembly(SimpleAssembly):
                     del self.vertex_clusters[go_to_set]
 
 
-
     def remove_vertex(self, vertices, update_cluster=True):
         """
         ...
@@ -255,48 +225,6 @@ class Assembly(SimpleAssembly):
         
         # reset irv to empty dict
         self.__inverted_repeat_vertex = {}
-
-
-
-    def rename_vertex(self, old_vertex, new_vertex, update_cluster=True):
-        """
-        Not currently called (deprecate?)
-        """
-        assert old_vertex != new_vertex
-        assert new_vertex not in self.vertex_info, new_vertex + " exists!"
-        self.vertex_info[new_vertex] = deepcopy(self.vertex_info[old_vertex])
-        self.vertex_info[new_vertex].name = new_vertex
-        for this_end in (True, False):
-            for next_v, next_e in list(self.vertex_info[new_vertex].connections[this_end]):
-                self.vertex_info[next_v].connections[next_e][(new_vertex, this_end)] = \
-                    self.vertex_info[next_v].connections[next_e][(old_vertex, this_end)]
-                del self.vertex_info[next_v].connections[next_e][(old_vertex, this_end)]
-        for tag in self.tagged_vertices:
-            if old_vertex in self.tagged_vertices[tag]:
-                self.tagged_vertices[tag].add(new_vertex)
-                self.tagged_vertices[tag].remove(old_vertex)
-        if old_vertex in self.vertex_to_copy:
-            this_copy = self.vertex_to_copy[old_vertex]
-            self.copy_to_vertex[this_copy].remove(old_vertex)
-            self.copy_to_vertex[this_copy].add(new_vertex)
-            self.vertex_to_copy[new_vertex] = self.vertex_to_copy[old_vertex]
-            del self.vertex_to_copy[old_vertex]
-            self.vertex_to_float_copy[new_vertex] = self.vertex_to_float_copy[old_vertex]
-            del self.vertex_to_float_copy[old_vertex]
-        if self.vertex_info[old_vertex].fastg_form_name:
-            split_long_name = self.vertex_info[old_vertex].fastg_form_name.split("_")
-            self.vertex_info[new_vertex].fastg_form_name = \
-                "_".join([split_long_name[0], new_vertex] + split_long_name[2:])
-        del self.vertex_info[old_vertex]
-        if update_cluster:
-            for go_c, v_cluster in enumerate(self.vertex_clusters):
-                if old_vertex in v_cluster:
-                    self.vertex_clusters[go_c].remove(old_vertex)
-                    self.vertex_clusters[go_c].add(new_vertex)
-        if old_vertex in self.merging_history:
-            self.merging_history[new_vertex] = self.merging_history[old_vertex]
-            del self.merging_history[old_vertex]
-
 
 
     def detect_parallel_vertices(self, limited_vertices=None):
@@ -340,6 +268,7 @@ class Assembly(SimpleAssembly):
 
 
     def is_sequential_repeat(self, search_vertex_name, return_pair_in_the_trunk_path=True):
+
         if search_vertex_name not in self.vertex_info:
             raise ProcessingGraphFailed("Vertex name " + search_vertex_name + " not found!")
         connection_set_t = self.vertex_info[search_vertex_name].connections[True]
@@ -472,7 +401,7 @@ class Assembly(SimpleAssembly):
                         
                         # initialization
                         self.vertex_info[new_vertex] = deepcopy(self.vertex_info[this_vertex])
-                        self.vertex_info[new_vertex].name = new_vertex
+                        self.vertex_info[new_vertex].label = new_vertex
                         self.vertex_info[new_vertex].fastg_form_name = None
                         
                         # modify connections
@@ -547,32 +476,95 @@ class Assembly(SimpleAssembly):
         return merged
 
 
+    def detect_palindromic_repeats(self, redo=True):
+        if not redo and self.palindromic_repeats:
+            self.__palindromic_repeat_detected = True
+            return True
+        else:
+            self.palindromic_repeats = set()
+            find_palindromic_repeats = False
+            for vertex_n in self.vertex_info:
+                if self.vertex_info[vertex_n].seq[True] == self.vertex_info[vertex_n].seq[False]:
+                    forward_c = deepcopy(self.vertex_info[vertex_n].connections[True])
+                    reverse_c = deepcopy(self.vertex_info[vertex_n].connections[False])
+                    # This is heuristic
+                    # In the rarely-used expression way, a contig connect itself in one end:
+                    # (vertex_n, True) in forward_c or (vertex_n, False) in reverse_c
+                    if forward_c and \
+                            ((forward_c == reverse_c) or
+                             ((vertex_n, True) in forward_c) or
+                             ((vertex_n, False) in reverse_c)):
+                        find_palindromic_repeats = True
+                        if len(forward_c) == len(reverse_c) == 2:  # simple palindromic repeats, prune repeated connections
+                            for go_d, (nb_vertex, nb_direction) in enumerate(tuple(forward_c)):
+                                del self.vertex_info[nb_vertex].connections[nb_direction][(vertex_n, bool(go_d))]
+                                del self.vertex_info[vertex_n].connections[bool(go_d)][(nb_vertex, nb_direction)]
+                        elif len(forward_c) == len(reverse_c) == 1:  # connect to the same inverted repeat
+                            pass
+                        else:  # complicated, recorded
+                            self.palindromic_repeats.add(vertex_n)
+            self.__palindromic_repeat_detected = True
+            return find_palindromic_repeats
 
-    # def estimate_copy_and_depth_by_cov(
-    #     self, 
-    #     limited_vertices=None, 
-    #     given_average_cov=None, 
-    #     mode="embplant_pt", 
-    #     re_initialize=False, 
-    #     log_handler=None, 
-    #     verbose=True, 
-    #     debug=False):
-    #     """
-    #     Use seq coverage data to estimate copy and depth.
-    #     """
-    #     tool = EstimateCopyDepthFromCov(
-    #         self, 
-    #         limited_vertices, 
-    #         given_average_cov, 
-    #         mode, 
-    #         re_initialize,
-    #         log_handler, 
-    #         verbose, 
-    #         debug)
 
-    #     # do we want to store a returned avg cov value?
-    #     tool.run()
+    def correct_path_with_palindromic_repeats(self, input_path):
+        # detect palindromic_repeats if not detected yet
+        if not self.__palindromic_repeat_detected:
+            self.detect_palindromic_repeats()
+        # if there are palindromic repeats, correct the palindromic node direction into True
+        if self.palindromic_repeats:
+            corrected_path = [(this_v, True) if this_v in self.palindromic_repeats else (this_v, this_e)
+                              for this_v, this_e in input_path]
+        else:
+            corrected_path = deepcopy(input_path)
+        return corrected_path
 
+
+    def estimate_multiplicity_by_cov(
+            self,
+            limited_vertices=None,
+            given_average_cov=None,
+            mode="embplant_pt",
+            re_initialize=False):
+        """
+        Use seq coverage data to estimate copy and depth.
+        :param limited_vertices: vertex scope, default: all vertices
+        :param given_average_cov: user-defined average depth
+        :param mode: genome type
+        :param re_initialize: reinitialize
+        """
+        EstMultiplicityFromCov(graph=self,
+                               verts=limited_vertices,
+                               avgcov=given_average_cov,
+                               mode=mode,
+                               reinit=re_initialize).run()
+
+
+    def estimate_multiplicity_precisely(
+            self,
+            maximum_copy_num=8,
+            broken_graph_allowed=False,
+            return_new_graphs=False,
+            target_name_for_log="target",
+            debug=False):
+        """
+
+        :param maximum_copy_num:
+        :param broken_graph_allowed:
+        :param return_new_graphs: return result if True else record res in current graph obj
+        :param target_name_for_log: str
+        :param debug: pass to scipy.optimize.minimize etc.
+        :return:
+        """
+        res = EstMultiplicityPrecise(
+            graph=self,
+            maximum_copy_num=maximum_copy_num,
+            broken_graph_allowed=broken_graph_allowed,
+            return_new_graphs=return_new_graphs,
+            label=target_name_for_log,
+            debug=debug).run()
+        if return_new_graphs:
+            return res
 
 
     def tag_in_between(self, database_n):
@@ -648,7 +640,6 @@ class Assembly(SimpleAssembly):
                         break
                     else:
                         go_to_v += 1
-
 
 
     def parse_tab_file(self, tab_file, database_name, type_factor, log_handler=None):
@@ -821,237 +812,51 @@ class Assembly(SimpleAssembly):
             self.remove_vertex(rm_contigs, update_cluster=True)
 
 
-    def get_all_circular_paths(self, mode="embplant_pt", reverse_start_direction_for_pt=False):
+    def get_all_circular_paths(self, mode="embplant_pt", re_estimate_multiplicity=False):
         """
         :param mode:
         :param library_info: not used currently
-        :param reverse_start_direction_for_pt:
         :return: sorted_paths
         """
-        GetAllCircularPaths(self, mode=mode, reverse_start_direction_for_pt=reverse_start_direction_for_pt)
+        return GetAllCircularIsomers(graph=self, mode=mode, re_estimate_multiplicity=re_estimate_multiplicity).run()
 
 
-    # BRANCH OUT TO CLASS, FEWER ARGS
-    def get_all_paths(self, mode="embplant_pt", log_handler=None):
+    def get_all_paths(self, mode="embplant_pt"):
         """
         :param mode:
-        :param log_handler:
         :return: sorted_paths
         """
-        pass
-        #GetAllPaths()
-
-        def standardize_paths(raw_paths, undirected_vertices):
-            if undirected_vertices:
-                corrected_paths = [[(this_v, True) if this_v in undirected_vertices else (this_v, this_e)
-                                    for this_v, this_e in path_part]
-                                   for path_part in raw_paths]
-            else:
-                corrected_paths = deepcopy(raw_paths)
-            here_standardized_path = []
-            for part_path in corrected_paths:
-                if undirected_vertices:
-                    rev_part = [(this_v, True) if this_v in undirected_vertices else (this_v, not this_e)
-                                for this_v, this_e in part_path[::-1]]
-                else:
-                    rev_part = [(this_v, not this_e) for this_v, this_e in part_path[::-1]]
-                if (part_path[0][0], not part_path[0][1]) \
-                        in self.vertex_info[part_path[-1][0]].connections[part_path[-1][1]]:
-                    # circular
-                    this_part_derived = [part_path, rev_part]
-                    for change_start in range(1, len(part_path)):
-                        this_part_derived.append(part_path[change_start:] + part_path[:change_start])
-                        this_part_derived.append(rev_part[change_start:] + rev_part[:change_start])
-                    try:
-                        standard_part = tuple(sorted(this_part_derived, key=lambda x: smart_trans_for_sort(x))[0])
-                    except TypeError:
-                        for j in this_part_derived:
-                            print(j)
-                        exit()
-                else:
-                    standard_part = tuple(sorted([part_path, rev_part], key=lambda x: smart_trans_for_sort(x))[0])
-                here_standardized_path.append(standard_part)
-            return corrected_paths, tuple(sorted(here_standardized_path, key=lambda x: smart_trans_for_sort(x)))
+        return GetAllIsomers(graph=self, mode=mode)
 
 
-
-        def directed_graph_solver(ongoing_paths, next_connections, vertices_left, _all_start_ve, undirected_vertices):
-            # print("-----------------------------")
-            # print("ongoing_path", ongoing_path)
-            # print("next_connect", next_connections)
-            # print("vertices_lef", vertices_left)
-            # print("vertices_lef", len(vertices_left))
-            if not vertices_left:
-                new_paths, new_standardized = standardize_paths(ongoing_paths, undirected_vertices)
-                if new_standardized not in paths_set:
-                    paths.append(new_paths)
-                    paths_set.add(new_standardized)
-                return
-
-            find_next = False
-            for next_vertex, next_end in next_connections:
-                # print("next_vertex", next_vertex, next_end)
-                if next_vertex in vertices_left:
-                    find_next = True
-                    new_paths = deepcopy(ongoing_paths)
-                    new_left = deepcopy(vertices_left)
-                    new_paths[-1].append((next_vertex, not next_end))
-                    new_left[next_vertex] -= 1
-                    if not new_left[next_vertex]:
-                        del new_left[next_vertex]
-                    new_connections = sorted(self.vertex_info[next_vertex].connections[not next_end])
-                    if not new_left:
-                        new_paths, new_standardized = standardize_paths(new_paths, undirected_vertices)
-                        if new_standardized not in paths_set:
-                            paths.append(new_paths)
-                            paths_set.add(new_standardized)
-                        return
-                    else:
-                        if mode == "embplant_pt" and len(new_connections) == 2 and new_connections[0][0] == \
-                                new_connections[1][0]:
-                            new_connections.sort(
-                                key=lambda x: self.vertex_info[x[0]].other_attr["orf"][x[1]]["sum_len"])
-                        directed_graph_solver(new_paths, new_connections, new_left, _all_start_ve,
-                                              undirected_vertices)
-            if not find_next:
-                new_all_start_ve = deepcopy(_all_start_ve)
-                while new_all_start_ve:
-                    new_start_vertex, new_start_end = new_all_start_ve.pop(0)
-                    if new_start_vertex in vertices_left:
-                        new_paths = deepcopy(ongoing_paths)
-                        new_left = deepcopy(vertices_left)
-                        new_paths.append([(new_start_vertex, new_start_end)])
-                        new_left[new_start_vertex] -= 1
-                        if not new_left[new_start_vertex]:
-                            del new_left[new_start_vertex]
-                        new_connections = sorted(self.vertex_info[new_start_vertex].connections[new_start_end])
-                        if not new_left:
-                            new_paths, new_standardized = standardize_paths(new_paths, undirected_vertices)
-                            if new_standardized not in paths_set:
-                                paths.append(new_paths)
-                                paths_set.add(new_standardized)
-                        else:
-                            if mode == "embplant_pt" and len(new_connections) == 2 and new_connections[0][0] == \
-                                    new_connections[1][0]:
-                                new_connections.sort(
-                                    key=lambda x: self.vertex_info[x[0]].other_attr["orf"][x[1]]["sum_len"])
-                            directed_graph_solver(new_paths, new_connections, new_left, new_all_start_ve,
-                                                  undirected_vertices)
-                            break
-                if not new_all_start_ve:
-                    return
-
-        paths = list()
-        paths_set = set()
-        # start from a terminal vertex in an open graph/subgraph
-        #         or a single copy vertex in a closed graph/subgraph
-        self.update_orf_total_len()
-
-        # palindromic repeats
-        palindromic_repeats = set()
-        log_palindrome = False
-        for vertex_n in self.vertex_info:
-            if self.vertex_info[vertex_n].seq[True] == self.vertex_info[vertex_n].seq[False]:
-                temp_f = self.vertex_info[vertex_n].connections[True]
-                temp_r = self.vertex_info[vertex_n].conncetions[False]
-                if temp_f and temp_f == temp_r:
-                    log_palindrome = True
-                    if len(temp_f) == len(temp_r) == 2:  # simple palindromic repeats, prune repeated connections
-                        for go_d, (nb_vertex, nb_direction) in enumerate(tuple(temp_f)):
-                            del self.vertex_info[nb_vertex].connections[nb_direction][(vertex_n, bool(go_d))]
-                            del self.vertex_info[vertex_n].connections[bool(go_d)][(nb_vertex, nb_direction)]
-                    elif len(temp_f) == len(temp_r) == 1:  # connect to the same inverted repeat
-                        pass
-                    else:  # complicated, recorded
-                        palindromic_repeats.add(vertex_n)
-        if log_palindrome:
-            log_handler.info("Palindromic repeats detected. "
-                             "Different paths generating identical sequence will be merged.")
-
-        all_start_v_e = []
-        start_vertices = set()
-        for go_set, v_set in enumerate(self.vertex_clusters):
-            is_closed = True
-            for test_vertex_n in sorted(v_set):
-                for test_end in (False, True):
-                    if not self.vertex_info[test_vertex_n].connections[test_end]:
-                        is_closed = False
-                        if test_vertex_n not in start_vertices:
-                            all_start_v_e.append((test_vertex_n, not test_end))
-                            start_vertices.add(test_vertex_n)
-            if is_closed:
-                if 1 in self.copy_to_vertex[1] and bool(self.copy_to_vertex[1] & v_set):
-                    single_copy_v = sorted(self.copy_to_vertex[1] & v_set, key=lambda x: -self.vertex_info[x].len)[0]
-                    all_start_v_e.append((single_copy_v, True))
-                else:
-                    longest_v = sorted(v_set, key=lambda x: -self.vertex_info[x].len)[0]
-                    all_start_v_e.append((longest_v, True))
-        all_start_v_e.sort(key=lambda x: (smart_trans_for_sort(x[0]), x[1]))
-        # start from a self-loop vertex in an open/closed graph/subgraph
-        for go_set, v_set in enumerate(self.vertex_clusters):
-            for test_vertex_n in sorted(v_set):
-                if self.vertex_info[test_vertex_n].is_self_loop():
-                    all_start_v_e.append((test_vertex_n, True))
-                    all_start_v_e.append((test_vertex_n, False))
-
-        start_v_e = all_start_v_e.pop(0)
-        first_path = [[start_v_e]]
-        first_connections = sorted(self.vertex_info[start_v_e[0]].connections[start_v_e[1]])
-        vertex_to_copy = deepcopy(self.vertex_to_copy)
-        vertex_to_copy[start_v_e[0]] -= 1
-        if not vertex_to_copy[start_v_e[0]]:
-            del vertex_to_copy[start_v_e[0]]
-        directed_graph_solver(first_path, first_connections, vertex_to_copy, all_start_v_e,
-                              undirected_vertices=palindromic_repeats)
-
-        # standardized_path_unique_set = set([this_path_pair[1] for this_path_pair in path_paris])
-        # paths = []
-        # for raw_path, standardized_path in path_paris:
-        #     if standardized_path in standardized_path_unique_set:
-        #         paths.append(raw_path)
-        #         standardized_path_unique_set.remove(standardized_path)
-
-        if not paths:
-            raise ProcessingGraphFailed("Detecting path(s) from remaining graph failed!")
-        else:
-            sorted_paths = []
-            # total_len = len(list(set(paths))[0])
-            record_pattern = False
-            for original_id, this_path in enumerate(paths):
-                acc_dist = 0
-                for copy_num in self.copy_to_vertex:
-                    if copy_num > 2:
-                        for vertex_name in self.copy_to_vertex[copy_num]:
-                            for this_p_part in this_path:
-                                loc_ids = [go_to_id for go_to_id, (v, e) in enumerate(this_p_part) if v == vertex_name]
-                                if len(loc_ids) > 1:
-                                    record_pattern = True
-                                    if (this_p_part[0][0], not this_p_part[0][1]) \
-                                            in self.vertex_info[this_p_part[-1][0]].connections[this_p_part[-1][1]]:
-                                        # circular
-                                        part_len = len(this_p_part)
-                                        for id_a, id_b in combinations(loc_ids, 2):
-                                            acc_dist += min((id_a - id_b) % part_len, (id_b - id_a) % part_len)
-                                    else:
-                                        for id_a, id_b in combinations(loc_ids, 2):
-                                            acc_dist += id_b - id_a
-                sorted_paths.append((this_path, acc_dist, original_id))
-            if record_pattern:
-                sorted_paths.sort(key=lambda x: (-x[1], x[2]))
-                pattern_dict = {acc_distance: ad_id + 1
-                                for ad_id, acc_distance
-                                in enumerate(sorted(set([x[1] for x in sorted_paths]), reverse=True))}
-                if len(pattern_dict) > 1:
-                    sorted_paths = [(this_path, ".repeat_pattern" + str(pattern_dict[acc_distance]))
-                                    for this_path, acc_distance, foo_id in sorted_paths]
-                else:
-                    sorted_paths = [(this_path, "") for this_path in sorted(paths)]
-            else:
-                sorted_paths = [(this_path, "") for this_path in sorted(paths)]
-
-            return sorted_paths
+    def is_circular_path(self, input_path):
+        return (input_path[-1][0], not input_path[-1][1]) in \
+               self.vertex_info[input_path[0][0]].connections[input_path[0][1]]
 
 
+    def get_path_length(self, input_path):
+        overlap = self.__overlap if self.__overlap else 0
+        circular_len = sum([self.vertex_info[name].len - overlap for name, strand in input_path])
+        return circular_len + overlap * int(self.is_circular_path(input_path))
+
+
+    def get_path_internal_length(self, input_path):
+        assert len(input_path) > 1
+        overlap = self.__overlap if self.__overlap else 0
+        # internal_len is allowed to be negative when this_overlap > 0 and len(input_path) == 2
+        internal_len = -overlap
+        for seg_name, seg_strand in input_path[1:-1]:
+            internal_len += self.vertex_info[seg_name].len - overlap
+        return internal_len
+
+
+    def get_path_len_without_terminal_overlaps(self, input_path):
+        assert len(input_path) > 1
+        overlap = self.__overlap if self.__overlap else 0
+        path_len = -overlap
+        for seg_name, seg_strand in input_path:
+            path_len += self.vertex_info[seg_name].len - overlap
+        return path_len
 
 
     def export_path(self, in_path):
@@ -1067,6 +872,179 @@ class Assembly(SimpleAssembly):
         else:
             seq_names[-1] += "(circular)"
         return Sequence(",".join(seq_names), "".join(seq_segments))
+
+
+    def reverse_path(self, raw_path):
+        tuple_path = tuple(raw_path)
+        if tuple_path in self.__reverse_paths:
+            return self.__reverse_paths[tuple_path]
+        else:
+            # if there are palindromic repeats, correct the palindromic node direction into True
+            if not self.__palindromic_repeat_detected:
+                self.detect_palindromic_repeats()
+            if self.__record_reversed_paths_to_mem:
+                if self.palindromic_repeats:
+                    reverse_path = [(this_v, True) if this_v in self.palindromic_repeats else (this_v, not this_e)
+                                    for this_v, this_e in raw_path[::-1]]
+                else:
+                    reverse_path = [(this_v, not this_e) for this_v, this_e in raw_path]
+                tuple_rev = tuple(reverse_path)
+                self.__reverse_paths[tuple_path] = deepcopy(raw_path)
+                self.__reverse_paths[tuple_rev] = deepcopy(reverse_path)
+                return reverse_path
+            else:
+                if self.palindromic_repeats:
+                    return [(this_v, True) if this_v in self.palindromic_repeats else (this_v, not this_e)
+                            for this_v, this_e in raw_path[::-1]]
+                else:
+                    return [(this_v, not this_e) for this_v, this_e in raw_path]
+
+
+    def contain_path(self, input_path):
+        assert len(input_path) > 0
+        go_v = 0
+        v_name, v_end = input_path[go_v]
+        # initialize last_connection
+        last_connection = {(v_name, not v_end)}
+        while go_v < len(input_path):
+            v_name, v_end = input_path[go_v]
+            if v_name not in self.vertex_info:
+                return False
+            elif (v_name, not v_end) not in last_connection:
+                return False
+            else:
+                last_connection = self.vertex_info[v_name].connections[v_end]
+                go_v += 1
+        return True
+
+
+    def roll_path(self, input_path):
+        # detect if input_path could be rolled into repeat_unit
+        # e.g.
+        # [2, 3, 4, 1, 2] can be rolled into [1, 2, 3, 4]
+        # [1, 2, 1, 2, 1] can be rolled into [1, 2]
+        corrected_path = self.correct_path_with_palindromic_repeats(input_path)
+        go_v = 1
+        start_v_e = corrected_path[0]
+        len_path = len(corrected_path)
+        while go_v < len_path:
+            if corrected_path[go_v:].count(start_v_e) > 0:
+                next_go = corrected_path.index(start_v_e, go_v)
+                repeat_unit = corrected_path[:next_go]
+                hypothesized_path = repeat_unit * int(len_path / next_go) + repeat_unit[:(len_path % next_go)]
+                if tuple(hypothesized_path) == tuple(corrected_path):
+                    return corrected_path[:next_go]
+                else:
+                    go_v = next_go + 1
+            else:
+                break
+        return deepcopy(corrected_path)
+
+
+    def get_standardized_path(self, raw_path, dc=True, stn=False):
+        """
+        standardized for comparing and identify unique path
+        :param raw_path: path=[(name1:str, direction1:bool), (name2:str, direction2:bool), ..]
+        :param dc: detect if is circular
+        :param stn: using smart_trans_for_sort() for sorting paths
+        :return: standardized path
+        """
+        forward_path = self.correct_path_with_palindromic_repeats(raw_path)
+        reverse_path = self.reverse_path(forward_path)
+
+        if dc and (forward_path[0][0], not forward_path[0][1]) \
+                in self.vertex_info[forward_path[-1][0]].connections[forward_path[-1][1]]:
+            # if path is circular, try all start points
+            iso_paths = [forward_path, reverse_path]
+            for change_start in range(1, len(forward_path)):
+                iso_paths.append(forward_path[change_start:] + forward_path[:change_start])
+                iso_paths.append(reverse_path[change_start:] + reverse_path[:change_start])
+            if stn:
+                standard_path = tuple(sorted(iso_paths, key=lambda x: smart_trans_for_sort(x))[0])
+            else:
+                standard_path = tuple(sorted(iso_paths)[0])
+        else:
+            if stn:
+                standard_path = tuple(sorted([forward_path, reverse_path], key=lambda x: smart_trans_for_sort(x))[0])
+            else:
+                standard_path = tuple(sorted([forward_path, reverse_path])[0])
+        return standard_path
+
+
+    def get_standardized_isomer(self, isomer_raw_paths):
+        """
+        standardized for comparing and identify unique isomer, similar to self.get_standardized_path()
+        :param raw_path: isomer=[path, path, path]
+        :return: isomer_with_only_palindromic_corrected, standardized_isomer
+        """
+
+        # detect palindromic_repeats if not detected yet
+        if not self.__palindromic_repeat_detected:
+            self.detect_palindromic_repeats()
+        # if there are palindromic repeats, correct the palindromic node direction into True
+        if self.palindromic_repeats:
+            corrected_isomer = [
+                [(this_v, True) if this_v in self.palindromic_repeats
+                 else (this_v, this_e) for this_v, this_e in path_part]
+                for path_part in isomer_raw_paths
+            ]
+        else:
+            corrected_isomer = deepcopy(isomer_raw_paths)
+
+        # ...
+        here_standardized_isomer = []
+        for part_path in corrected_isomer:
+
+            # ...
+            rev_part = self.reverse_path(part_path)
+
+            # ...
+            if (part_path[0][0], not part_path[0][1]) \
+                    in self.vertex_info[part_path[-1][0]].connections[part_path[-1][1]]:
+                # circular
+                this_part_derived = [part_path, rev_part]
+                for change_start in range(1, len(part_path)):
+                    this_part_derived.append(part_path[change_start:] + part_path[:change_start])
+                    this_part_derived.append(rev_part[change_start:] + rev_part[:change_start])
+                standard_part = tuple(sorted(this_part_derived, key=lambda x: smart_trans_for_sort(x))[0])
+            else:
+                standard_part = tuple(sorted([part_path, rev_part], key=lambda x: smart_trans_for_sort(x))[0])
+
+            # store this part in the path
+            here_standardized_isomer.append(standard_part)
+
+        return corrected_isomer, tuple(sorted(here_standardized_isomer, key=lambda x: smart_trans_for_sort(x)))
+
+
+    def get_num_of_possible_alignment_start_points(self, read_len, align_to_path, path_internal_len):
+        """
+        If a read with certain length (i.e. median length of all candidate reads) could be aligned to a path,
+        calculate how many possible start points could this alignment happen.
+
+        Example:
+        ----------------------------------------
+        |      \                               |
+        |     b \          e          / a      |
+        |        \___________________/         |
+        |        /                   \         |
+        |     c /                     \ d      |
+        |      /                       \       |
+        |     /                         \      |
+        |                                \     |
+        ----------------------------------------
+        for graph(a=2,b=3,c=4,d=5,e=6), if read has length of 11 and be aligned to b->e->d,
+        then there could be 3 possible alignment start points
+
+        :param read_len: we use median read length to approximate
+        :param align_to_path:
+        :param path_internal_len:
+        :return:
+        """
+        overlap = self.__overlap if self.__overlap else 0
+        maximum_num_cat = read_len - path_internal_len - 2
+        left_trim = max(maximum_num_cat - self.vertex_info[align_to_path[0][0]].len - overlap, 0)
+        right_trim = max(maximum_num_cat - self.vertex_info[align_to_path[-1][0]].len - overlap, 0)
+        return maximum_num_cat - left_trim - right_trim
 
 
 

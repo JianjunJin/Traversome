@@ -5,7 +5,7 @@ Base Assembly class for parsing input graph files.
 """
 
 from loguru import logger
-from .utils import Vertex, VertexInfo, Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
+from ifragaria.utils import Vertex, VertexInfo, Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
 from hashlib import sha256
 import os
 
@@ -49,7 +49,7 @@ class SimpleAssembly(object):
         self.graph_file = graph_file
         self.min_cov = min_cov
         self.max_cov = max_cov
-        self._overlap = overlap
+        self.__overlap = overlap
 
         # destination to be filled with parsed GFA data.
         self.vertex_info = VertexInfo()
@@ -315,7 +315,7 @@ class SimpleAssembly(object):
                 if kmer_count is not None or seq_depth_tag is not None:
                     if kmer_count is not None:
                         seq_depth = kmer_count / float(seq_len)
-                    elif seq_depth_tag is not None:
+                    else:  # seq_depth_tag is not None:
                         seq_depth = seq_depth_tag
                     if self.min_cov <= seq_depth <= self.max_cov:
                         self.vertex_info[vertex_name] = Vertex(vertex_name, seq_len, seq_depth, sequence)
@@ -347,11 +347,11 @@ class SimpleAssembly(object):
 
 
 
-    def parse_fastg(self, fastg_file, min_cov=0., max_cov=INF):
+    def parse_fastg(self, min_cov=0., max_cov=INF):
         """
         Parse alternative graph format in FASTG format. Store results in self.vertex_info.
         """
-        fastg_matrix = SequenceList(fastg_file)
+        fastg_matrix = SequenceList(self.graph_file)
         # initialize names; only accept vertex that are formally stored, skip those that are only mentioned after ":"
         for i, seq in enumerate(fastg_matrix):
             if ":" in seq.label:

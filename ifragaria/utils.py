@@ -5,13 +5,10 @@ Code copied and simplified from GetOrganelle.
 """
 import os
 import sys
-from itertools import combinations, product
-from hashlib import sha256
 from collections import OrderedDict
 from copy import deepcopy
-from math import log, ceil
-# from sympy import Symbol, solve, lambdify
-from scipy import optimize, stats
+from math import log
+from scipy import stats
 import numpy as np
 import random
 
@@ -267,7 +264,6 @@ class VertexInfo(dict):
 ########################################################################
 
 
-
 def find_greatest_common_divisor(number_list):  
     "euclid_algorithm"
     number_list = number_list[:]
@@ -286,6 +282,7 @@ def find_greatest_common_divisor(number_list):
         return a
 
 
+# divide numbers by their greatest common divisor
 def reduce_list_with_gcd(number_list):
     if len(number_list) == 1:
         return [1] if number_list[0] != 0 else number_list
@@ -567,3 +564,22 @@ def get_orf_lengths(sequence_string, threshold=200, which_frame=None,
                 else:
                     pass
     return sorted(orf_lengths.values(), key=lambda x: -sum(x))[0]
+
+
+def get_id_range_in_increasing_values(min_num, max_num, increasing_numbers):
+    assert max_num >= min_num
+    len_list = len(increasing_numbers)
+    left_id = 0
+    while left_id < len_list and increasing_numbers[left_id] < min_num:
+        left_id += 1
+    right_id = len_list - 1
+    while right_id > -1 and increasing_numbers[right_id] > max_num:
+        right_id -= 1
+    return left_id, right_id
+
+
+def harmony_weights(raw_weights, diff):
+    weights = np.array(raw_weights)
+    weights_trans = weights**diff
+    return weights_trans / sum(weights_trans)
+

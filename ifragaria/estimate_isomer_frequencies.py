@@ -287,7 +287,7 @@ def main():
             trim_overlap_with_graph=True, assembly_graph=assembly_graph)
 
         log_handler.info("Summarizing alignment length distribution ..")
-        align_len_at_path_sorted = sorted([record.p_align_len for record in graph_alignment.records])
+        align_len_at_path_sorted = sorted([record.p_align_len for record in graph_alignment])
         if options.keep_temp:
             open(os.path.join(options.output_dir, "align_len_at_path_sorted.txt"), "w").\
                 writelines([str(x) + "\n" for x in align_len_at_path_sorted])
