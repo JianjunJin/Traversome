@@ -1,6 +1,6 @@
 
 from loguru import logger
-from ifragaria.utils import ProcessingGraphFailed, smart_trans_for_sort
+from ifragaria.utils import ProcessingGraphFailed #, smart_trans_for_sort
 from copy import deepcopy
 from itertools import combinations
 import sys
@@ -21,7 +21,7 @@ class GetAllIsomers(object):
         self.__start_direction = None
 
 
-    def run(self):
+    def get_all_isomers(self):
         self.__paths = list()
         self.__paths_set = set()
         # start from a terminal vertex in an open graph/subgraph
@@ -67,8 +67,7 @@ class GetAllIsomers(object):
         vertex_to_copy[start_v_e[0]] -= 1
         if not vertex_to_copy[start_v_e[0]]:
             del vertex_to_copy[start_v_e[0]]
-        self.__directed_graph_solver(first_path, first_connections, vertex_to_copy, all_start_v_e,
-                                     undirected_vertices=self.graph.palindromic_repeats)
+        self.__directed_graph_solver(first_path, first_connections, vertex_to_copy, all_start_v_e)
 
         # standardized_path_unique_set = set([this_path_pair[1] for this_path_pair in path_paris])
         # paths = []
@@ -123,52 +122,6 @@ class GetAllIsomers(object):
                 sorted_paths = [(this_path, "") for this_path in sorted(self.__paths)]
 
             return sorted_paths
-
-
-    def __standardize_paths(self, raw_paths, undirected_vertices):
-        """
-
-        """
-
-        # ...
-        if undirected_vertices:
-            corrected_paths = [
-                [(this_v, True) if this_v in undirected_vertices
-                 else (this_v, this_e) for this_v, this_e in path_part]
-                for path_part in raw_paths
-            ]
-        else:
-            corrected_paths = deepcopy(raw_paths)
-
-        # ...
-        here_standardized_path = []
-        for part_path in corrected_paths:
-
-            # ...
-            rev_part = self.graph.reverse_path(part_path)
-
-            # ...
-            if (part_path[0][0], not part_path[0][1]) \
-                    in self.graph.vertex_info[part_path[-1][0]].connections[part_path[-1][1]]:
-                # circular
-                this_part_derived = [part_path, rev_part]
-                for change_start in range(1, len(part_path)):
-                    this_part_derived.append(part_path[change_start:] + part_path[:change_start])
-                    this_part_derived.append(rev_part[change_start:] + rev_part[:change_start])
-                try:
-                    standard_part = tuple(sorted(this_part_derived, key=lambda x: smart_trans_for_sort(x))[0])
-                except TypeError:
-                    for j in this_part_derived:
-                        print(j)
-                    exit()
-            else:
-                standard_part = tuple(sorted([part_path, rev_part], key=lambda x: smart_trans_for_sort(x))[0])
-            
-            # store this part in the path
-            here_standardized_path.append(standard_part)
-
-        return corrected_paths, tuple(sorted(here_standardized_path, key=lambda x: smart_trans_for_sort(x)))
-
 
 
     def __directed_graph_solver(

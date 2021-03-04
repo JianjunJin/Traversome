@@ -6,11 +6,11 @@ Assembly class object and associated class objects
 
 from loguru import logger
 from ifragaria.SimpleAssembly import SimpleAssembly
-from ifragaria.GetAllCircularIsomers import GetAllCircularIsomers
-from ifragaria.GetAllIsomers import GetAllIsomers
+from ifragaria.GraphOnlyPathGenerator import GraphOnlyPathGenerator
+# from ifragaria.GetAllIsomers import GetAllIsomers
 from ifragaria.EstMultiplicityFromCov import EstMultiplicityFromCov
 from ifragaria.EstMultiplicityPrecise import EstMultiplicityPrecise
-from ifragaria.utils import Sequence, SequenceList, ProcessingGraphFailed, INF, get_orf_lengths, smart_trans_for_sort
+from ifragaria.utils import Sequence, SequenceList, ProcessingGraphFailed, INF, get_orf_lengths #, smart_trans_for_sort
 from copy import deepcopy
 from collections import OrderedDict
 import os
@@ -812,21 +812,21 @@ class Assembly(SimpleAssembly):
             self.remove_vertex(rm_contigs, update_cluster=True)
 
 
-    def get_all_circular_paths(self, mode="embplant_pt", re_estimate_multiplicity=False):
+    def get_all_circular_isomers(self, mode="embplant_pt", re_estimate_multiplicity=False):
         """
         :param mode:
         :param library_info: not used currently
         :return: sorted_paths
         """
-        return GetAllCircularIsomers(graph=self, mode=mode, re_estimate_multiplicity=re_estimate_multiplicity).run()
+        return GraphOnlyPathGenerator(graph=self, mode=mode, re_estimate_multiplicity=re_estimate_multiplicity).get_all_circular_isomers()
 
 
-    def get_all_paths(self, mode="embplant_pt"):
+    def get_all_isomers(self, mode="embplant_pt"):
         """
         :param mode:
         :return: sorted_paths
         """
-        return GetAllIsomers(graph=self, mode=mode)
+        return GraphOnlyPathGenerator(graph=self, mode=mode).get_all_isomers()
 
 
     def is_circular_path(self, input_path):
@@ -866,11 +866,10 @@ class Assembly(SimpleAssembly):
         for this_vertex, this_end in in_path:
             seq_segments.append(self.vertex_info[this_vertex].seq[this_end][overlap:])
             seq_names.append(this_vertex + ("-", "+")[this_end])
-        # if not circular
-        if (in_path[0][0], not in_path[0][1]) not in self.vertex_info[in_path[-1][0]].connections[in_path[-1][1]]:
-            seq_segments[0] = self.vertex_info[in_path[0][0]].seq[in_path[0][1]][:overlap] + seq_segments[0]
-        else:
+        if self.is_circular_path(in_path):
             seq_names[-1] += "(circular)"
+        else:
+            seq_segments[0] = self.vertex_info[in_path[0][0]].seq[in_path[0][1]][:overlap] + seq_segments[0]
         return Sequence(",".join(seq_names), "".join(seq_segments))
 
 
@@ -941,33 +940,32 @@ class Assembly(SimpleAssembly):
         return deepcopy(corrected_path)
 
 
-    def get_standardized_path(self, raw_path, dc=True, stn=False):
+    def get_standardized_path(self, raw_path, dc=True):  #, stn=False):
         """
         standardized for comparing and identify unique path
         :param raw_path: path=[(name1:str, direction1:bool), (name2:str, direction2:bool), ..]
         :param dc: detect if is circular
-        :param stn: using smart_trans_for_sort() for sorting paths
+        # :param stn: using smart_trans_for_sort() for sorting paths
         :return: standardized path
         """
-        forward_path = self.correct_path_with_palindromic_repeats(raw_path)
+        forward_path = list(self.correct_path_with_palindromic_repeats(raw_path))
         reverse_path = self.reverse_path(forward_path)
 
-        if dc and (forward_path[0][0], not forward_path[0][1]) \
-                in self.vertex_info[forward_path[-1][0]].connections[forward_path[-1][1]]:
+        if dc and self.is_circular_path(forward_path):
             # if path is circular, try all start points
             iso_paths = [forward_path, reverse_path]
             for change_start in range(1, len(forward_path)):
                 iso_paths.append(forward_path[change_start:] + forward_path[:change_start])
                 iso_paths.append(reverse_path[change_start:] + reverse_path[:change_start])
-            if stn:
-                standard_path = tuple(sorted(iso_paths, key=lambda x: smart_trans_for_sort(x))[0])
-            else:
-                standard_path = tuple(sorted(iso_paths)[0])
+            # if stn:
+            #     standard_path = tuple(sorted(iso_paths, key=lambda x: smart_trans_for_sort(x))[0])
+            # else:
+            standard_path = tuple(sorted(iso_paths)[0])
         else:
-            if stn:
-                standard_path = tuple(sorted([forward_path, reverse_path], key=lambda x: smart_trans_for_sort(x))[0])
-            else:
-                standard_path = tuple(sorted([forward_path, reverse_path])[0])
+            # if stn:
+            #     standard_path = tuple(sorted([forward_path, reverse_path], key=lambda x: smart_trans_for_sort(x))[0])
+            # else:
+            standard_path = tuple(sorted([forward_path, reverse_path])[0])
         return standard_path
 
 
@@ -999,21 +997,20 @@ class Assembly(SimpleAssembly):
             rev_part = self.reverse_path(part_path)
 
             # ...
-            if (part_path[0][0], not part_path[0][1]) \
-                    in self.vertex_info[part_path[-1][0]].connections[part_path[-1][1]]:
+            if self.is_circular_path(part_path):
                 # circular
                 this_part_derived = [part_path, rev_part]
                 for change_start in range(1, len(part_path)):
                     this_part_derived.append(part_path[change_start:] + part_path[:change_start])
                     this_part_derived.append(rev_part[change_start:] + rev_part[:change_start])
-                standard_part = tuple(sorted(this_part_derived, key=lambda x: smart_trans_for_sort(x))[0])
+                standard_part = tuple(sorted(this_part_derived)[0])
             else:
-                standard_part = tuple(sorted([part_path, rev_part], key=lambda x: smart_trans_for_sort(x))[0])
+                standard_part = tuple(sorted([part_path, rev_part])[0])
 
             # store this part in the path
             here_standardized_isomer.append(standard_part)
 
-        return corrected_isomer, tuple(sorted(here_standardized_isomer, key=lambda x: smart_trans_for_sort(x)))
+        return corrected_isomer, tuple(sorted(here_standardized_isomer))  # , key=lambda x: smart_trans_for_sort(x)
 
 
     def get_num_of_possible_alignment_start_points(self, read_len, align_to_path, path_internal_len):

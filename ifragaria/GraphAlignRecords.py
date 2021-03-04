@@ -119,7 +119,7 @@ class GraphAlignRecords(object):
         self.records = []
 
         # run the parsing function
-        logger.info("Parsing GAF to GraphAlignRecords object")
+        logger.info("Parsing alignment (GAF) to GraphAlignRecords object")
         self.parse_gaf()
 
 

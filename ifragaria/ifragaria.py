@@ -112,11 +112,11 @@ class iFragaria(object):
         self.graph.estimate_multiplicity_precisely(maximum_copy_num=8, debug=self.loglevel in ("DEBUG", "TRACE", "ALL"))
 
         try:
-            self.isomer_paths_with_labels = self.graph.get_all_circular_paths(mode="all")
+            self.isomer_paths_with_labels = self.graph.get_all_circular_isomers(mode="all")
         except ProcessingGraphFailed as e:
             logger.info("Disentangling circular isomers failed: " + str(e).strip())
             logger.info("Disentangling linear isomers ..")
-            self.isomer_paths_with_labels = self.graph.get_all_paths(mode="all")
+            self.isomer_paths_with_labels = self.graph.get_all_isomers(mode="all")
         #
         self.isomer_sizes = [self.graph.get_path_length(isomer_p)
                              for (isomer_p, isomer_l) in self.isomer_paths_with_labels]

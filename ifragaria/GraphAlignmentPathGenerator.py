@@ -1,5 +1,5 @@
 from loguru import logger
-from ifragaria.utils import harmony_weights
+from ifragaria.utils import harmony_weights, ProcessingGraphFailed
 from copy import deepcopy
 from scipy.stats import norm
 from math import log, exp
@@ -7,7 +7,7 @@ import numpy as np
 import random
 
 
-class GetHeuristicComponents(object):
+class GraphAlignmentPathGenerator(object):
     """
     generate heuristic components (isomers & sub-chromosomes) from alignments.
     Here the components are not necessarily identical in contig composition.
@@ -55,20 +55,77 @@ class GetHeuristicComponents(object):
         # self.__vertex_to_readpath = {vertex: set() for vertex in self.graph.vertex_info}
         self.__starting_subpath_to_readpaths = {}
         self.__middle_subpath_to_readpaths = {}
+        self.__read_paths_counter_indexed = False
         self.contig_coverages = {}
 
         self.components = list()
         self.components_counts = dict()
 
 
-    def run(self, random_seed):
+    def get_heuristic_components(self, circular, random_seed):
+        logger.warning("This function is under testing .. ")
         random.seed(random_seed)
-        self.index_readpaths_subpaths()
+        if not self.__read_paths_counter_indexed:
+            self.index_readpaths_subpaths()
         self.estimate_contig_coverages_from_read_paths()
-        self.get_heuristic_paths()
+        self.get_heuristic_paths(force_circular=circular)
+
+
+    # def get_heuristic_circular_isomers(self, random_seed):
+    #     # based on alignments
+    #     logger.warning("This function is under testing .. ")
+    #     random.seed(random_seed)
+    #     if not self.__read_paths_counter_indexed:
+    #         self.index_readpaths_subpaths()
+    #
+    #
+    # def get_all_circular_isomers(self):
+    #     # based on alignments
+    #     self.components = list()
+    #     self.components_set = set()
+    #     if self.__re_estimate_multiplicity or not self.graph.vertex_to_copy:
+    #         self.graph.estimate_multiplicity_by_cov(mode=self.mode)
+    #         self.graph.estimate_multiplicity_precisely()
+    #
+    #     # for palindromic repeats
+    #     if self.graph.detect_palindromic_repeats(redo=False):
+    #         logger.debug("Palindromic repeats detected. "
+    #                      "Different paths generating identical sequence will be merged.")
+    #
+    #     #
+    #     self.graph.update_orf_total_len()
+    #     if 1 not in self.graph.copy_to_vertex:
+    #         do_check_all_start_kinds = True
+    #         self.__start_vertex = sorted(self.graph.vertex_info,
+    #                                      key=lambda x: (-self.graph.vertex_info[x].len,
+    #                                                     -max(self.graph.vertex_info[x].other_attr["orf"][True][
+    #                                                              "sum_len"],
+    #                                                          self.graph.vertex_info[x].other_attr["orf"][False][
+    #                                                              "sum_len"]),
+    #                                                     x))[0]
+    #         self.__start_direction = True
+    #     else:
+    #         # start from a single copy vertex, no need to check all kinds of start vertex
+    #         do_check_all_start_kinds = False
+    #         self.__start_vertex = sorted(self.graph.copy_to_vertex[1])[0]
+    #         self.__start_direction = True
+    #
+    #     # each contig stored format:
+    #     first_path = [(self.__start_vertex, self.__start_direction)]
+    #     first_connections = sorted(self.graph.vertex_info[self.__start_vertex].connections[self.__start_direction])
+    #     vertex_to_copy = deepcopy(self.graph.vertex_to_copy)
+    #     vertex_to_copy[self.__start_vertex] -= 1
+    #     if vertex_to_copy[self.__start_vertex] <= 0:
+    #         del vertex_to_copy[self.__start_vertex]
+    #     self.__circular_directed_graph_solver(first_path, first_connections, vertex_to_copy, do_check_all_start_kinds,
+    #                                           self.graph.palindromic_repeats)
+    #
+    #     if not self.components:
+    #         raise ProcessingGraphFailed("Detecting path(s) from remaining graph failed!")
 
 
     def index_readpaths_subpaths(self, filter_by_graph=True):
+        self.__read_paths_counter = dict()
         alignment_lengths = []
         if filter_by_graph:
             for gaf_record in self.alignment:
@@ -112,6 +169,7 @@ class GetHeuristicComponents(object):
                         reverse_read_path_tuple[go_sub: go_sub + sub_contig_num], read_id, False)
         #
         self.local_max_alignment_len = sorted(alignment_lengths)[-1]
+        self.__read_paths_counter_indexed = True
 
 
     def estimate_contig_coverages_from_read_paths(self):
@@ -126,9 +184,9 @@ class GetHeuristicComponents(object):
                     self.contig_coverages[v_name] += 1
 
 
-    def get_heuristic_paths(self):
+    def get_heuristic_paths(self, force_circular):
         for count_search in range(1, self.num_search + 1):
-            new_path = self.graph.get_standardized_path(self.extend_path([]))
+            new_path = self.graph.get_standardized_path(self.__heuristic_extend_path([], force_circular=force_circular))
             if new_path in self.components_counts:
                 self.components_counts[new_path] += 1
                 logger.debug("{} unique paths found in {} trials, {} trials left".format(
@@ -140,11 +198,13 @@ class GetHeuristicComponents(object):
                     len(self.components), count_search, self.num_search - count_search))
 
 
-    def extend_path(self, path, closed_from_start=False):
+    def __heuristic_extend_path(self, path, not_do_reverse=False, force_circular=False):
         """
-        core function
-        :param path: starting empty path like [] or intermediate path like [("v1", True), ("v2", False)]
-        :param closed_from_start: a mark to stop searching from the reverse end.
+
+        improvement needed
+
+        :param path: empty path like [] or starting path like [("v1", True), ("v2", False)]
+        :param not_do_reverse: a mark to stop searching from the reverse end.
         :return: a candidate component. e.g. [("v0", True), ("v1", True), ("v2", False), ("v3", True)]
         """
         if not path:
@@ -153,7 +213,7 @@ class GetHeuristicComponents(object):
             if random.random() > 0.5:
                 read_path = self.graph.reverse_path(read_path)
             path = list(read_path)
-            return self.extend_path(path)
+            return self.__heuristic_extend_path(path, not_do_reverse=False, force_circular=force_circular)
         else:
             # keep going in a circle util the path length reaches beyond the longest read alignment
             # stay within what data can tell
@@ -198,7 +258,7 @@ class GetHeuristicComponents(object):
                         path = list(self.read_paths[read_id])
                     else:
                         path = self.graph.reverse_path(self.read_paths[read_id])
-                    return self.extend_path(path)
+                    return self.__heuristic_extend_path(path, force_circular=force_circular)
             if not candidates_list:
                 # if no extending candidates based on overlap info, try to extend based on the graph
                 last_name, last_end = path[-1]
@@ -206,20 +266,23 @@ class GetHeuristicComponents(object):
                 if next_connections:
                     candidates_rev = sorted(next_connections)
                     if self.__cov_inert:
+                        # coverage inertia, more likely to extend to contigs with similar depths
                         cdd_cov = [self.__get_cov_mean(rev_p) for rev_p in candidates_rev]
                         weights = [exp(-abs(log(cov/current_ave_coverage))) for cov in cdd_cov]
                         next_name, next_end = random.choices(candidates_rev, weights=weights)[0]
                     else:
                         next_name, next_end = random.choice(candidates_rev)
-                    return self.__check_extending_multiplicity(
+                    return self.__heuristic_check_extending_multiplicity(
                         path=path,
                         extend_path=[(next_name, not next_end)],
-                        closed_from_start=closed_from_start)
+                        not_do_reverse=not_do_reverse,
+                        force_circular=force_circular)
                 else:
-                    if closed_from_start:
+                    if not_do_reverse:
                         return path
                     else:
-                        return self.extend_path(self.graph.reverse_path(path), closed_from_start=True)
+                        return self.__heuristic_extend_path(
+                            self.graph.reverse_path(path), not_do_reverse=True, force_circular=force_circular)
             else:
                 candidates = []
                 candidates_ovl_n = []
@@ -252,13 +315,14 @@ class GetHeuristicComponents(object):
                 # logger.debug("path: " + str(path))
                 # logger.debug("extend: " + str(new_extend))
                 # logger.debug("closed_from_start: " + str(closed_from_start))
-                return self.__check_extending_multiplicity(
+                return self.__heuristic_check_extending_multiplicity(
                     path=path,
                     extend_path=new_extend,
-                    closed_from_start=closed_from_start)
+                    not_do_reverse=not_do_reverse,
+                    force_circular=force_circular)
 
 
-    def __check_extending_multiplicity(self, path, extend_path, closed_from_start):
+    def __heuristic_check_extending_multiplicity(self, path, extend_path, not_do_reverse, force_circular):
         """
         normal distribution
         :param path:
@@ -267,12 +331,8 @@ class GetHeuristicComponents(object):
         """
         current_names = [v_n for v_n, v_e in path]
         current_names = {v_n: current_names.count(v_n) for v_n in set(current_names)}
-        extend_names = [v_n for v_n, v_e in path]
-        extend_names = {v_n: extend_names.count(v_n) for v_n in set(extend_names)}
-        # check_names = set()
-        # for v_name in extend_names:
-        #     if v_name in current_names:
-        #         check_names.add(v_name)
+        # extend_names = [v_n for v_n, v_e in path]
+        # extend_names = {v_n: extend_names.count(v_n) for v_n in set(extend_names)}
         new_path = deepcopy(path)
         for v_name, v_end in extend_path:
             if v_name in current_names:
@@ -287,18 +347,20 @@ class GetHeuristicComponents(object):
                 like_ratio = new_like / old_like
                 if like_ratio > 1:
                     new_path.append((v_name, v_end))
+                elif force_circular and not self.graph.is_circular_path(self.graph.roll_path(new_path)):
+                    new_path.append((v_name, v_end))
                 else:
                     if random.random() < like_ratio:
                         new_path.append((v_name, v_end))
                     else:
-                        if closed_from_start:
+                        if not_do_reverse:
                             return new_path
                         else:
-                            return self.extend_path(self.graph.reverse_path(new_path), closed_from_start=True)
+                            return self.__heuristic_extend_path(
+                                self.graph.reverse_path(new_path), not_do_reverse=True, force_circular=force_circular)
             else:
                 new_path.append((v_name, v_end))
-        return self.extend_path(new_path, closed_from_start=closed_from_start)
-
+        return self.__heuristic_extend_path(new_path, not_do_reverse=not_do_reverse, force_circular=force_circular)
 
 
     def __index_start_subpath(self, subpath, read_id, strand):
@@ -356,3 +418,150 @@ class GetHeuristicComponents(object):
             return mean, std
         else:
             return mean
+
+
+    def __directed_graph_solver(
+            self, ongoing_paths, next_connections, vertices_left, in_all_start_ve):
+        if not vertices_left:
+            new_paths, new_standardized = self.graph.get_standardized_isomer(ongoing_paths)
+            if new_standardized not in self.components_counts:
+                self.components_counts[new_standardized] = 1
+                self.components.append(new_standardized)
+            else:
+                self.components_counts[new_standardized] += 1
+            return
+
+        find_next = False
+        for next_vertex, next_end in next_connections:
+            # print("next_vertex", next_vertex, next_end)
+            if next_vertex in vertices_left:
+                find_next = True
+                new_paths = deepcopy(ongoing_paths)
+                new_left = deepcopy(vertices_left)
+                new_paths[-1].append((next_vertex, not next_end))
+                new_left[next_vertex] -= 1
+                if not new_left[next_vertex]:
+                    del new_left[next_vertex]
+                new_connections = sorted(self.graph.vertex_info[next_vertex].connections[not next_end])
+                if not new_left:
+                    new_paths, new_standardized = self.graph.get_standardized_isomer(new_paths)
+                    if new_standardized not in self.components_counts:
+                        self.components_counts[new_standardized] = 1
+                        self.components.append(new_standardized)
+                    else:
+                        self.components_counts[new_standardized] += 1
+                    return
+                else:
+                    self.__directed_graph_solver(new_paths, new_connections, new_left, in_all_start_ve)
+        if not find_next:
+            new_all_start_ve = deepcopy(in_all_start_ve)
+            while new_all_start_ve:
+                new_start_vertex, new_start_end = new_all_start_ve.pop(0)
+                if new_start_vertex in vertices_left:
+                    new_paths = deepcopy(ongoing_paths)
+                    new_left = deepcopy(vertices_left)
+                    new_paths.append([(new_start_vertex, new_start_end)])
+                    new_left[new_start_vertex] -= 1
+                    if not new_left[new_start_vertex]:
+                        del new_left[new_start_vertex]
+                    new_connections = sorted(self.graph.vertex_info[new_start_vertex].connections[new_start_end])
+                    if not new_left:
+                        new_paths, new_standardized = self.graph.get_standardized_isomer(new_paths)
+                        if new_standardized not in self.components_counts:
+                            self.components_counts[new_standardized] = 1
+                            self.components.append(new_standardized)
+                        else:
+                            self.components_counts[new_standardized] += 1
+                    else:
+                        self.__directed_graph_solver(new_paths, new_connections, new_left, new_all_start_ve)
+                        break
+            if not new_all_start_ve:
+                return
+
+
+    def __circular_directed_graph_solver(self,
+        ongoing_path,
+        next_connections,
+        vertices_left,
+        check_all_kinds,
+        palindromic_repeat_vertices,
+        ):
+        """
+        recursively exhaust all circular paths
+        :param ongoing_path:
+        :param next_connections:
+        :param vertices_left:
+        :param check_all_kinds:
+        :param palindromic_repeat_vertices:
+        :return:
+        """
+        if not vertices_left:
+            new_path = deepcopy(ongoing_path)
+            if palindromic_repeat_vertices:
+                new_path = [(this_v, True) if this_v in palindromic_repeat_vertices else (this_v, this_e)
+                            for this_v, this_e in new_path]
+            if check_all_kinds:
+                rev_path = self.graph.reverse_path(new_path)
+                this_path_derived = [new_path, rev_path]
+                for change_start in range(1, len(new_path)):
+                    this_path_derived.append(new_path[change_start:] + new_path[:change_start])
+                    this_path_derived.append(rev_path[change_start:] + rev_path[:change_start])
+                standardized_path = tuple(sorted(this_path_derived)[0])
+                if standardized_path not in self.components_counts:
+                    self.components_counts[standardized_path] = 1
+                    self.components.append(standardized_path)
+                else:
+                    self.components_counts[standardized_path] += 1
+            else:
+                new_path = tuple(new_path)
+                if new_path not in self.components_counts:
+                    self.components_counts[new_path] = 1
+                    self.components.append(new_path)
+                else:
+                    self.components_counts[new_path] += 1
+            return
+
+        for next_vertex, next_end in next_connections:
+            # print("next_vertex", next_vertex)
+            if next_vertex in vertices_left:
+                new_path = deepcopy(ongoing_path)
+                new_left = deepcopy(vertices_left)
+                new_path.append((next_vertex, not next_end))
+                new_left[next_vertex] -= 1
+                if not new_left[next_vertex]:
+                    del new_left[next_vertex]
+                new_connections = self.graph.vertex_info[next_vertex].connections[not next_end]
+                if not new_left:
+                    if (self.__start_vertex, not self.__start_direction) in new_connections:
+                        if palindromic_repeat_vertices:
+                            new_path = [
+                                (this_v, True) if this_v in palindromic_repeat_vertices else (this_v, this_e)
+                                for this_v, this_e in new_path]
+                        if check_all_kinds:
+                            rev_path = self.graph.reverse_path(new_path)
+                            this_path_derived = [new_path, rev_path]
+                            for change_start in range(1, len(new_path)):
+                                this_path_derived.append(new_path[change_start:] + new_path[:change_start])
+                                this_path_derived.append(rev_path[change_start:] + rev_path[:change_start])
+                            standardized_path = tuple(sorted(this_path_derived)[0])
+                            if standardized_path not in self.components_counts:
+                                self.components_counts[standardized_path] = 1
+                                self.components.append(standardized_path)
+                            else:
+                                self.components_counts[standardized_path] += 1
+                        else:
+                            new_path = tuple(new_path)
+                            if new_path not in self.components_counts:
+                                self.components_counts[new_path] = 1
+                                self.components.append(new_path)
+                            else:
+                                self.components_counts[new_path] += 1
+                        return
+                    else:
+                        return
+                else:
+                    new_connections = sorted(new_connections)
+                    self.__circular_directed_graph_solver(new_path, new_connections, new_left, check_all_kinds,
+                                                          palindromic_repeat_vertices)
+
+

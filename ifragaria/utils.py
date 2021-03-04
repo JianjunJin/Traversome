@@ -506,24 +506,24 @@ def generate_index_combinations(index_list):
             for next_ids in generate_index_combinations(index_list[1:]):
                 yield [go_id] + next_ids
 
-
-
-def smart_trans_for_sort(candidate_item):
-    if type(candidate_item) in (tuple, list):
-        return [smart_trans_for_sort(this_sub) for this_sub in candidate_item]
-    elif type(candidate_item) == bool:
-        return not candidate_item
-    else:
-        all_e = candidate_item.split("_")
-        for go_e, this_ele in enumerate(all_e):
-            try:
-                all_e[go_e] = int(this_ele)
-            except ValueError:
-                try:
-                    all_e[go_e] = float(this_ele)
-                except ValueError:
-                    pass
-        return all_e
+#
+#
+# def smart_trans_for_sort(candidate_item):
+#     if type(candidate_item) in (tuple, list):
+#         return [smart_trans_for_sort(this_sub) for this_sub in candidate_item]
+#     elif type(candidate_item) == bool:
+#         return not candidate_item
+#     else:
+#         all_e = candidate_item.split("_")
+#         for go_e, this_ele in enumerate(all_e):
+#             try:
+#                 all_e[go_e] = int(this_ele)
+#             except ValueError:
+#                 try:
+#                     all_e[go_e] = float(this_ele)
+#                 except ValueError:
+#                     pass
+#         return all_e
 
 
 def get_orf_lengths(sequence_string, threshold=200, which_frame=None,
