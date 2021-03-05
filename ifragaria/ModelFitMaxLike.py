@@ -16,7 +16,7 @@ class ModelFitMaxLike(object):
         self.ifragaria = ifragaria_obj
         self.num_of_isomers = ifragaria_obj.num_of_isomers
         self.all_sub_paths = ifragaria_obj.all_sub_paths
-        self.graph = ifragaria_obj.graph
+        # self.graph = ifragaria_obj.graph
         self.isomer_sizes = ifragaria_obj.isomer_sizes
         self.align_len_at_path_sorted = ifragaria_obj.align_len_at_path_sorted
 

@@ -76,7 +76,7 @@ class EstMultiplicityPrecise(object):
 
         # the core function calls 
         self.get_max_multiplicity()
-        self.build_formulas()
+        self.build_formulae()
         self.add_self_loop_formulae()
         self.add_limit_formulae()
         self.sympy_solve_equations()
@@ -245,7 +245,7 @@ class EstMultiplicityPrecise(object):
 
 
 
-    def build_formulas(self):
+    def build_formulae(self):
         """
         Traverses edges between vertices to build formulae for relationship between contig copies
         which will then reduced by sympy

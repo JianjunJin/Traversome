@@ -185,26 +185,35 @@ class GraphAlignmentPathGenerator(object):
 
 
     def get_heuristic_paths(self, force_circular):
-        for count_search in range(1, self.num_search + 1):
-            new_path = self.graph.get_standardized_path(self.__heuristic_extend_path([], force_circular=force_circular))
+        count_search = 0
+        count_valid = 0
+        while count_valid < self.num_search:
+            count_search += 1
+            new_path = self.graph.get_standardized_path(self.__heuristic_extend_path([]))
+            if force_circular and not self.graph.is_circular_path(self.graph.roll_path(new_path)):
+                continue
+            count_valid += 1
             if new_path in self.components_counts:
                 self.components_counts[new_path] += 1
-                logger.debug("{} unique paths found in {} trials, {} trials left".format(
-                    len(self.components), count_search, self.num_search - count_search))
+                logger.debug("{} unique paths found in {} paths and {} trials, {} paths left".format(
+                    len(self.components), count_valid, count_search, self.num_search - count_valid))
             else:
                 self.components_counts[new_path] = 1
                 self.components.append(new_path)
-                logger.info("{} unique paths found in {} trials, {} trials left".format(
-                    len(self.components), count_search, self.num_search - count_search))
+                logger.info("{} unique paths found in {} paths and {} trials, {} paths left".format(
+                    len(self.components), count_valid, count_search, self.num_search - count_valid))
 
 
-    def __heuristic_extend_path(self, path, not_do_reverse=False, force_circular=False):
+    def __heuristic_extend_path(
+            self, path, not_do_reverse=False, initial_mean=None, initial_std=None):
         """
 
         improvement needed
 
         :param path: empty path like [] or starting path like [("v1", True), ("v2", False)]
         :param not_do_reverse: a mark to stop searching from the reverse end.
+        :param initial_mean:
+        :param initial_std:
         :return: a candidate component. e.g. [("v0", True), ("v1", True), ("v2", False), ("v3", True)]
         """
         if not path:
@@ -213,7 +222,12 @@ class GraphAlignmentPathGenerator(object):
             if random.random() > 0.5:
                 read_path = self.graph.reverse_path(read_path)
             path = list(read_path)
-            return self.__heuristic_extend_path(path, not_do_reverse=False, force_circular=force_circular)
+            initial_mean, initial_std = self.__get_cov_mean(read_path, return_std=True)
+            return self.__heuristic_extend_path(
+                path=path,
+                not_do_reverse=False,
+                initial_mean=initial_mean,
+                initial_std=initial_std)
         else:
             # keep going in a circle util the path length reaches beyond the longest read alignment
             # stay within what data can tell
@@ -250,7 +264,7 @@ class GraphAlignmentPathGenerator(object):
                     weights = [self.__read_paths_counter[self.read_paths[read_id]] for read_id, strand in candidates]
                     weights = harmony_weights(weights, diff=self.__differ_f)
                     if self.__cov_inert:
-                        cdd_cov = [self.__get_cov_mean(rev_p, path) for rev_p in candidates]
+                        cdd_cov = [self.__get_cov_mean(rev_p, exclude_path=path) for rev_p in candidates]
                         weights = [weights[go_c] * exp(-abs(log(cov/current_ave_coverage)))
                                    for go_c, cov in enumerate(cdd_cov)]
                     read_id, strand = random.choices(candidates, weights=weights)[0]
@@ -258,7 +272,8 @@ class GraphAlignmentPathGenerator(object):
                         path = list(self.read_paths[read_id])
                     else:
                         path = self.graph.reverse_path(self.read_paths[read_id])
-                    return self.__heuristic_extend_path(path, force_circular=force_circular)
+                    return self.__heuristic_extend_path(
+                        path, initial_mean=initial_mean, initial_std=initial_std)
             if not candidates_list:
                 # if no extending candidates based on overlap info, try to extend based on the graph
                 last_name, last_end = path[-1]
@@ -273,16 +288,20 @@ class GraphAlignmentPathGenerator(object):
                     else:
                         next_name, next_end = random.choice(candidates_rev)
                     return self.__heuristic_check_extending_multiplicity(
+                        initial_mean=initial_mean,
+                        initial_std=initial_std,
                         path=path,
                         extend_path=[(next_name, not next_end)],
-                        not_do_reverse=not_do_reverse,
-                        force_circular=force_circular)
+                        not_do_reverse=not_do_reverse)
                 else:
                     if not_do_reverse:
                         return path
                     else:
                         return self.__heuristic_extend_path(
-                            self.graph.reverse_path(path), not_do_reverse=True, force_circular=force_circular)
+                            self.graph.reverse_path(path),
+                            not_do_reverse=True,
+                            initial_mean=initial_mean,
+                            initial_std=initial_std)
             else:
                 candidates = []
                 candidates_ovl_n = []
@@ -315,16 +334,21 @@ class GraphAlignmentPathGenerator(object):
                 # logger.debug("path: " + str(path))
                 # logger.debug("extend: " + str(new_extend))
                 # logger.debug("closed_from_start: " + str(closed_from_start))
+                logger.debug("    candidate path: {} .. {} .. {}".format(path[:3], len(path), path[-3:]))
+                logger.debug("    extend path   : {}".format(new_extend))
                 return self.__heuristic_check_extending_multiplicity(
+                    initial_mean=initial_mean,
+                    initial_std=initial_std,
                     path=path,
                     extend_path=new_extend,
-                    not_do_reverse=not_do_reverse,
-                    force_circular=force_circular)
+                    not_do_reverse=not_do_reverse)
 
 
-    def __heuristic_check_extending_multiplicity(self, path, extend_path, not_do_reverse, force_circular):
+    def __heuristic_check_extending_multiplicity(
+            self, initial_mean, initial_std, path, extend_path, not_do_reverse):
         """
         normal distribution
+        :param initial_cov:
         :param path:
         :param extend_path:
         :return:
@@ -344,11 +368,18 @@ class GraphAlignmentPathGenerator(object):
                 new_like = norm.pdf(self.contig_coverages[v_name],
                                     loc=(current_names[v_name] + 1) * new_cov_mean,
                                     scale=new_cov_std)
+                old_like *= norm.pdf(self.contig_coverages[v_name]/float(current_names[v_name]),
+                                     loc=initial_mean,
+                                     scale=initial_std)
+                new_like *= norm.pdf(self.contig_coverages[v_name] / float(current_names[v_name] + 1),
+                                     loc=initial_mean,
+                                     scale=initial_std)
                 like_ratio = new_like / old_like
                 if like_ratio > 1:
                     new_path.append((v_name, v_end))
-                elif force_circular and not self.graph.is_circular_path(self.graph.roll_path(new_path)):
-                    new_path.append((v_name, v_end))
+                # elif force_circular and not self.graph.is_circular_path(self.graph.roll_path(new_path)):
+                #     # infinite loop
+                #     new_path.append((v_name, v_end))
                 else:
                     if random.random() < like_ratio:
                         new_path.append((v_name, v_end))
@@ -357,10 +388,17 @@ class GraphAlignmentPathGenerator(object):
                             return new_path
                         else:
                             return self.__heuristic_extend_path(
-                                self.graph.reverse_path(new_path), not_do_reverse=True, force_circular=force_circular)
+                                self.graph.reverse_path(new_path),
+                                not_do_reverse=True,
+                                initial_mean=initial_mean,
+                                initial_std=initial_std)
             else:
                 new_path.append((v_name, v_end))
-        return self.__heuristic_extend_path(new_path, not_do_reverse=not_do_reverse, force_circular=force_circular)
+        return self.__heuristic_extend_path(
+            new_path,
+            not_do_reverse=not_do_reverse,
+            initial_mean=initial_mean,
+            initial_std=initial_std)
 
 
     def __index_start_subpath(self, subpath, read_id, strand):

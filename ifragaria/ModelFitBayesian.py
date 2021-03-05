@@ -12,10 +12,10 @@ class ModelFitBayesian(object):
     """
     def __init__(self, ifragaria_obj):
         self.ifragaria = ifragaria_obj
-        self.graph = ifragaria_obj.graph
+        # self.graph = ifragaria_obj.graph
         pass
 
-    def iso_mcmc(self, isomer_num, n_generations, n_burn, log_handler):
+    def run_mcmc(self, isomer_num, n_generations, n_burn, log_handler):
         log_handler.info(str(len(self.ifragaria.all_sub_paths)) + " subpaths in total")
         with pm.Model() as isomer_model:
             isomer_percents = pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,))

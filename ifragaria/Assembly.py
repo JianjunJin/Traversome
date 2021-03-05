@@ -888,8 +888,8 @@ class Assembly(SimpleAssembly):
                 else:
                     reverse_path = [(this_v, not this_e) for this_v, this_e in raw_path]
                 tuple_rev = tuple(reverse_path)
-                self.__reverse_paths[tuple_path] = deepcopy(raw_path)
-                self.__reverse_paths[tuple_rev] = deepcopy(reverse_path)
+                self.__reverse_paths[tuple_path] = deepcopy(reverse_path)
+                self.__reverse_paths[tuple_rev] = deepcopy(raw_path)
                 return reverse_path
             else:
                 if self.palindromic_repeats:

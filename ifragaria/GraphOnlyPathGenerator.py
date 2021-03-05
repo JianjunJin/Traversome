@@ -72,7 +72,11 @@ class GraphOnlyPathGenerator(object):
                 else:
                     new_path = input_path
                 # logger.debug(new_path, input_unique_vertex)
-                reseed_from = new_path.index(input_unique_vertex)
+                try:
+                    reseed_from = new_path.index(input_unique_vertex)
+                except ValueError as e:
+                    logger.error("{} not in {}".format(input_unique_vertex, new_path))
+                    raise e
                 return new_path[reseed_from:] + new_path[:reseed_from]
 
             if 1 in self.graph.copy_to_vertex:

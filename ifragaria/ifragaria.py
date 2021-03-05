@@ -244,6 +244,11 @@ class iFragaria(object):
         return self.max_like_fit.run()
 
 
+    def fit_model_using_bayesian_mcmc(self):
+        self.bayesian_fit = ModelFitBayesian(self)
+        return self.bayesian_fit.run_mcmc()
+
+
     def output_seqs(self, probs, threshold=0.001):
         logger.info("Output seqs: ")
         with open(os.path.join(self.outdir, "isomers.fasta"), "w") as output_handler:
