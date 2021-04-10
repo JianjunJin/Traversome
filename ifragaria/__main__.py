@@ -67,13 +67,13 @@ def get_options():
     options, argv = parser.parse_args()
 
     # check for required flags
-    if not (options.graph_file and options.gaf_file and options.output_dir):
+    if not (options.graph_gfa and options.gaf_file and options.output_dir):
         parser.print_help()
         sys.exit()
 
     # check file paths
-    if not os.path.isfile(options.graph_file):
-        raise IOError(options.graph_file + " not found/valid!")
+    if not os.path.isfile(options.graph_gfa):
+        raise IOError(options.graph_gfa + " not found/valid!")
     if not os.path.isfile(options.gaf_file):
         raise IOError(options.gaf_file + " not found/valid!")
     if not os.path.exists(options.output_dir):
@@ -91,8 +91,8 @@ def main():
 
     # create object with params
     frag = iFragaria(
-        gfa=opts.graph_file, 
-        gaf=opts.gaf_file, 
+        graph=opts.graph_gfa,
+        alignment=opts.gaf_file,
         outdir=opts.output_dir,
         do_bayesian=opts.do_bayesian,
         out_prob_threshold=opts.out_seq_prop,

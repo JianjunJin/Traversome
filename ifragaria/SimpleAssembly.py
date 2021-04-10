@@ -5,7 +5,8 @@ Base Assembly class for parsing input graph files.
 """
 
 from loguru import logger
-from ifragaria.utils import Vertex, VertexInfo, Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
+from collections import OrderedDict
+from ifragaria.utils import Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
 from hashlib import sha256
 import os
 
@@ -21,6 +22,97 @@ DEFAULT_COV = 1
 #######################################################
 ###   CLASSES
 #######################################################
+
+
+class Vertex(object):
+    def __init__(self, v_name, length=None, coverage=None, forward_seq=None, reverse_seq=None,
+                 tail_connections=None, head_connections=None, fastg_form_long_name=None):
+        """
+        :param v_name: str
+        :param length: int
+        :param coverage: float
+        :param forward_seq: str
+        :param reverse_seq: str
+        :param tail_connections: OrderedDict()
+        :param head_connections: OrderedDict()
+        :param fastg_form_long_name: str
+        self.seq={True: FORWARD_SEQ, False: REVERSE_SEQ}
+        self.connections={True: tail_connection_set, False: head_connection_set}
+        """
+        self.name = v_name
+        self.len = length
+        self.cov = coverage
+
+        """ True: forward, False: reverse """
+        if forward_seq and reverse_seq:
+            assert forward_seq == complementary_seq(reverse_seq), "forward_seq != complementary_seq(reverse_seq)"
+            self.seq = {True: forward_seq, False: reverse_seq}
+        elif forward_seq:
+            self.seq = {True: forward_seq, False: complementary_seq(forward_seq)}
+        elif reverse_seq:
+            self.seq = {True: complementary_seq(reverse_seq), False: reverse_seq}
+        else:
+            self.seq = {True: None, False: None}
+
+        # True: tail, False: head
+        self.connections = {True: OrderedDict(), False: OrderedDict()}
+        assert tail_connections is None or isinstance(tail_connections, OrderedDict), \
+            "tail_connections must be an OrderedDict()"
+        assert head_connections is None or isinstance(head_connections, OrderedDict), \
+            "head_connections must be an OrderedDict()"
+        if tail_connections:
+            self.connections[True] = tail_connections
+        if head_connections:
+            self.connections[False] = head_connections
+        self.fastg_form_name = fastg_form_long_name
+        self.other_attr = {}
+
+    def __repr__(self):
+        return self.name
+
+    def fill_fastg_form_name(self, check_valid=False):
+        """
+        ensures vertex (contig) names are valid, i.e., avoids ints.
+        """
+        if check_valid:
+            if not str(self.name).isdigit():
+                raise ValueError("Invalid vertex name for fastg format!")
+            if not isinstance(self.len, int):
+                raise ValueError("Invalid vertex length for fastg format!")
+            if not (isinstance(self.cov, int) or isinstance(self.cov, float)):
+                raise ValueError("Invalid vertex coverage for fastg format!")
+        self.fastg_form_name = (
+            "EDGE_{}_length_{}_cov_{}"
+                .format(
+                str(self.name),
+                str(self.len),
+                str(round(self.cov, 5)),
+            )
+        )
+
+    def is_terminal(self):
+        return not (self.connections[True] and self.connections[False])
+
+    def is_self_loop(self):
+        return (self.name, False) in self.connections[True]
+
+
+class VertexInfo(dict):
+    """
+    Superclass of dict that requires values to be Vertices
+    """
+
+    def __init__(self, **kwargs):
+        for key, val in kwargs.items():
+            if not isinstance(val, Vertex):
+                raise ValueError("Value must be a Vertex type! Current: " + str(type(val)))
+        dict.__init__(kwargs)
+
+    def __setitem__(self, key, val):
+        if not isinstance(val, Vertex):
+            raise ValueError("Value must be a Vertex type! Current: " + str(type(val)))
+        val.name = key
+        dict.__setitem__(self, key, val)
 
 
 class SimpleAssembly(object):
@@ -89,7 +181,6 @@ class SimpleAssembly(object):
         "allow iteration of Assembly objects to return ordered vertex info."
         for vertex in sorted(self.vertex_info):
             yield self.vertex_info[vertex]
-
 
 
     def parse_gfa(self):

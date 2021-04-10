@@ -6,13 +6,12 @@ Maximum Likelihood Optimization
 
 from loguru import logger
 from itertools import product
-from ifragaria.utils import ProcessingGraphFailed, INF, reduce_list_with_gcd
+from ifragaria.utils import ProcessingGraphFailed, INF, reduce_list_with_gcd, weighted_mean_and_std
 from scipy import optimize
 from copy import deepcopy
-from sympy import Symbol, solve, lambdify
+import sympy
 import numpy as np
 import random
-
 
 
 
@@ -27,9 +26,10 @@ class EstMultiplicityPrecise(object):
     def __init__(
         self, 
         graph,
-        maximum_copy_num=8, 
+        maximum_copy_num=8,
         broken_graph_allowed=False, 
-        return_new_graphs=False, 
+        return_new_graphs=False,
+        do_least_square=True,
         label="target",
         debug=False):
 
@@ -41,12 +41,13 @@ class EstMultiplicityPrecise(object):
         self.maximum_copy_num = maximum_copy_num
         self.broken_graph_allowed = broken_graph_allowed
         self.return_new_graphs = return_new_graphs
+        self.do_least_square = do_least_square
         self.label = label
         self.debug = debug  # pass to optimizer
 
         # attrs to fill
         self.vertlist = sorted(self.vertex_info)
-        self.vertex_to_symbols = {i: Symbol("V{}".format(i), integer=True) for i in self.vertlist}
+        self.vertex_to_symbols = {i: sympy.Symbol("V{}".format(i), integer=True) for i in self.vertlist}
         self.symbols_to_vertex = {self.vertex_to_symbols[i]: i for i in self.vertlist}
         self.free_copy_variables = []
         self.extra_str_to_symbol = {}
@@ -79,6 +80,7 @@ class EstMultiplicityPrecise(object):
         self.build_formulae()
         self.add_self_loop_formulae()
         self.add_limit_formulae()
+
         self.sympy_solve_equations()
         if self.return_new_graphs:
             return self.optimize_model()
@@ -329,7 +331,7 @@ class EstMultiplicityPrecise(object):
                 if pseudo_self_loop_str not in self.extra_str_to_symbol:
 
                     # store symbol and psuedo vertex name in dict and revdict
-                    self.extra_str_to_symbol[pseudo_self_loop_str] = Symbol(pseudo_self_loop_str, integer=True)
+                    self.extra_str_to_symbol[pseudo_self_loop_str] = sympy.Symbol(pseudo_self_loop_str, integer=True)
                     self.extra_symbol_to_str[self.extra_str_to_symbol[pseudo_self_loop_str]] = pseudo_self_loop_str
 
                 # subtract psuedovertex from this vertex
@@ -365,7 +367,7 @@ class EstMultiplicityPrecise(object):
 
                     # create a new extra symbol
                     new_str = "E" + str(len(self.extra_str_to_symbol))
-                    self.extra_str_to_symbol[new_str] = Symbol(new_str, integer=True)
+                    self.extra_str_to_symbol[new_str] = sympy.Symbol(new_str, integer=True)
                     self.extra_symbol_to_str[self.extra_str_to_symbol[new_str]] = new_str
 
                     # write as a formula and add to formulae list
@@ -388,7 +390,7 @@ class EstMultiplicityPrecise(object):
         Uses sympy algebra to reduce the equation to solve.
         """
         # solve the equations or replace with empty dict
-        self.copy_solution = solve(self.formulae, self.all_v_symbols)
+        self.copy_solution = sympy.solve(self.formulae, self.all_v_symbols)
         self.copy_solution = self.copy_solution if self.copy_solution else {}
      
         # delete 0 containing set, even for self-loop vertex
@@ -422,54 +424,87 @@ class EstMultiplicityPrecise(object):
             if symbol_used not in self.copy_solution:
                 self.free_copy_variables.append(symbol_used)
                 self.copy_solution[symbol_used] = symbol_used
+
         logger.debug("copy equations: " + str(self.copy_solution))
         logger.debug("free variables: " + str(self.free_copy_variables))
 
-        # minimizing equation-based copy's deviations from coverage-based copy values.
-        least_square_expr = 0
-        for symbol_used in self.all_v_symbols:
-            
-            # get equation based copy and coverage based copy
-            this_vertex = self.symbols_to_vertex[symbol_used]
-            this_copy = self.graph.vertex_to_float_copy[this_vertex]
+        if self.do_least_square:
+            # minimizing equation-based copy's deviations from coverage-based copy values.
+            least_square_expr = 0
+            for symbol_used in self.all_v_symbols:
 
-            # get the sum of squared differences
-            least_square_expr += (self.copy_solution[symbol_used] - this_copy) ** 2  # * self.vertex_info[this_vertex]["len"]
+                # get equation based copy and coverage based copy
+                this_vertex = self.symbols_to_vertex[symbol_used]
+                this_copy = self.graph.vertex_to_float_copy[this_vertex]
 
-        # make this into a sympy equation
-        least_square_function = lambdify(args=self.free_copy_variables, expr=least_square_expr)
-        logger.debug("least squares equation: {}".format(least_square_expr))
+                # get the sum of squared differences
+                least_square_expr += (self.copy_solution[symbol_used] - this_copy) ** 2  # * self.vertex_info[this_vertex]["len"]
+
+            # make this into a sympy equation
+            core_function = sympy.lambdify(args=self.free_copy_variables, expr=least_square_expr)
+            logger.debug("least squares equation: {}".format(least_square_expr))
+
+        else:
+            # do normal likelihood
+            # approximately calculate normal distribution scale
+            sample_means = []
+            sample_weights = []
+            for symbol_used in self.all_v_symbols:
+                this_vertex = self.symbols_to_vertex[symbol_used]
+                sample_means.append(self.graph.vertex_to_float_copy[this_vertex])
+                sample_weights.append(self.vertex_info[this_vertex].len)
+            sample_mean_mean, sample_mean_var = weighted_mean_and_std(sample_means, sample_weights)
+            global_scale = sample_mean_var * np.average(sample_weights) ** 0.5
+
+            normal_neg_loglike_expr = 0
+            for symbol_used in self.all_v_symbols:
+                # get equation based copy and coverage based copy
+                this_vertex = self.symbols_to_vertex[symbol_used]
+                this_copy = self.graph.vertex_to_float_copy[this_vertex]
+
+                # get the sum of log likes
+                loc = self.copy_solution[symbol_used]
+                scale = global_scale / (self.copy_solution[symbol_used] * self.vertex_info[this_vertex].len) ** 0.5
+                normal_neg_loglike_expr += 1/(2 * scale) * (loc - this_copy) ** 2 + 1/2 * np.log(scale)
+                # + 0.5 * np.log(2 * np.pi)
+
+            # make this into a sympy equation
+            core_function = sympy.lambdify(args=self.free_copy_variables, expr=normal_neg_loglike_expr)
+            logger.debug("normal neg-log-likelihood equation: {}".format(normal_neg_loglike_expr))
 
         # for safe running
         if len(self.free_copy_variables) > 10:
             raise ProcessingGraphFailed("Free variable > 10 is not accepted yet!")
 
         # for compatibility between scipy and sympy
-        def least_square_function_v(x):
-            return least_square_function(*tuple(x))
+        def core_function_v(x):
+            return core_function(*tuple(x))
 
         # store these for now
-        self.least_square_function = least_square_function
-        self.least_square_function_v = least_square_function_v
-
+        self.core_function = core_function
+        self.core_function_v = core_function_v
 
 
     def optimize_model(self):
         """
         Uses scipy to optimize parameters of the model to fit the data.
+
+        model with discrete parameters are difficult to fit
         """
         # If the number of free variables is small then use brute force
         max_cn = self.maximum_copy_num
         if self.maximum_copy_num ** len(self.free_copy_variables) < 5E6:
             # sometimes, SLSQP ignores bounds and constraints
             copy_results = self.minimize_brute_force(
-                func=self.least_square_function_v, 
+                func=self.core_function_v,
                 range_list=[range(1, max_cn + 1)] * len(self.free_copy_variables),
                 constraint_list=({'type': 'ineq', 'fun': self.__constraint_min_function_for_customized_brute},
                                  {'type': 'eq', 'fun': self.__constraint_int_function},
                                  {'type': 'ineq', 'fun': self.__constraint_max_function}),
             )
-        # large number of variables so we will use SLSQP...
+        elif 3 ** len(self.free_copy_variables) < 1E7:
+
+        # large number of variables so we will use SLSQP, which sometimes have abnormal behaviours...
         else:
             constraints = ({'type': 'ineq', 'fun': self.__constraint_min_function},
                            {'type': 'eq', 'fun': self.__constraint_int_function},
@@ -503,7 +538,7 @@ class EstMultiplicityPrecise(object):
                 # try to fit the model but allow it to fail
                 try:
                     copy_result = optimize.minimize(
-                        fun=self.least_square_function_v, 
+                        fun=self.core_function_v,
                         x0=initials, 
                         jac=False,      # we could perhaps try to solve this?
                         method='SLSQP', 

@@ -10,7 +10,8 @@ from ifragaria.GraphOnlyPathGenerator import GraphOnlyPathGenerator
 # from ifragaria.GetAllIsomers import GetAllIsomers
 from ifragaria.EstMultiplicityFromCov import EstMultiplicityFromCov
 from ifragaria.EstMultiplicityPrecise import EstMultiplicityPrecise
-from ifragaria.utils import Sequence, SequenceList, ProcessingGraphFailed, INF, get_orf_lengths #, smart_trans_for_sort
+from ifragaria.utils import \
+    Sequence, SequenceList, ProcessingGraphFailed, INF, get_orf_lengths, generate_clusters_from_connections #, smart_trans_for_sort
 from copy import deepcopy
 from collections import OrderedDict
 import os
@@ -43,6 +44,7 @@ class Assembly(SimpleAssembly):
         self.copy_to_vertex = {}
         self.__inverted_repeat_vertex = {}
         self.merging_history = {}
+        self.ave_depth = None
 
         # optional
         self.palindromic_repeats = None
@@ -146,48 +148,19 @@ class Assembly(SimpleAssembly):
                 self.vertex_info[vertex_name].other_attr["orf"][direction] = {"lengths": this_orf_lens,
                                                                               "sum_len": sum(this_orf_lens)}
 
-
     def update_vertex_clusters(self):
         """
         Find connected vertices and store clusters in .vertex_clusters        
         Called during Assembly.__init__(), and can be called again at other times
         such as after removing a vertex.
         """
-
-        # reset to empty list. Each cluster is a connected set of vertices.
-        self.vertex_clusters = []
-
-        # get sorted list of vertices
-        vertices = sorted(self.vertex_info)
-
-        # iterate over vertices 
-        for this_vertex in vertices:
-
-            # build a set of connections (edges) from this vertex to others
-            connecting_those = set()
-            for connected_set in self.vertex_info[this_vertex].connections.values():
-                for next_v, next_d in connected_set:
-                    for go_to_set, cluster in enumerate(self.vertex_clusters):
-                        if next_v in cluster:
-                            connecting_those.add(go_to_set)
-
-            # if no edges then store just this one
-            if not connecting_those:
-                self.vertex_clusters.append({this_vertex})
-
-            # if 1 then store just just this one.
-            elif len(connecting_those) == 1:
-                self.vertex_clusters[connecting_those.pop()].add(this_vertex)
-
-            # if many then ...
-            else:
-                sorted_those = sorted(connecting_those, reverse=True)
-                self.vertex_clusters[sorted_those[-1]].add(this_vertex)
-                for go_to_set in sorted_those[:-1]:
-                    for that_vertex in self.vertex_clusters[go_to_set]:
-                        self.vertex_clusters[sorted_those[-1]].add(that_vertex)
-                    del self.vertex_clusters[go_to_set]
-
+        self.vertex_clusters = \
+            generate_clusters_from_connections(self.vertex_info,
+                                               {this_v:
+                                                    (next_v
+                                                     for connected_set in self.vertex_info[this_v].connections.values()
+                                                     for next_v in connected_set)
+                                                for this_v in self.vertex_info})
 
     def remove_vertex(self, vertices, update_cluster=True):
         """
@@ -516,7 +489,7 @@ class Assembly(SimpleAssembly):
             corrected_path = [(this_v, True) if this_v in self.palindromic_repeats else (this_v, this_e)
                               for this_v, this_e in input_path]
         else:
-            corrected_path = deepcopy(input_path)
+            corrected_path = list(input_path)
         return corrected_path
 
 
@@ -542,6 +515,7 @@ class Assembly(SimpleAssembly):
 
     def estimate_multiplicity_precisely(
             self,
+            ave_depth,
             maximum_copy_num=8,
             broken_graph_allowed=False,
             return_new_graphs=False,
@@ -558,6 +532,7 @@ class Assembly(SimpleAssembly):
         """
         res = EstMultiplicityPrecise(
             graph=self,
+            # ave_depth=ave_depth,
             maximum_copy_num=maximum_copy_num,
             broken_graph_allowed=broken_graph_allowed,
             return_new_graphs=return_new_graphs,
@@ -940,33 +915,61 @@ class Assembly(SimpleAssembly):
         return deepcopy(corrected_path)
 
 
-    def get_standardized_path(self, raw_path, dc=True):  #, stn=False):
+    # separate get_standardized_path and get_standardized_circular_path
+    # because get_standardized_path will may be called by many thousands even millions of times
+    def get_standardized_path(self, raw_path):
         """
         standardized for comparing and identify unique path
         :param raw_path: path=[(name1:str, direction1:bool), (name2:str, direction2:bool), ..]
-        :param dc: detect if is circular
-        # :param stn: using smart_trans_for_sort() for sorting paths
-        :return: standardized path
+        :return: standardized_path
+        """
+        forward_path = list(self.correct_path_with_palindromic_repeats(raw_path))
+        reverse_path = self.reverse_path(forward_path)
+        return tuple(sorted([forward_path, reverse_path])[0])
+
+
+    def get_standardized_circular_path(self, raw_path):
+        """
+        standardized for comparing and identify unique path
+        :param raw_path: path=[(name1:str, direction1:bool), (name2:str, direction2:bool), ..]
+        :return: standardized_path
         """
         forward_path = list(self.correct_path_with_palindromic_repeats(raw_path))
         reverse_path = self.reverse_path(forward_path)
 
-        if dc and self.is_circular_path(forward_path):
+        if self.is_circular_path(forward_path):
             # if path is circular, try all start points
             iso_paths = [forward_path, reverse_path]
             for change_start in range(1, len(forward_path)):
                 iso_paths.append(forward_path[change_start:] + forward_path[:change_start])
                 iso_paths.append(reverse_path[change_start:] + reverse_path[:change_start])
-            # if stn:
-            #     standard_path = tuple(sorted(iso_paths, key=lambda x: smart_trans_for_sort(x))[0])
-            # else:
-            standard_path = tuple(sorted(iso_paths)[0])
+            return tuple(sorted(iso_paths)[0])
         else:
-            # if stn:
-            #     standard_path = tuple(sorted([forward_path, reverse_path], key=lambda x: smart_trans_for_sort(x))[0])
-            # else:
-            standard_path = tuple(sorted([forward_path, reverse_path])[0])
-        return standard_path
+            return tuple(sorted([forward_path, reverse_path])[0])
+
+
+    def get_standardized_path_with_strand(self, raw_path, detect_circular):
+        """
+        standardized for comparing and identify unique path
+        :param raw_path: path=[(name1:str, direction1:bool), (name2:str, direction2:bool), ..]
+        :param detect_circular: treat circular path as a special case
+        :return: standardized_path, strand_of_the_new_path
+        """
+        forward_path = list(self.correct_path_with_palindromic_repeats(raw_path))
+        reverse_path = self.reverse_path(forward_path)
+
+        if detect_circular and self.is_circular_path(forward_path):
+            # if path is circular, try all start points
+            iso_paths = [forward_path, reverse_path]
+            for change_start in range(1, len(forward_path)):
+                iso_paths.append(forward_path[change_start:] + forward_path[:change_start])
+                iso_paths.append(reverse_path[change_start:] + reverse_path[:change_start])
+            standard_id = sorted(range(len(iso_paths)), key=lambda x: iso_paths[x])[0]
+            return tuple(iso_paths[standard_id]), standard_id % 2 == 0
+        else:
+            standard_id = sorted([0, 1], key=lambda x: [forward_path, reverse_path][x])[0]
+            return tuple([forward_path, reverse_path][standard_id]), standard_id == 0
+
 
 
     def get_standardized_isomer(self, isomer_raw_paths):
@@ -1044,6 +1047,13 @@ class Assembly(SimpleAssembly):
         return maximum_num_cat - left_trim - right_trim
 
 
+    def get_branching_ends(self):
+        branching_ends = set()
+        for v_name in self.vertex_info:
+            for v_end in (True, False):
+                if len(self.vertex_info[v_name].connections[v_end]) > 2:
+                    branching_ends.add((v_name, v_end))
+        return branching_ends
 
 
 

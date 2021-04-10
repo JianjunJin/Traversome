@@ -7,12 +7,14 @@ Top-level class for running the CLI
 import os
 import sys
 from loguru import logger
-
+from itertools import combinations
+from collections import OrderedDict
 from ifragaria.Assembly import Assembly
 from ifragaria.GraphAlignRecords import GraphAlignRecords
-from ifragaria.utils import ProcessingGraphFailed, get_id_range_in_increasing_values
+from ifragaria.utils import ProcessingGraphFailed, get_id_range_in_increasing_values, generate_clusters_from_connections
 from ifragaria.ModelFitMaxLike import ModelFitMaxLike
 from ifragaria.ModelFitBayesian import ModelFitBayesian
+from ifragaria.CleanGraph import CleanGraph
 
 
 class iFragaria(object):
@@ -22,11 +24,11 @@ class iFragaria(object):
         the get_align_len_dist function call.
     """
 
-    def __init__(self, gfa, gaf, outdir,
+    def __init__(self, graph, alignment, outdir,
                  do_bayesian=False, out_prob_threshold=0.001, keep_temp=False, loglevel="DEBUG"):
         # store input files and params
-        self.gaf = gaf
-        self.gfa = gfa
+        self.graph_gfa = graph
+        self.alignment_gaf = alignment
         self.outdir = outdir
         self.do_bayesian = do_bayesian,
         self.out_prob_threshold = out_prob_threshold
@@ -38,13 +40,17 @@ class iFragaria(object):
         self.setup_logger(loglevel.upper())
 
         # values to be generated
+        self.graph = None
+        self.alignment = None
         self.align_len_at_path_sorted = None
         self.max_alignment_length = None
         self.isomer_paths_with_labels = []  # each element is a tuple(path, path_label)
         self.isomer_sizes = None
         self.num_of_isomers = None
         self.isomer_subpath_counters = []  # each element is a dict(sub_path->sub_path_counts)
-        self.all_sub_paths = {}
+        self.read_paths = OrderedDict()
+        self.max_read_path_size = None
+        self.all_sub_paths = OrderedDict()
 
         #
         self.max_like_fit = None
@@ -55,19 +61,20 @@ class iFragaria(object):
         """
         Parse the assembly graph files ...
         """
-        self.graph = Assembly(self.gfa)
+        self.graph = Assembly(self.graph_gfa)
 
         self.alignment = GraphAlignRecords(
-            self.gaf, 
+            self.alignment_gaf,
             min_aligned_path_len=100, 
             min_identity=0.7,
             trim_overlap_with_graph=True,
             assembly_graph=self.graph,
         )
+        self.generate_read_paths()
 
         self.get_align_len_dist()
         logger.debug("Generating candidate isomer paths ...")
-        self.get_candidate_isopaths()
+        self.generate_candidate_isopaths()
         logger.debug("Fitting candidate isomer paths model...")
         if self.do_bayesian:
             pass
@@ -77,6 +84,18 @@ class iFragaria(object):
 
         logger.exception("end of devel.")
 
+    def generate_read_paths(self):
+        self.max_read_path_size = 0
+        for go_record, record in enumerate(self.alignment.records):
+            this_read_path = self.graph.get_standardized_path(record.path, detect_circular=False)
+            if this_read_path in self.read_paths:
+                self.read_paths[this_read_path] = []
+            self.read_paths[this_read_path].append(go_record)
+            self.max_read_path_size = max(self.max_read_path_size, len(this_read_path))
+
+    def clean_graph(self, min_effective_count=10, ignore_ratio=0.001):
+        clean_graph_obj = CleanGraph(self)
+        clean_graph_obj.run(min_effective_count=min_effective_count, ignore_ratio=ignore_ratio)
 
     def get_align_len_dist(self):
         """
@@ -103,8 +122,7 @@ class iFragaria(object):
             self.max_alignment_length)
         )
 
-
-    def get_candidate_isopaths(self):
+    def generate_candidate_isopaths(self):
         """
         generate candidate isomer paths from the graph
         """
@@ -125,12 +143,11 @@ class iFragaria(object):
         # generate subpaths: the binomial sets
         if self.num_of_isomers > 1:
             logger.info("Generating sub-paths ..")
-            self.get_sub_paths()
+            self.generate_isomer_sub_paths()
         else:
             logger.warning("Only one genomic configuration found for the input assembly graph.")
 
-
-    def get_sub_paths(self):
+    def generate_isomer_sub_paths(self):
         """
         generate all sub paths and their occurrences for each candidate isomer
         """
@@ -154,36 +171,38 @@ class iFragaria(object):
                 len_this_sub_p = len(this_longest_sub_path)
                 for skip_tail in range(len_this_sub_p - 1):
                     this_sub_path = \
-                        self.graph.get_standardized_path(this_longest_sub_path[:len_this_sub_p - skip_tail], dc=False)
+                        self.graph.get_standardized_path(this_longest_sub_path[:len_this_sub_p - skip_tail], detect_circular=False)
                     if this_sub_path not in these_sub_paths:
                         these_sub_paths[this_sub_path] = 0
                     these_sub_paths[this_sub_path] += 1
             self.isomer_subpath_counters.append(these_sub_paths)
 
         # transform self.isomer_subpath_counters to self.all_sub_paths
-        self.all_sub_paths = {}
+        self.all_sub_paths = OrderedDict()
         for go_isomer, sub_paths_group in enumerate(self.isomer_subpath_counters):
             for this_sub_path, this_sub_freq in sub_paths_group.items():
                 if this_sub_path not in self.all_sub_paths:
-                    self.all_sub_paths[this_sub_path] = {"from_paths": {}, "mapped_records": []}
-                self.all_sub_paths[this_sub_path]["from_paths"][go_isomer] = this_sub_freq
+                    self.all_sub_paths[this_sub_path] = {"from_isomers": {}, "mapped_records": []}
+                self.all_sub_paths[this_sub_path]["from_isomers"][go_isomer] = this_sub_freq
 
         # to simplify downstream calculation, remove shared sub-paths shared by all isomers
         deleted = []
         for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
-            if len(this_sub_path_info["from_paths"]) == self.num_of_isomers and \
-                    len(set(this_sub_path_info["from_paths"].values())) == 1:
+            if len(this_sub_path_info["from_isomers"]) == self.num_of_isomers and \
+                    len(set(this_sub_path_info["from_isomers"].values())) == 1:
                 for sub_paths_group in self.isomer_subpath_counters:
                     deleted.append(this_sub_path)
                     del sub_paths_group[this_sub_path]
                 del self.all_sub_paths[this_sub_path]
 
         # match graph alignments to all_sub_paths
-        for go_record, record in enumerate(self.alignment.records):
-            this_sub_path = self.graph.get_standardized_path(record.path, dc=False)
-            if this_sub_path in self.all_sub_paths:
-                self.all_sub_paths[this_sub_path]["mapped_records"].append(go_record)
-
+        for read_path, record_ids in self.read_paths.items():
+            if read_path in self.all_sub_paths:
+                self.all_sub_paths[read_path]["mapped_records"] = record_ids
+        # for go_record, record in enumerate(self.alignment.records):
+        #     this_sub_path = self.graph.get_standardized_path(record.path, dc=False)
+        #     if this_sub_path in self.all_sub_paths:
+        #         self.all_sub_paths[this_sub_path]["mapped_records"].append(go_record)
 
     def get_likelihood_formula(self, isomer_percents, log_func):
         """
@@ -224,7 +243,7 @@ class iFragaria(object):
             if num_possible_X < 1:
                 continue
             total_starting_points = 0
-            for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
+            for go_isomer, sub_path_freq in this_sub_path_info["from_isomers"].items():
                 total_starting_points += isomer_percents[go_isomer] * sub_path_freq * num_possible_X
             total_length = 0
             for go_isomer, go_length in enumerate(self.isomer_sizes):
@@ -238,16 +257,13 @@ class iFragaria(object):
                 logger.debug("Summarized subpaths: %i/%i" % (go_sp, total_sp_num))
         return loglike_expression
 
-
     def fit_model_using_maximum_likelihood(self):
         self.max_like_fit = ModelFitMaxLike(self)
         return self.max_like_fit.run()
 
-
     def fit_model_using_bayesian_mcmc(self):
         self.bayesian_fit = ModelFitBayesian(self)
         return self.bayesian_fit.run_mcmc()
-
 
     def output_seqs(self, probs, threshold=0.001):
         logger.info("Output seqs: ")
@@ -258,7 +274,6 @@ class iFragaria(object):
                     output_handler.write(">" + this_seq.label + " prop=%.4f" % this_prob + "\n" +
                                          this_seq.seq + "\n")
                     logger.info(">" + this_seq.label + " prop=%.4f" % this_prob)
-
 
     def setup_logger(self, loglevel="INFO"):
         """
@@ -291,3 +306,4 @@ class iFragaria(object):
         if os.path.exists(self.logfile):
             logger.debug('Clearing previous log file.')
             open(self.logfile, 'w').close()
+

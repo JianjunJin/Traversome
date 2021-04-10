@@ -39,6 +39,7 @@ class EstMultiplicityFromCov(object):
         self.copyv = graph.copy_to_vertex
         self.vfcopy = graph.vertex_to_float_copy
         self.overlap = (graph.overlap() if graph.overlap() else 0)
+        self.graph = graph
 
         # select either all or a subset of vertices and sort.
         if not verts:
@@ -47,7 +48,7 @@ class EstMultiplicityFromCov(object):
             self.verts = sorted(self.verts)
 
         # control options
-        self.avgcov = avgcov
+        self.user_cov = avgcov
         self.mode = mode
         self.reinit = reinit
 
@@ -67,7 +68,7 @@ class EstMultiplicityFromCov(object):
         # run functions        
         if self.reinit:
             self.initialize()
-        if not self.avgcov:
+        if not self.user_cov:
             self.get_avg_cov()
         else:
             self.given_avg_cov()
@@ -128,7 +129,7 @@ class EstMultiplicityFromCov(object):
 
                 # get values at this vertex
                 this_len = (
-                    (self.vinfo[vertex_name].len - self.overlap + 1) * \
+                    (self.vinfo[vertex_name].len - self.overlap + 1) *
                     self.vcopy.get(vertex_name, 1)
                 )
                 this_cov = self.vinfo[vertex_name].cov / self.vcopy.get(vertex_name, 1)
@@ -177,7 +178,7 @@ class EstMultiplicityFromCov(object):
                 round(new_val, 2),
             )
         )
-        self.copydepth = new_val
+        self.copydepth = self.graph.ave_depth = new_val
 
 
 
@@ -196,7 +197,7 @@ class EstMultiplicityFromCov(object):
                     del self.copyv[old_copy]
 
             # ...
-            this_float_copy = self.verts[vertex_name].cov / self.avgcov
+            this_float_copy = self.verts[vertex_name].cov / self.user_cov
             this_copy = min(max(1, int(round(this_float_copy, 0))), self.max_majority_copy)
 
             self.vcopy[vertex_name] = this_float_copy
@@ -205,5 +206,5 @@ class EstMultiplicityFromCov(object):
                 self.copyv[this_copy] = set()
             self.copyv[this_copy].add(vertex_name)
 
-        self.copydepth = self.avgcov
+        self.copydepth = self.graph.ave_depth = self.user_cov
 

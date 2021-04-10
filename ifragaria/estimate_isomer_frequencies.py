@@ -44,12 +44,12 @@ def get_options(description):
     parser.add_option("--keep-temp", dest="keep_temp", default=False, action="store_true",
                       help="Keep temporary files for debug. Default: %default")
     options, argv = parser.parse_args()
-    if not (options.graph_file and options.gaf_file and options.output_dir):
+    if not (options.graph_gfa and options.gaf_file and options.output_dir):
         parser.print_help()
         sys.exit()
     else:
-        if not os.path.isfile(options.graph_file):
-            raise IOError(options.graph_file + " not found/valid!")
+        if not os.path.isfile(options.graph_gfa):
+            raise IOError(options.graph_gfa + " not found/valid!")
         if not os.path.isfile(options.gaf_file):
             raise IOError(options.gaf_file + " not found/valid!")
         if not os.path.exists(options.output_dir):
@@ -170,7 +170,7 @@ def iso_mcmc(isomer_num, all_sub_paths, assembly_graph, align_len_at_path_sorted
             if num_fitting_sites < 1:
                 continue
             total_starting_points = 0
-            for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
+            for go_isomer, sub_path_freq in this_sub_path_info["from_isomers"].items():
                 total_starting_points += isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
             total_length = 0
             for go_isomer, go_length in enumerate(isomer_lengths):
@@ -220,7 +220,7 @@ def get_neg_likelihood_of_iso_freq(
             continue
 
         total_starting_points = 0
-        for go_isomer, sub_path_freq in this_sub_path_info["from_paths"].items():
+        for go_isomer, sub_path_freq in this_sub_path_info["from_isomers"].items():
             total_starting_points += symbol_dict_of_isomer_percents[go_isomer] * sub_path_freq * num_fitting_sites
         total_length = 0
         for go_isomer, go_length in enumerate(isomer_lengths):
@@ -279,7 +279,7 @@ def main():
     options, log_handler = get_options(description="\niFragaria\n")
     try:
         log_handler.info("Parsing graph ..")
-        assembly_graph = Assembly(options.graph_file)
+        assembly_graph = Assembly(options.graph_gfa)
 
         log_handler.info("Parsing graph alignment ..")
         graph_alignment = GraphAlignRecords(
@@ -317,14 +317,14 @@ def main():
             for go_isomer, sub_paths_group in enumerate(sub_paths_counter_list):
                 for this_sub_path, this_sub_freq in sub_paths_group.items():
                     if this_sub_path not in all_sub_paths:
-                        all_sub_paths[this_sub_path] = {"from_paths": {}, "mapped_records": []}
-                    all_sub_paths[this_sub_path]["from_paths"][go_isomer] = this_sub_freq
+                        all_sub_paths[this_sub_path] = {"from_isomers": {}, "mapped_records": []}
+                    all_sub_paths[this_sub_path]["from_isomers"][go_isomer] = this_sub_freq
 
             # to simplify downstream calculation, remove shared sub-paths shared by all isomers
             deleted = []
             for this_sub_path, this_sub_path_info in list(all_sub_paths.items()):
-                if len(this_sub_path_info["from_paths"]) == num_of_isomers and \
-                        len(set(this_sub_path_info["from_paths"].values())) == 1:
+                if len(this_sub_path_info["from_isomers"]) == num_of_isomers and \
+                        len(set(this_sub_path_info["from_isomers"].values())) == 1:
                     for sub_paths_group in sub_paths_counter_list:
                         deleted.append(this_sub_path)
                         del sub_paths_group[this_sub_path]
