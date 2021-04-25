@@ -5,25 +5,31 @@ Assembly class object and associated class objects
 """
 
 from loguru import logger
-from ifragaria.SimpleAssembly import SimpleAssembly
+from ifragaria.SimpleAssembly import SimpleAssembly, VertexMergingHistory, VertexEditHistory
 from ifragaria.GraphOnlyPathGenerator import GraphOnlyPathGenerator
 # from ifragaria.GetAllIsomers import GetAllIsomers
 from ifragaria.EstMultiplicityFromCov import EstMultiplicityFromCov
 from ifragaria.EstMultiplicityPrecise import EstMultiplicityPrecise
 from ifragaria.utils import \
-    Sequence, SequenceList, ProcessingGraphFailed, INF, get_orf_lengths, generate_clusters_from_connections #, smart_trans_for_sort
+    Sequence, SequenceList, ProcessingGraphFailed, INF, get_orf_lengths, generate_clusters_from_connections
+    #, smart_trans_for_sort
 from copy import deepcopy
 from collections import OrderedDict
 import os
 import sys
 
 
-
 class Assembly(SimpleAssembly):
     """
     Main class object for storing and 
     """
-    def __init__(self, graph_file=None, min_cov=0., max_cov=INF, overlap=None, record_reversed_paths=True):
+    def __init__(
+            self,
+            graph_file=None,
+            min_cov=0.,
+            max_cov=INF,
+            overlap=None,
+            record_reversed_paths=True):
         """
         :param graph_file:
         :param min_cov:
@@ -43,7 +49,7 @@ class Assembly(SimpleAssembly):
         self.vertex_to_float_copy = {}
         self.copy_to_vertex = {}
         self.__inverted_repeat_vertex = {}
-        self.merging_history = {}
+        # self.__vertex_max_copy_id = {}
         self.ave_depth = None
 
         # optional
@@ -55,36 +61,57 @@ class Assembly(SimpleAssembly):
         # summarize init
         logger.debug("init graph: self.vertex_clusters={}".format(self.vertex_clusters))
 
+    def new_graph_with_vertices_renamed(
+            self,
+            name_translate_dict,
+            those_vertices=None,
+            fill_fastg_form_name=False):
+            # edit_history=None):
+        """
+        :param name_translate_dict:
+        :param those_vertices: transfer all vertices by default
+        :param fill_fastg_form_name:
+        :return:
+        """
+        new_graph = Assembly(overlap=self.__overlap)
+        if not those_vertices:
+            those_vertices = sorted(self.vertex_info)
+        for old_name in sorted(those_vertices):
+            this_v_info = deepcopy(self.vertex_info[old_name])
+            if old_name not in name_translate_dict:
+                new_graph.vertex_info[old_name] = this_v_info
+            else:
+                new_name = name_translate_dict[old_name]
+                this_v_info.label = new_name
+                this_v_info.connections = {True: OrderedDict(), False: OrderedDict()}
+                for this_end in self.vertex_info[old_name].connections:
+                    for next_name, next_end in self.vertex_info[old_name].connections[this_end]:
+                        this_v_info.connections[this_end][(name_translate_dict.get(next_name, next_name), next_end)] = \
+                            self.vertex_info[old_name].connections[this_end][(next_name, next_end)]
+                if fill_fastg_form_name:
+                    this_v_info.fill_fastg_form_name()
+                # if edit_history and new_name in edit_history:
+                #     this_v_info.merging_history = VertexMergingHistory([(edit_history[new_name], True)])
+                new_graph.vertex_info[new_name] = this_v_info
+        return new_graph
 
-    def new_graph_with_vertex_reseeded(self, start_from=1):
+    def new_graph_with_vertices_reseeded(self, start_from=1):
         """
         A function called from within .write_to_fastg()
         """
-        those_vertices = sorted(self.vertex_info)
-        new_graph = Assembly(overlap=self.__overlap)
-        name_trans = {those_vertices[go - start_from]: str(go)
-                      for go in range(start_from, start_from + len(those_vertices))}
-        for old_name in those_vertices:
-            new_name = name_trans[old_name]
-            this_v_info = deepcopy(self.vertex_info[old_name])
-            this_v_info.label = new_name
-            this_v_info.connections = {True: OrderedDict(), False: OrderedDict()}
-            for this_end in self.vertex_info[old_name].connections:
-                for next_name, next_end in self.vertex_info[old_name].connections[this_end]:
-                    this_v_info.connections[this_end][(name_trans[next_name], next_end)] = None
-            this_v_info.fill_fastg_form_name()
-            new_graph.vertex_info[new_name] = this_v_info
+        name_trans = {self.vertex_info[go - start_from]: str(go)
+                      for go in range(start_from, start_from + len(self.vertex_info))}
+        new_graph = self.new_graph_with_vertices_renamed(name_trans, fill_fastg_form_name=True)
         return new_graph, name_trans
 
-
     def write_to_fastg(
-        self, 
-        out_file, 
-        check_postfix=True, 
-        rename_if_needed=False, 
-        out_renaming_table=None, 
-        echo_rename_warning=False, 
-        log_handler=None):
+            self,
+            out_file,
+            check_postfix=True,
+            rename_if_needed=False,
+            out_renaming_table=None,
+            echo_rename_warning=False,
+            log_handler=None):
         """
         Write the graph to fastg format ...
         """
@@ -117,7 +144,7 @@ class Assembly(SimpleAssembly):
                         log_handler.info("Graph converted to new fastg with original Vertex names lost.")
                     else:
                         sys.stdout.write("Graph converted to new fastg with original Vertex names lost.\n")
-                new_graph, name_trans = self.new_graph_with_vertex_reseeded()
+                new_graph, name_trans = self.new_graph_with_vertices_reseeded()
                 new_graph.write_to_fastg(out_file, check_postfix=False)
                 if out_renaming_table:
                     with open(out_renaming_table + ".Temp", "w") as out_table:
@@ -134,7 +161,6 @@ class Assembly(SimpleAssembly):
             else:
                 raise ProcessingGraphFailed(
                     "Merged graph cannot be written as fastg format file, please try gfa format!")
-
 
     def update_orf_total_len(self, limited_vertices=None):
         if not limited_vertices:
@@ -187,18 +213,13 @@ class Assembly(SimpleAssembly):
                     del self.copy_to_vertex[this_copy]
                 del self.vertex_to_copy[vertex_name]
                 del self.vertex_to_float_copy[vertex_name]
-            
-            # ...
-            if vertex_name in self.merging_history:
-                del self.merging_history[vertex_name]
-        
+
         # recalculate clusters (connected vertices) now that a vertices were removed
         if update_cluster:
             self.update_vertex_clusters()
         
         # reset irv to empty dict
         self.__inverted_repeat_vertex = {}
-
 
     def detect_parallel_vertices(self, limited_vertices=None):
         """
@@ -239,6 +260,111 @@ class Assembly(SimpleAssembly):
                             all_both_ends[this_ends].add((each_vertex, direction_remained))
         return [vertices for vertices in all_both_ends.values() if len(vertices) > 1]
 
+    def duplicate(self, vertices, num_dup=2, depth_factors=None):
+        """
+        :param vertices:
+        :param num_dup:
+        :param depth_factors:
+            The ratio of new depth over previous depth.
+            By default the depth will be equally assigned to new vertices.
+            The list length of input values must equals num_dup.
+            For example, when num=2, depth_factors will be [0.5, 0.5] by default.
+            User input values will NOT be normalized.
+        :return: duplicated_vertices_groups = [{label_1__copy2: label_1, label_1: label_1__copy2},
+                                               {label_1__copy4: label_1, label_1: label_1__copy4}]
+        """
+        assert num_dup >= 1
+        if not depth_factors:
+            depth_factors = [1. / num_dup]
+        assert len(depth_factors) == num_dup, "The list length of depth_factors must equals num_dup!"
+        # deepcopy *
+        duplicated_vertices_groups = []
+        go_copy_postfix_offset = {__v_name: 0 for __v_name in vertices}
+        for dup_id in range(1, num_dup):
+            # create a new_sub_graph, rename all vertices inside this new_sub_graph,
+            # transfer vertices in the new_sub_graph back to the original graph.
+            # This design makes duplication/renaming easier.
+            # 1. create a new_sub_graph and assign the depths to vertices
+            new_sub_graph = Assembly(overlap=self.__overlap)
+            for v_name in vertices:
+                assert v_name in self, v_name + " not found in the graph!"
+                new_sub_graph.vertex_info[v_name] = deepcopy(self.vertex_info[v_name])
+                new_sub_graph.vertex_info[v_name].cov *= depth_factors[dup_id]
+            # 2. rename all vertices and connections
+            name_translator = {}
+            reverse_translator = {}
+            for v_name in vertices:
+                proposed_name = "{}__copy{}".format(v_name, 1 + dup_id + go_copy_postfix_offset[v_name])
+                while proposed_name in self.vertex_info:
+                    go_copy_postfix_offset[v_name] += 1
+                    proposed_name = "{}__copy{}".format(v_name, 1 + dup_id + go_copy_postfix_offset[v_name])
+                name_translator[v_name] = proposed_name
+                reverse_translator[proposed_name] = v_name
+            new_sub_graph = new_sub_graph.new_graph_with_vertices_renamed(name_translate_dict=name_translator)
+            # 3. transfer the renamed graph component back to the original graph
+            for new_name in new_sub_graph.vertex_info:
+                self.vertex_info[new_name] = new_sub_graph.vertex_info[new_name]
+                # create connections between the original graph and the renamed sub graph
+                for this_end in (True, False):
+                    for next_n, next_e in self.vertex_info[new_name].connections[this_end]:
+                        if next_n not in new_sub_graph.vertex_info:
+                            self.vertex_info[next_n].connections[next_e][(new_name, this_end)] = \
+                                self.vertex_info[next_n].connections[next_e][(reverse_translator[new_name], this_end)]
+            del new_sub_graph
+            name_translator.update(reverse_translator)
+            duplicated_vertices_groups.append(name_translator)
+        # modify the depth of the original copy
+        raw_translator = {}
+        for v_name in vertices:
+            self.vertex_info[v_name].cov *= depth_factors[0]
+            raw_translator[v_name] = v_name
+        duplicated_vertices_groups.insert(0, raw_translator)
+        return duplicated_vertices_groups
+
+    def is_no_leaking_path(self, path, terminal_pair):
+        path_set = set([v_n for v_n, v_e in path])
+        left_v_e = terminal_pair[0]
+        right_v_e = terminal_pair[1][0], not terminal_pair[1][1]
+        for v_name, v_end in path[:-1]:
+            for next_name, next_end in self.vertex_info[v_name].connections[v_end]:
+                if (next_name, next_end) != right_v_e and next_name not in path_set:
+                    return False
+        for v_name, v_end in path[1:]:
+            for next_name, next_end in self.vertex_info[v_name].connections[not v_end]:
+                if (next_name, next_end) != left_v_e and next_name not in path_set:
+                    return False
+        return True
+
+    def find_the_path_containing_pair(self, left_v_e, terminating_end_set, starting_end_set):
+        start_v, start_e = left_v_e
+        in_pipe_leak = False
+        circle_in_between = []
+        checked_vertex_ends = set()
+        checked_vertex_ends.add((start_v, start_e))
+        searching_con = [(start_v, not start_e)]
+        while searching_con:
+            in_search_v, in_search_e = searching_con.pop(0)
+            if (in_search_v, in_search_e) in terminating_end_set:
+                # start from the same (next_t_v, next_t_e), merging to two different ends of connection_set_f
+                if circle_in_between:
+                    in_pipe_leak = True
+                    break
+                else:
+                    circle_in_between.append(((start_v, start_e), (in_search_v, in_search_e)))
+            elif (in_search_v, in_search_e) in starting_end_set:
+                in_pipe_leak = True
+                break
+            else:
+                for n_in_search_v, n_in_search_e in self.vertex_info[in_search_v].connections[in_search_e]:
+                    if (n_in_search_v, n_in_search_e) in checked_vertex_ends:
+                        pass
+                    else:
+                        checked_vertex_ends.add((n_in_search_v, n_in_search_e))
+                        searching_con.append((n_in_search_v, not n_in_search_e))
+        if not in_pipe_leak:
+            return circle_in_between
+        else:
+            return []
 
     def is_sequential_repeat(self, search_vertex_name, return_pair_in_the_trunk_path=True):
 
@@ -248,44 +374,14 @@ class Assembly(SimpleAssembly):
         connection_set_f = self.vertex_info[search_vertex_name].connections[False]
         all_pairs_of_inner_circles = []
 
-        def path_without_leakage(start_v, start_e, terminating_end_set):
-            in_pipe_leak = False
-            circle_in_between = []
-            in_vertex_ends = set()
-            in_vertex_ends.add((start_v, start_e))
-            in_searching_con = [(start_v, not start_e)]
-            while in_searching_con:
-                in_search_v, in_search_e = in_searching_con.pop(0)
-                if (in_search_v, in_search_e) in terminating_end_set:
-                    # start from the same (next_t_v, next_t_e), merging to two different ends of connection_set_f
-                    if circle_in_between:
-                        in_pipe_leak = True
-                        break
-                    else:
-                        circle_in_between.append(((start_v, start_e), (in_search_v, in_search_e)))
-                elif (in_search_v, in_search_e) in connection_set_t:
-                    in_pipe_leak = True
-                    break
-                else:
-                    for n_in_search_v, n_in_search_e in self.vertex_info[in_search_v].connections[in_search_e]:
-                        if (n_in_search_v, n_in_search_e) in in_vertex_ends:
-                            pass
-                        else:
-                            in_vertex_ends.add((n_in_search_v, n_in_search_e))
-                            in_searching_con.append((n_in_search_v, not n_in_search_e))
-            if not in_pipe_leak:
-                return circle_in_between
-            else:
-                return []
-
         # branching ends
         if len(connection_set_t) == len(connection_set_f) == 2:
-            for next_t_v, next_t_e in list(connection_set_t):
-                this_inner_circle = path_without_leakage(next_t_v, next_t_e, connection_set_f)
+            for next_t_v_e in list(connection_set_t):
+                this_inner_circle = self.find_the_path_containing_pair(next_t_v_e, connection_set_f, connection_set_t)
                 if this_inner_circle:
                     # check leakage in reverse direction
-                    reverse_v, reverse_e = this_inner_circle[0][1]
-                    not_leak = path_without_leakage(reverse_v, reverse_e, connection_set_t)
+                    reverse_v_e = this_inner_circle[0][1]
+                    not_leak = self.find_the_path_containing_pair(reverse_v_e, connection_set_t, connection_set_f)
                     if not_leak:
                         all_pairs_of_inner_circles.extend(this_inner_circle)
             # sort pairs by average depths(?)
@@ -309,13 +405,11 @@ class Assembly(SimpleAssembly):
         else:
             return all_pairs_of_inner_circles
 
-
     def merge_all_possible_vertices(self, limited_vertices=None, copy_tags=True):
         """
         Merges all or a subset of vertices...
         Called in several places...
         """
-
         # select all or a subset of vertices and sort
         if not limited_vertices:
             limited_vertices = sorted(self.vertex_info)
@@ -348,26 +442,10 @@ class Assembly(SimpleAssembly):
                     if len(self.vertex_info[next_vertex].connections[next_end]) == 1 and this_vertex != next_vertex:
                         # reverse the names
                         merged = True
-                        if this_end:
-                            if next_end:
-                                new_vertex = this_vertex + "_" + "_".join(next_vertex.split("_")[::-1])
-                            else:
-                                new_vertex = this_vertex + "_" + next_vertex
-                        else:
-                            if next_end:
-                                new_vertex = next_vertex + "_" + this_vertex
-                            else:
-                                new_vertex = "_".join(next_vertex.split("_")[::-1]) + "_" + this_vertex
-
-                        # record merging history
-                        self.merging_history[new_vertex] = (
-                            self.merging_history.get(this_vertex, {this_vertex}) | 
-                            self.merging_history.get(next_vertex, {next_vertex})
-                        )
-                        if this_vertex in self.merging_history:
-                            del self.merging_history[this_vertex]
-                        if next_vertex in self.merging_history:
-                            del self.merging_history[next_vertex]
+                        self.vertex_info[this_vertex].merging_history.add((next_vertex, not next_end),
+                                                                          add_new_to_front=this_end,
+                                                                          reverse_the_latter=not next_end)
+                        new_vertex = str(self.vertex_info[this_vertex].merging_history)
 
                         limited_vertices.remove(next_vertex)
                         limited_vertices.append(new_vertex)
@@ -448,7 +526,6 @@ class Assembly(SimpleAssembly):
         # return boolean of whether anything was merged.
         return merged
 
-
     def detect_palindromic_repeats(self, redo=True):
         if not redo and self.palindromic_repeats:
             self.__palindromic_repeat_detected = True
@@ -479,7 +556,6 @@ class Assembly(SimpleAssembly):
             self.__palindromic_repeat_detected = True
             return find_palindromic_repeats
 
-
     def correct_path_with_palindromic_repeats(self, input_path):
         # detect palindromic_repeats if not detected yet
         if not self.__palindromic_repeat_detected:
@@ -491,7 +567,6 @@ class Assembly(SimpleAssembly):
         else:
             corrected_path = list(input_path)
         return corrected_path
-
 
     def estimate_multiplicity_by_cov(
             self,
@@ -511,7 +586,6 @@ class Assembly(SimpleAssembly):
                                avgcov=given_average_cov,
                                mode=mode,
                                reinit=re_initialize).run()
-
 
     def estimate_multiplicity_precisely(
             self,
@@ -540,7 +614,6 @@ class Assembly(SimpleAssembly):
             debug=debug).run()
         if return_new_graphs:
             return res
-
 
     def tag_in_between(self, database_n):
         # add those in between the tagged vertices to tagged_vertices, which offered the only connection
@@ -616,7 +689,6 @@ class Assembly(SimpleAssembly):
                     else:
                         go_to_v += 1
 
-
     def parse_tab_file(self, tab_file, database_name, type_factor, log_handler=None):
         # parse_csv, every locus only occur in one vertex (removing locations with smaller weight)
         tag_loci = {}
@@ -683,8 +755,6 @@ class Assembly(SimpleAssembly):
         if database_name not in self.tagged_vertices or len(self.tagged_vertices[database_name]) == 0:
             raise ProcessingGraphFailed("No available " + database_name + " information found in " + tab_file)
 
-
-
     def exclude_other_hits(self, database_n):
         vertices_to_exclude = []
         for vertex_name in self.vertex_info:
@@ -698,7 +768,6 @@ class Assembly(SimpleAssembly):
             return True
         else:
             return False
-
 
     def reduce_to_subgraph(self, bait_vertices, bait_offsets=None,  limit_extending_len=None,  extending_len_weighted_by_depth=False):
         """
@@ -786,7 +855,6 @@ class Assembly(SimpleAssembly):
             rm_contigs = {candidate_v for candidate_v in self.vertex_info if candidate_v not in accepted}
             self.remove_vertex(rm_contigs, update_cluster=True)
 
-
     def get_all_circular_isomers(self, mode="embplant_pt", re_estimate_multiplicity=False):
         """
         :param mode:
@@ -795,7 +863,6 @@ class Assembly(SimpleAssembly):
         """
         return GraphOnlyPathGenerator(graph=self, mode=mode, re_estimate_multiplicity=re_estimate_multiplicity).get_all_circular_isomers()
 
-
     def get_all_isomers(self, mode="embplant_pt"):
         """
         :param mode:
@@ -803,27 +870,23 @@ class Assembly(SimpleAssembly):
         """
         return GraphOnlyPathGenerator(graph=self, mode=mode).get_all_isomers()
 
-
     def is_circular_path(self, input_path):
         return (input_path[-1][0], not input_path[-1][1]) in \
                self.vertex_info[input_path[0][0]].connections[input_path[0][1]]
-
 
     def get_path_length(self, input_path):
         overlap = self.__overlap if self.__overlap else 0
         circular_len = sum([self.vertex_info[name].len - overlap for name, strand in input_path])
         return circular_len + overlap * int(self.is_circular_path(input_path))
 
-
     def get_path_internal_length(self, input_path):
         assert len(input_path) > 1
         overlap = self.__overlap if self.__overlap else 0
-        # internal_len is allowed to be negative when this_overlap > 0 and len(input_path) == 2
+        # internal_len is allowed to be negative when this_overlap > 0 and len(the_repeat_path) == 2
         internal_len = -overlap
         for seg_name, seg_strand in input_path[1:-1]:
             internal_len += self.vertex_info[seg_name].len - overlap
         return internal_len
-
 
     def get_path_len_without_terminal_overlaps(self, input_path):
         assert len(input_path) > 1
@@ -832,7 +895,6 @@ class Assembly(SimpleAssembly):
         for seg_name, seg_strand in input_path:
             path_len += self.vertex_info[seg_name].len - overlap
         return path_len
-
 
     def export_path(self, in_path):
         overlap = self.__overlap if self.__overlap else 0
@@ -846,7 +908,6 @@ class Assembly(SimpleAssembly):
         else:
             seq_segments[0] = self.vertex_info[in_path[0][0]].seq[in_path[0][1]][:overlap] + seq_segments[0]
         return Sequence(",".join(seq_names), "".join(seq_segments))
-
 
     def reverse_path(self, raw_path):
         tuple_path = tuple(raw_path)
@@ -873,7 +934,6 @@ class Assembly(SimpleAssembly):
                 else:
                     return [(this_v, not this_e) for this_v, this_e in raw_path]
 
-
     def contain_path(self, input_path):
         assert len(input_path) > 0
         go_v = 0
@@ -891,9 +951,8 @@ class Assembly(SimpleAssembly):
                 go_v += 1
         return True
 
-
     def roll_path(self, input_path):
-        # detect if input_path could be rolled into repeat_unit
+        # detect if the_repeat_path could be rolled into repeat_unit
         # e.g.
         # [2, 3, 4, 1, 2] can be rolled into [1, 2, 3, 4]
         # [1, 2, 1, 2, 1] can be rolled into [1, 2]
@@ -914,7 +973,6 @@ class Assembly(SimpleAssembly):
                 break
         return deepcopy(corrected_path)
 
-
     # separate get_standardized_path and get_standardized_circular_path
     # because get_standardized_path will may be called by many thousands even millions of times
     def get_standardized_path(self, raw_path):
@@ -926,7 +984,6 @@ class Assembly(SimpleAssembly):
         forward_path = list(self.correct_path_with_palindromic_repeats(raw_path))
         reverse_path = self.reverse_path(forward_path)
         return tuple(sorted([forward_path, reverse_path])[0])
-
 
     def get_standardized_circular_path(self, raw_path):
         """
@@ -946,7 +1003,6 @@ class Assembly(SimpleAssembly):
             return tuple(sorted(iso_paths)[0])
         else:
             return tuple(sorted([forward_path, reverse_path])[0])
-
 
     def get_standardized_path_with_strand(self, raw_path, detect_circular):
         """
@@ -969,8 +1025,6 @@ class Assembly(SimpleAssembly):
         else:
             standard_id = sorted([0, 1], key=lambda x: [forward_path, reverse_path][x])[0]
             return tuple([forward_path, reverse_path][standard_id]), standard_id == 0
-
-
 
     def get_standardized_isomer(self, isomer_raw_paths):
         """
@@ -1015,7 +1069,6 @@ class Assembly(SimpleAssembly):
 
         return corrected_isomer, tuple(sorted(here_standardized_isomer))  # , key=lambda x: smart_trans_for_sort(x)
 
-
     def get_num_of_possible_alignment_start_points(self, read_len, align_to_path, path_internal_len):
         """
         If a read with certain length (i.e. median length of all candidate reads) could be aligned to a path,
@@ -1045,7 +1098,6 @@ class Assembly(SimpleAssembly):
         left_trim = max(maximum_num_cat - self.vertex_info[align_to_path[0][0]].len - overlap, 0)
         right_trim = max(maximum_num_cat - self.vertex_info[align_to_path[-1][0]].len - overlap, 0)
         return maximum_num_cat - left_trim - right_trim
-
 
     def get_branching_ends(self):
         branching_ends = set()

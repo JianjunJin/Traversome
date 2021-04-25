@@ -98,7 +98,7 @@ def get_sub_paths(paths_with_labels, assembly_graph, max_internal_sub_path_len):
 
 def get_internal_length_from_path(input_path, assembly_graph):
     assert len(input_path) > 1
-    # internal_len is allowed to be negative when this_overlap > 0 and len(input_path) == 2
+    # internal_len is allowed to be negative when this_overlap > 0 and len(the_repeat_path) == 2
     this_overlap = assembly_graph.overlap()
     internal_len = -this_overlap
     for seg_name, seg_strand in input_path[1:-1]:

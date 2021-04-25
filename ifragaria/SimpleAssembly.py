@@ -17,7 +17,7 @@ import os
 #######################################################
 INF = float("inf")
 DEFAULT_COV = 1
-
+VERTEX_DIRECTION_BOOL_TO_STR = {True: "+", False: "-"}
 
 #######################################################
 ###   CLASSES
@@ -65,6 +65,7 @@ class Vertex(object):
         if head_connections:
             self.connections[False] = head_connections
         self.fastg_form_name = fastg_form_long_name
+        self.merging_history = VertexMergingHistory([(v_name, True)])
         self.other_attr = {}
 
     def __repr__(self):
@@ -115,6 +116,88 @@ class VertexInfo(dict):
         dict.__setitem__(self, key, val)
 
 
+class VertexMergingHistory(object):
+    def __init__(self, history_or_path=None):
+        self.__list = []
+        if history_or_path:
+            for each_item in history_or_path:
+                is_vertex = isinstance(each_item, tuple) and len(each_item) == 2 and isinstance(each_item[1], bool)
+                is_hist = isinstance(each_item, VertexMergingHistory)
+                assert is_vertex or is_hist
+                if is_vertex:
+                    self.__list.append(each_item)
+                else:
+                    self.__list.extend(each_item.list())
+
+    def add(self, new_history_or_vertex, add_new_to_front=False, reverse_the_latter=False):
+        is_vertex = isinstance(new_history_or_vertex, tuple) and len(new_history_or_vertex) == 2
+        is_hist = isinstance(new_history_or_vertex, VertexMergingHistory)
+        assert is_vertex or is_hist
+        if add_new_to_front:
+            if reverse_the_latter:
+                self.reverse()
+            self.__list.insert(0, new_history_or_vertex)
+        else:
+            if reverse_the_latter:
+                if is_vertex:
+                    self.__list.append((new_history_or_vertex[0], not new_history_or_vertex[1]))
+                else:
+                    self.__list.extend(list(-new_history_or_vertex))
+            else:
+                if is_vertex:
+                    self.__list.append(new_history_or_vertex)
+                else:
+                    self.__list.extend(list(new_history_or_vertex))
+
+    def __neg__(self):
+        return VertexMergingHistory([(each_vertex[0], not each_vertex[1]) for each_vertex in self.__list[::-1]])
+
+    def __iter__(self):
+        for item in self.__list:
+            yield item
+
+    def __str__(self):
+        return "_".join([str(each_vertex[0]) if isinstance(each_vertex, tuple) else str(each_vertex)
+                         for each_vertex in self.__list])
+
+    def reverse(self):
+        self.__list = [(each_vertex[0], not each_vertex[1]) for each_vertex in self.__list[::-1]]
+
+    def path_list(self):
+        return list(self.__list)
+        # return [each_vertex.path_list() if isinstance(each_vertex, MergingHistory) else each_vertex
+        #         for each_vertex in self.__list]
+
+    def vertex_set(self):
+        v_set = set()
+        for each_item in self.__list:
+            if isinstance(each_item[0], VertexEditHistory):
+                v_set.update(each_item[0].vertex_set())
+            else:
+                v_set.add(each_item[0])
+        return v_set
+
+
+class VertexEditHistory(object):
+    def __init__(self, raw_item):
+        """
+        :param raw_item: (name1 or VertexMergingHistory(), label)
+        """
+        assert isinstance(raw_item, tuple) and len(raw_item) == 2
+        self.__item = raw_item
+
+    def __str__(self):
+        return str(self.__item[0]) + "__" + self.__item[1]
+
+    def vertex_set(self):
+        v_set = set()
+        if isinstance(self.__item[0], VertexMergingHistory):
+            v_set.update(self.__item[0].vertex_set())
+        else:
+            v_set.add(self.__item[0])
+        return v_set
+
+
 class SimpleAssembly(object):
     """
     Base class for Assembly class objects used to parse input graph files.
@@ -155,7 +238,6 @@ class SimpleAssembly(object):
                 logger.info("Parsing graph (FASTG) to Assembly object")
                 self.parse_fastg()
 
-
     def __repr__(self):
         """
         Human readable desciptive output of the Assembly object
@@ -172,16 +254,13 @@ class SimpleAssembly(object):
             res.append("\n")
         return "".join(res)
 
-
     def __bool__(self):
         return bool(self.vertex_info)
-
 
     def __iter__(self):
         "allow iteration of Assembly objects to return ordered vertex info."
         for vertex in sorted(self.vertex_info):
             yield self.vertex_info[vertex]
-
 
     def parse_gfa(self):
         """
@@ -214,8 +293,6 @@ class SimpleAssembly(object):
                 self.parse_gfa_v2(gfa_open)
             else:
                 raise ProcessingGraphFailed("Unrecognized GFA version number: " + gfa_version_number)
-
-
 
     def parse_gfa_v1(self, gfa_open):
         """
@@ -361,8 +438,6 @@ class SimpleAssembly(object):
         else:
             self.__overlap = int(kmer_values.pop()[:-1])
 
-
-
     def parse_gfa_v2(self, gfa_open):
         "GFA VERSION 2 PARSING"
 
@@ -448,8 +523,6 @@ class SimpleAssembly(object):
             raise ProcessingGraphFailed("Multiple overlap values: " + ",".join(sorted(kmer_values)))
         else:
             self.__overlap = int(kmer_values.pop()[:-1])
-
-
 
     def parse_fastg(self, min_cov=0., max_cov=INF):
         """
@@ -539,15 +612,11 @@ class SimpleAssembly(object):
                 self.__overlap = 0
                 # raise ProcessingGraphFailed("No kmer detected!")
 
-
-
     def overlap(self):
         if self.__overlap is None:
             return None
         else:
             return int(self.__overlap)
-
-
 
     def write_to_fasta(self, out_file, interleaved=None, check_postfix=True):
         if check_postfix and not out_file.endswith(".fasta"):
@@ -557,8 +626,6 @@ class SimpleAssembly(object):
             out_matrix.append(Sequence(vertex_name, self.vertex_info[vertex_name].seq[True]))
         out_matrix.interleaved = 70
         out_matrix.write_fasta(out_file, interleaved=interleaved)
-
-
 
     def write_to_gfa(self, out_file, check_postfix=True):
         if check_postfix and not out_file.endswith(".gfa"):
