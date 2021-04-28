@@ -5,15 +5,19 @@ from itertools import combinations
 from collections import OrderedDict
 from copy import deepcopy
 from math import log
+import random
+random.seed(12345)
+import os
 
 
 class CleanGraph(object):
     def __init__(self, ifragaria):
+        self.ifragaria = ifragaria
         self.graph = ifragaria.graph
-        self.max_read_path_size = ifragaria.max_read_path_size
         self.read_paths = ifragaria.read_paths
         # to be generated
-        self.__id_to_read_paths = OrderedDict()
+        self.max_read_path_size = 0
+        self.id_to_read_paths = OrderedDict()
         self.inner_to_read_paths = OrderedDict()     # {inner_path: {terminal_pair:
                                                      #               {"path_counts": int,
                                                      #                "read_id": [int],
@@ -34,45 +38,72 @@ class CleanGraph(object):
         :return:
         TODO add new path
         """
+        self.__index_read_paths()
         finished = False
+        count_r = 0
         while not finished:
+            count_r += 1
+            logger.debug("========== Iteration {} ==========".format(count_r))
+            self.ifragaria.generate_read_paths()
+            self.max_read_path_size = self.ifragaria.max_read_path_size
+            logger.debug("Maximum read path size: {}".format(self.max_read_path_size))
             self.__index_read_path_mers()
+            logger.debug("Num of inner paths: {}".format(len(self.inner_to_read_paths)))
             self.__generating_candidate_solutions(min_effective_count, ignore_ratio)
+            logger.debug("Num of solutions: {}".format(len(self.__solutions)))
             # self.index_terminal_pairs()
             finished = self.__solve_repeats()
+            if self.ifragaria.keep_temp:
+                self.graph.write_to_gfa(os.path.join(self.ifragaria.outdir, "cleaned.{}.gfa".format(count_r)))
+            break
+            # raise Exception
 
     def __index_read_paths(self):
         # for reducing memory cost in self.inner_to_read_paths
         for go_r, read_path in enumerate(self.read_paths):
-            self.__id_to_read_paths[go_r] = read_path
+            self.id_to_read_paths[go_r] = read_path
 
     def __index_read_path_mers(self):
         # index read_path_mers by inner_path, with depth counted
         branching_ends = self.graph.get_branching_ends()
-        for path_size in (2, self.max_read_path_size + 1):
-            for go_r in self.__id_to_read_paths:
-                read_path = self.__id_to_read_paths[go_r]
+        logger.debug("Num of branching_ends: {}".format(len(branching_ends)))
+        logger.debug("                     : {}".format(branching_ends))
+        for path_mer_size in range(2, self.max_read_path_size + 1):
+            for go_r in self.id_to_read_paths:
+                read_path = self.id_to_read_paths[go_r]
                 this_r_p_size = len(read_path)
+                if this_r_p_size < path_mer_size:
+                    continue
                 path_counts = len(self.read_paths[read_path])
                 # skip read paths that does not have branching sites inside
-                # with underlying limit: this_r_p_size >= 2
                 # 1. check forward
                 for (v_name, v_end) in read_path[:-1]:
                     if (v_name, v_end) in branching_ends:
                         break
                 else:
-                    continue
-                # 2. check reverse
-                for (v_name, v_end) in read_path[1:]:
-                    if (v_name, not v_end) in branching_ends:
-                        break
-                else:
-                    continue
-                # if this_r_p_size > 2:
+                    # 2. check reverse
+                    for (v_name, v_end) in read_path[1:]:
+                        if (v_name, not v_end) in branching_ends:
+                            break
+                    else:
+                        continue
+                # logger.debug("chopping {}".format(read_path))
                 # chopping read_paths to read_path_mers (like kmers)
                 # index read_path_mers by inner_path, with depth counted
-                for go_mer in range(this_r_p_size - 2):
-                    read_path_mer = self.graph.get_standardized_path(read_path[go_mer: go_mer + path_size])
+                for go_mer in range(this_r_p_size - path_mer_size):
+                    read_path_mer = self.graph.get_standardized_path(read_path[go_mer: go_mer + path_mer_size])
+                    # skip read paths that does not have branching sites inside
+                    for (v_name, v_end) in read_path_mer[:-1]:
+                        if (v_name, v_end) in branching_ends:
+                            break
+                    else:
+                        # 2. check reverse
+                        for (v_name, v_end) in read_path_mer[1:]:
+                            if (v_name, not v_end) in branching_ends:
+                                break
+                        else:
+                            continue
+                    # logger.debug("         {}:{} {}".format(go_mer, go_mer + path_mer_size, read_path_mer))
                     inner_path, keep_strand = self.graph.get_standardized_path_with_strand(
                         raw_path=read_path_mer[1:-1],
                         detect_circular=False)
@@ -83,7 +114,7 @@ class CleanGraph(object):
                         terminal_pair = (read_path_mer[0], read_path_mer[-1])
                     else:
                         terminal_pair = self.graph.reverse_path((read_path_mer[0], read_path_mer[-1]))
-                    if terminal_pair not in self.inner_to_read_paths:
+                    if terminal_pair not in self.inner_to_read_paths[inner_path]:
                         self.inner_to_read_paths[inner_path][terminal_pair] = \
                             {"path_counts": 0, "read_id": [], "pmer_id": [], "pmer_strand": []}
                     self.inner_to_read_paths[inner_path][terminal_pair]["path_counts"] += path_counts
@@ -150,6 +181,9 @@ class CleanGraph(object):
                 else:
                     for terminal_cl in terminal_clusters:
                         self.__solutions[inner_path][tuple(sorted(terminal_cl))] = True
+        for inner_path, terminal_pairs_dict in list(self.__solutions.items()):
+            if not terminal_pairs_dict:
+                del self.__solutions[inner_path]
 
     # def index_terminal_pairs(self):
     #     # index terminal_pairs
@@ -172,7 +206,12 @@ class CleanGraph(object):
         all_repeats_solved = True
         renamed_vertices = set()
         for inner_path, terminal_pairs_dict in sorted(self.__solutions.items(), key=lambda x: (len(x[0]), x)):
+            if not terminal_pairs_dict:
+                continue
             terminal_pairs_list = list(terminal_pairs_dict)
+            logger.debug("solving {} : {} : {}".format(inner_path,
+                                                       " ".join([str(len(_g)) for _g in terminal_pairs_list]),
+                                                       " ".join([str(_g) for _g in terminal_pairs_list])))
             if not inner_path:
                 #########
                 # prune unsupported connections formed by involved ends
@@ -190,6 +229,7 @@ class CleanGraph(object):
                             if ((n_1, e_1), (n_2, e_2)) not in keep_connections:
                                 self.graph.vertex_info[n_1].connections[e_1].pop((n_2, e_2), None)
                                 self.graph.vertex_info[n_2].connections[e_2].pop((n_1, e_1), None)
+                                logger.debug("        pruning1 {}".format(((n_1, e_1), (n_2, e_2))))
                 self.__solved.add(inner_path)
                 # no reads processed in this case
             else:
@@ -216,40 +256,65 @@ class CleanGraph(object):
                 else:
                     self.__solved.add(inner_path)
                     #########
+                    # if no internal branching connections to unrelated vertices (leaking),
                     # prune unsupported connections to the inner_path (involved ends)
-                    (i_lt_n, i_lt_e), (i_rt_n, i_rt_e) = inner_path[0], inner_path[-1]
-                    keep_connections = set()
-                    for grouped_pairs in terminal_pairs_list:
-                        for (keep_lt_n, keep_lt_e), (keep_rt_n, keep_rt_e) in grouped_pairs:
-                            keep_connections.add(((keep_lt_n, keep_lt_e), (i_lt_n, not i_lt_e)))
-                            # keep_connections.add(((i_lt_n, not i_lt_e), (keep_lt_n, keep_lt_e)))
-                            keep_connections.add(((i_rt_n, i_rt_e), (keep_rt_n, not keep_rt_e)))
-                            # keep_connections.add(((keep_rt_n, not keep_rt_e), (i_rt_n, i_rt_e)))
-                    for (n_1, e_1) in self.graph.vertex_info[i_lt_n].connections[not i_lt_e]:
-                        if ((n_1, e_1), (i_lt_n, not i_lt_e)) not in keep_connections:
-                            self.graph.vertex_info[n_1].connections[e_1].pop((i_lt_n, not i_lt_e), None)
-                            self.graph.vertex_info[i_lt_n].connections[not i_lt_e].pop((n_1, e_1), None)
-                    for (n_2, e_2) in self.graph.vertex_info[i_rt_n].connections[i_rt_e]:
-                        if ((i_rt_n, i_rt_e), (n_2, not e_2)) not in keep_connections:
-                            self.graph.vertex_info[n_2].connections[e_2].pop((i_rt_n, i_rt_e), None)
-                            self.graph.vertex_info[i_rt_n].connections[i_rt_e].pop((n_2, e_2), None)
+                    if self.graph.is_no_leaking_path(
+                            path=inner_path,
+                            terminal_pairs=[_term_p for _group_p in terminal_pairs_list for _term_p in _group_p]):
+                        (i_lt_n, i_lt_e), (i_rt_n, i_rt_e) = inner_path[0], inner_path[-1]
+                        keep_connections = set()
+                        logger.debug("        keeping t {}".format(str(terminal_pairs_list)))
+                        # keep connections to terminal_pairs_list
+                        for grouped_pairs in terminal_pairs_list:
+                            logger.debug("        keeping p {}".format(grouped_pairs))
+                            for (keep_lt_n, keep_lt_e), (keep_rt_n, keep_rt_e) in grouped_pairs:
+                                keep_connections.add(((keep_lt_n, keep_lt_e), (i_lt_n, not i_lt_e)))
+                                # keep_connections.add(((i_lt_n, not i_lt_e), (keep_lt_n, keep_lt_e)))  #
+                                keep_connections.add(((i_rt_n, i_rt_e), (keep_rt_n, not keep_rt_e)))
+                                # keep_connections.add(((keep_rt_n, not keep_rt_e), (i_rt_n, i_rt_e)))  #
+                        # keep connections to internal
+                        terminal_vs = {i_lt_n, i_rt_n}
+                        for go_v, (inner_n, inner_e) in enumerate(inner_path[:-1]):
+                            next_n, next_e = inner_path[go_v + 1]
+                            if inner_n in terminal_vs or next_n in terminal_vs:
+                                keep_connections.add(((inner_n, inner_e), (next_n, not next_e)))
+                                keep_connections.add(((next_n, not next_e), (inner_n, inner_e)))
+                        logger.debug("        keeping c {}".format(keep_connections))
+                        # pruning
+                        for (n_1, e_1) in list(self.graph.vertex_info[i_lt_n].connections[not i_lt_e]):
+                            if ((n_1, e_1), (i_lt_n, not i_lt_e)) not in keep_connections:
+                                logger.debug("        pruning2 {} ~ {}".format(
+                                    ((n_1, e_1), (i_lt_n, not i_lt_e)), inner_path))
+                                self.graph.vertex_info[n_1].connections[e_1].pop((i_lt_n, not i_lt_e), None)
+                                self.graph.vertex_info[i_lt_n].connections[not i_lt_e].pop((n_1, e_1), None)
+
+                        for (n_2, e_2) in list(self.graph.vertex_info[i_rt_n].connections[i_rt_e]):
+                            if ((i_rt_n, i_rt_e), (n_2, e_2)) not in keep_connections:
+                                logger.debug("        pruning3 {} ~ {}".format(
+                                    ((i_rt_n, i_rt_e), (n_2, e_2)), inner_path))
+                                self.graph.vertex_info[n_2].connections[e_2].pop((i_rt_n, i_rt_e), None)
+                                self.graph.vertex_info[i_rt_n].connections[i_rt_e].pop((n_2, e_2), None)
                     # duplicate inner_path and separate them into different paths
                     if len(terminal_pairs_list) == 1:
                         if len(list(terminal_pairs_list)[0]) == 1:
-                            this_terminal = list(terminal_pairs_list)[0].pop()
-                            if not self.graph.is_no_leaking_path(path=inner_path, terminal_pair=this_terminal):
-                                # ironing over a bubble if there are sequential repeats
-                                self.unfold_graph_along_path(inner_path,
-                                                             unfold_read_paths_accordingly=True,
-                                                             terminal_pair=this_terminal,
-                                                             check_leakage=False)
+                            this_terminal = list(terminal_pairs_list)[0][0]
+                            if self.graph.is_no_leaking_path(path=inner_path, terminal_pairs=[this_terminal]):
                                 # record renamed vertices
                                 v_counts_in_path = {_v_name: 0 for _v_name, _v_end in inner_path}
                                 for v_name, v_end in inner_path:
                                     v_counts_in_path[v_name] += 1
+                                do_unfold = False
                                 for v_n in sorted(v_counts_in_path):
                                     if v_counts_in_path[v_n] > 1:
                                         renamed_vertices.add(v_n)
+                                        do_unfold = True
+                                if do_unfold:
+                                    # ironing over a bubble if there are sequential repeats
+                                    self.unfold_graph_along_path(inner_path,
+                                                                 terminal_pair=this_terminal,
+                                                                 unfold_read_paths_accordingly=True,
+                                                                 check_leakage=False)
+
                             else:
                                 pass
                         else:
@@ -274,23 +339,24 @@ class CleanGraph(object):
     def unfold_graph_along_path(
             self,
             input_path,
+            terminal_pair,
             unfold_read_paths_accordingly=False,
-            terminal_pair=tuple(),
             check_leakage=True):
         """
         :param input_path: inner_path without anchors
-        :param unfold_read_paths_accordingly:
         :param terminal_pair:
+        :param unfold_read_paths_accordingly:
         :param check_leakage:
         :return:
         TODO: check palindromic issue
         TODO: check all attributes in Assembly.__init__() when duplication happened
         """
+        logger.debug("unfolding {} -> {} -> {}".format(terminal_pair[0], input_path, terminal_pair[1]))
         # basic checking
         if unfold_read_paths_accordingly:
             assert terminal_pair, "parameter terminal_pair is required for renaming read paths!"
         assert self.graph.contain_path(input_path), str(input_path) + " not in the graph!"
-        if check_leakage and not self.graph.is_no_leaking_path(input_path, terminal_pair):
+        if check_leakage and not self.graph.is_no_leaking_path(input_path, [terminal_pair]):
             logger.debug("Leaking path detected! Giving up unfolding!")
             return
         v_counts_in_path = {_v_name: 0 for _v_name, _v_end in input_path}
@@ -305,9 +371,10 @@ class CleanGraph(object):
                 renamed_path.append(("{}__copy{}".format(v_name, v_copy_id[v_name]), v_end))
             else:
                 renamed_path.append((v_name, v_end))
-        overlap_vals = []
+        overlap_of_connections = []
         for go_p, (v_name, v_end) in enumerate(input_path[:-1]):
-            overlap_vals.append(self.graph.vertex_info[v_name].connections[v_end][input_path[go_p + 1]])
+            next_n, next_e = input_path[go_p + 1]
+            overlap_of_connections.append(self.graph.vertex_info[v_name].connections[v_end][(next_n, not next_e)])
         # separate the coverage before splitting each vertex
         # TODO: initialize other coverage associated values
         for v_name, v_end in input_path:
@@ -315,23 +382,25 @@ class CleanGraph(object):
         # follow the path to unfold the vertices in the graph
         go_p = 0
         v_copy_id = {_v_name: 0 for _v_name, _v_end in input_path}
+        vertex_info_dict = {_v_name: deepcopy(self.graph.vertex_info[_v_name]) for _v_name in v_copy_id}
         while go_p < len(input_path):
             v_name, v_end = input_path[go_p]
             v_copy_id[v_name] += 1
             if v_copy_id[v_name] > 1:
                 v_new_name = "{}__copy{}".format(v_name, v_copy_id[v_name])
-                self.graph.vertex_info[v_new_name] = deepcopy(self.graph.vertex_info[v_name])
+                self.graph.vertex_info[v_new_name] = deepcopy(vertex_info_dict[v_name])
             else:
                 v_new_name = v_name
             # up stream
             if go_p > 0:
                 self.graph.vertex_info[v_new_name].connections[not v_end] = \
-                    OrderedDict([(renamed_path[go_p - 1], overlap_vals[go_p - 1])])
+                    OrderedDict([(renamed_path[go_p - 1], overlap_of_connections[go_p - 1])])
             # down stream
             if go_p < len(input_path) - 1:
+                # logger.debug("create connection for {}{}".format(v_new_name, v_end))
                 next_v, next_e = renamed_path[go_p + 1]
                 self.graph.vertex_info[v_new_name].connections[v_end] = \
-                    OrderedDict([((next_v, not next_e), overlap_vals[go_p])])
+                    OrderedDict([((next_v, not next_e), overlap_of_connections[go_p])])
             go_p += 1
         # clean the start
         # clean inner connections to the left of the start
@@ -359,7 +428,9 @@ class CleanGraph(object):
                 self.graph.vertex_info[right_anchor_n].connections[right_anchor_e][(new_r_n, new_r_e)] = ovl
 
         # rename read_paths
-        if unfold_read_paths_accordingly and input_path in self.inner_to_read_paths:
+        if unfold_read_paths_accordingly \
+                and tuple(input_path) in self.inner_to_read_paths \
+                and tuple(input_path) != tuple(renamed_path):
             self.__rename_read_paths(input_path, renamed_path, terminal_pair)
 
     def split_the_repeats(
@@ -378,6 +449,11 @@ class CleanGraph(object):
         :return:
         """
         # basic checking
+        logger.debug("splitting {}".format(the_repeat_path))
+        for grouped_pair in terminal_pair_group_list:
+            logger.debug("          {}".format(grouped_pair))
+        if the_repeat_path == (('249729', False),) and ((('252317', True), ('49582__copy2', True)),) in terminal_pair_group_list:
+            raise Exception
         assert n_groups >= 1
         assert len(terminal_pair_group_list) == n_groups, \
             "length of terminal_pairs_dict MUST equal the separation number!"
@@ -415,24 +491,41 @@ class CleanGraph(object):
                     del self.graph.vertex_info[check_path_right_n].connections[check_path_right_e][(next_n, next_e)]
                     del self.graph.vertex_info[next_n].connections[next_e][(check_path_right_n, check_path_right_e)]
 
-            if distribute_read_paths_accordingly and the_repeat_path in self.inner_to_read_paths:
+            if distribute_read_paths_accordingly \
+                    and tuple(the_repeat_path) in self.inner_to_read_paths:
                 renamed_path = [(name_translator[v_n], v_e) for v_n, v_e in the_repeat_path]
-                for terminal_pair in grouped_pair:
-                    self.__rename_read_paths(the_repeat_path, renamed_path, terminal_pair)
+                if tuple(the_repeat_path) == tuple(renamed_path):
+                    for terminal_pair in grouped_pair:
+                        self.__rename_read_paths(the_repeat_path, renamed_path, terminal_pair)
 
     def __rename_read_paths(self, inner_path, new_inner_path, terminal_pair):
-        read_info = self.inner_to_read_paths[inner_path][terminal_pair]
-        for go_p, read_id in enumerate(read_info["read_id"]):
-            read_path = list(self.__id_to_read_paths[read_id])
-            pmer_id = read_info["pmer_id"]
-            pmer_strand = read_info["pmer_strand"]
-            if not pmer_strand:
-                new_inner_path = self.graph.reverse_path(new_inner_path)
-            read_path[pmer_id:pmer_id + len(inner_path)] = new_inner_path
-            new_read_path = tuple(read_path)
-            self.read_paths[new_read_path] = self.read_paths[read_path]
-            del self.read_paths[read_path]
-            self.__id_to_read_paths[read_id] = new_read_path
+        if tuple(inner_path) != tuple(new_inner_path):
+            # rand_num = random.random()
+            # logger.debug("            renaming {} -> {}".format(inner_path, new_inner_path))
+            read_info = self.inner_to_read_paths[inner_path][terminal_pair]
+            for go_p, read_id in enumerate(read_info["read_id"]):
+
+                read_path = list(self.id_to_read_paths[read_id])
+                pmer_id = read_info["pmer_id"][go_p]
+                pmer_strand = read_info["pmer_strand"][go_p]
+                # if rand_num > 0.9:
+                #     logger.debug("   renaming inner {}".format(new_inner_path))
+                #     logger.debug("            p_id {}, p_strand {}".format(pmer_id, pmer_strand))
+                if not pmer_strand:
+                    new_inner_path = self.graph.reverse_path(new_inner_path)
+                # if rand_num > 0.9:
+                #     logger.debug("   renaming inner {}".format(new_inner_path))
+                # inner_path_id = pmer_id + 1, because inner_path = pmer_path[1:-1]
+                new_read_path = read_path[:pmer_id + 1] + \
+                                list(new_inner_path) + \
+                                read_path[pmer_id + 1 + len(inner_path):]
+                # logger.debug("            old {}".format(read_path))
+                # logger.debug("            new {}".format(new_read_path))
+                new_read_path = tuple(new_read_path)
+                read_path = tuple(read_path)
+                self.read_paths[new_read_path] = self.read_paths[read_path]
+                del self.read_paths[read_path]
+                self.id_to_read_paths[read_id] = new_read_path
 
 
 

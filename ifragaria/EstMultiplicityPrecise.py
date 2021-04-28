@@ -503,7 +503,8 @@ class EstMultiplicityPrecise(object):
                                  {'type': 'ineq', 'fun': self.__constraint_max_function}),
             )
         elif 3 ** len(self.free_copy_variables) < 1E7:
-
+            # TODO
+            pass
         # large number of variables so we will use SLSQP, which sometimes have abnormal behaviours...
         else:
             constraints = ({'type': 'ineq', 'fun': self.__constraint_min_function},

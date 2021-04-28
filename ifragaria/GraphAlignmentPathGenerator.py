@@ -129,7 +129,7 @@ class GraphAlignmentPathGenerator(object):
         alignment_lengths = []
         if filter_by_graph:
             for gaf_record in self.alignment:
-                this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path, detect_circular=False))
+                this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
                 # summarize only when the graph contain the path
                 if self.graph.contain_path(this_read_path):
                     if this_read_path in self.__read_paths_counter:
@@ -141,7 +141,7 @@ class GraphAlignmentPathGenerator(object):
                     alignment_lengths.append(gaf_record.p_align_len)
         else:
             for gaf_record in self.alignment:
-                this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path, detect_circular=False))
+                this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
                 if this_read_path in self.__read_paths_counter:
                     self.__read_paths_counter[this_read_path] += 1
                 else:

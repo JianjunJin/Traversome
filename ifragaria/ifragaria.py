@@ -7,7 +7,6 @@ Top-level class for running the CLI
 import os
 import sys
 from loguru import logger
-from itertools import combinations
 from collections import OrderedDict
 from ifragaria.Assembly import Assembly
 from ifragaria.GraphAlignRecords import GraphAlignRecords
@@ -71,7 +70,8 @@ class iFragaria(object):
             assembly_graph=self.graph,
         )
         self.generate_read_paths()
-
+        logger.debug("Cleaning graph ...")
+        self.clean_graph()
         self.get_align_len_dist()
         logger.debug("Generating candidate isomer paths ...")
         self.generate_candidate_isopaths()
@@ -87,8 +87,8 @@ class iFragaria(object):
     def generate_read_paths(self):
         self.max_read_path_size = 0
         for go_record, record in enumerate(self.alignment.records):
-            this_read_path = self.graph.get_standardized_path(record.path, detect_circular=False)
-            if this_read_path in self.read_paths:
+            this_read_path = self.graph.get_standardized_path(record.path)
+            if this_read_path not in self.read_paths:
                 self.read_paths[this_read_path] = []
             self.read_paths[this_read_path].append(go_record)
             self.max_read_path_size = max(self.max_read_path_size, len(this_read_path))
@@ -171,7 +171,7 @@ class iFragaria(object):
                 len_this_sub_p = len(this_longest_sub_path)
                 for skip_tail in range(len_this_sub_p - 1):
                     this_sub_path = \
-                        self.graph.get_standardized_path(this_longest_sub_path[:len_this_sub_p - skip_tail], detect_circular=False)
+                        self.graph.get_standardized_circular_path(this_longest_sub_path[:len_this_sub_p - skip_tail])
                     if this_sub_path not in these_sub_paths:
                         these_sub_paths[this_sub_path] = 0
                     these_sub_paths[this_sub_path] += 1
@@ -285,16 +285,19 @@ class iFragaria(object):
                 {
                     "sink": sys.stdout, 
                     "format": (
-                        "{time:YYYY-MM-DD-hh:mm} | "
-                        "<magenta>{file: >22} | </magenta>"
-                        "<cyan>{function: <22} | </cyan>"
+                        "{time:YYYY-MM-DD-hh:mm:ss.SS} | "
+                        "<magenta>{file: >24} | </magenta>"
+                        "<cyan>{function: <24} | </cyan>"
                         "<level>{message}</level>"
                     ),
                     "level": loglevel,
                     },
                 {
                     "sink": self.logfile,                   
-                    "format": "{time:YYYY-MM-DD} | {function} | {message}",
+                    "format": "{time:YYYY-MM-DD-hh:mm:ss.SS} | "
+                              "<magenta>{file: >24} | </magenta>"
+                              "<cyan>{function: <24} | </cyan>"
+                              "<level>{message}</level>",
                     "level": loglevel,
                     }
             ]

@@ -287,7 +287,7 @@ class Assembly(SimpleAssembly):
             # 1. create a new_sub_graph and assign the depths to vertices
             new_sub_graph = Assembly(overlap=self.__overlap)
             for v_name in vertices:
-                assert v_name in self, v_name + " not found in the graph!"
+                assert v_name in self.vertex_info, "Vertex {} not found in the graph!".format(v_name)
                 new_sub_graph.vertex_info[v_name] = deepcopy(self.vertex_info[v_name])
                 new_sub_graph.vertex_info[v_name].cov *= depth_factors[dup_id]
             # 2. rename all vertices and connections
@@ -321,17 +321,24 @@ class Assembly(SimpleAssembly):
         duplicated_vertices_groups.insert(0, raw_translator)
         return duplicated_vertices_groups
 
-    def is_no_leaking_path(self, path, terminal_pair):
+    def is_no_leaking_path(self, path, terminal_pairs):
         path_set = set([v_n for v_n, v_e in path])
-        left_v_e = terminal_pair[0]
-        right_v_e = terminal_pair[1][0], not terminal_pair[1][1]
+        left_v_e_set = set()
+        right_v_e_set = set()
+        for terminal_pair in terminal_pairs:
+            if terminal_pair[0][0] in path_set:
+                return False
+            if terminal_pair[1][0] in path_set:
+                return False
+            left_v_e_set.add(terminal_pair[0])
+            right_v_e_set.add((terminal_pair[1][0], not terminal_pair[1][1]))
         for v_name, v_end in path[:-1]:
             for next_name, next_end in self.vertex_info[v_name].connections[v_end]:
-                if (next_name, next_end) != right_v_e and next_name not in path_set:
+                if (next_name, next_end) not in right_v_e_set and next_name not in path_set:
                     return False
         for v_name, v_end in path[1:]:
             for next_name, next_end in self.vertex_info[v_name].connections[not v_end]:
-                if (next_name, next_end) != left_v_e and next_name not in path_set:
+                if (next_name, next_end) not in left_v_e_set and next_name not in path_set:
                     return False
         return True
 
@@ -562,10 +569,10 @@ class Assembly(SimpleAssembly):
             self.detect_palindromic_repeats()
         # if there are palindromic repeats, correct the palindromic node direction into True
         if self.palindromic_repeats:
-            corrected_path = [(this_v, True) if this_v in self.palindromic_repeats else (this_v, this_e)
-                              for this_v, this_e in input_path]
+            corrected_path = tuple([(this_v, True) if this_v in self.palindromic_repeats else (this_v, this_e)
+                                    for this_v, this_e in input_path])
         else:
-            corrected_path = list(input_path)
+            corrected_path = tuple(input_path)
         return corrected_path
 
     def estimate_multiplicity_by_cov(
@@ -922,17 +929,17 @@ class Assembly(SimpleAssembly):
                     reverse_path = [(this_v, True) if this_v in self.palindromic_repeats else (this_v, not this_e)
                                     for this_v, this_e in raw_path[::-1]]
                 else:
-                    reverse_path = [(this_v, not this_e) for this_v, this_e in raw_path]
+                    reverse_path = [(this_v, not this_e) for this_v, this_e in raw_path[::-1]]
                 tuple_rev = tuple(reverse_path)
-                self.__reverse_paths[tuple_path] = deepcopy(reverse_path)
-                self.__reverse_paths[tuple_rev] = deepcopy(raw_path)
-                return reverse_path
+                self.__reverse_paths[tuple_path] = tuple_rev
+                self.__reverse_paths[tuple_rev] = tuple_path
+                return tuple_rev
             else:
                 if self.palindromic_repeats:
-                    return [(this_v, True) if this_v in self.palindromic_repeats else (this_v, not this_e)
-                            for this_v, this_e in raw_path[::-1]]
+                    return tuple([(this_v, True) if this_v in self.palindromic_repeats else (this_v, not this_e)
+                                  for this_v, this_e in raw_path[::-1]])
                 else:
-                    return [(this_v, not this_e) for this_v, this_e in raw_path]
+                    return tuple([(this_v, not this_e) for this_v, this_e in raw_path[::-1]])
 
     def contain_path(self, input_path):
         assert len(input_path) > 0
@@ -954,8 +961,8 @@ class Assembly(SimpleAssembly):
     def roll_path(self, input_path):
         # detect if the_repeat_path could be rolled into repeat_unit
         # e.g.
-        # [2, 3, 4, 1, 2] can be rolled into [1, 2, 3, 4]
-        # [1, 2, 1, 2, 1] can be rolled into [1, 2]
+        # (2, 3, 4, 1, 2) can be rolled into (1, 2, 3, 4)
+        # (1, 2, 1, 2, 1) can be rolled into (1, 2)
         corrected_path = self.correct_path_with_palindromic_repeats(input_path)
         go_v = 1
         start_v_e = corrected_path[0]
@@ -981,9 +988,9 @@ class Assembly(SimpleAssembly):
         :param raw_path: path=[(name1:str, direction1:bool), (name2:str, direction2:bool), ..]
         :return: standardized_path
         """
-        forward_path = list(self.correct_path_with_palindromic_repeats(raw_path))
+        forward_path = self.correct_path_with_palindromic_repeats(raw_path)
         reverse_path = self.reverse_path(forward_path)
-        return tuple(sorted([forward_path, reverse_path])[0])
+        return sorted([forward_path, reverse_path])[0]
 
     def get_standardized_circular_path(self, raw_path):
         """
@@ -992,7 +999,7 @@ class Assembly(SimpleAssembly):
         :return: standardized_path
         """
         forward_path = list(self.correct_path_with_palindromic_repeats(raw_path))
-        reverse_path = self.reverse_path(forward_path)
+        reverse_path = list(self.reverse_path(forward_path))
 
         if self.is_circular_path(forward_path):
             # if path is circular, try all start points
@@ -1012,7 +1019,7 @@ class Assembly(SimpleAssembly):
         :return: standardized_path, strand_of_the_new_path
         """
         forward_path = list(self.correct_path_with_palindromic_repeats(raw_path))
-        reverse_path = self.reverse_path(forward_path)
+        reverse_path = list(self.reverse_path(forward_path))
 
         if detect_circular and self.is_circular_path(forward_path):
             # if path is circular, try all start points
@@ -1103,7 +1110,7 @@ class Assembly(SimpleAssembly):
         branching_ends = set()
         for v_name in self.vertex_info:
             for v_end in (True, False):
-                if len(self.vertex_info[v_name].connections[v_end]) > 2:
+                if len(self.vertex_info[v_name].connections[v_end]) >= 2:
                     branching_ends.add((v_name, v_end))
         return branching_ends
 
