@@ -9,7 +9,7 @@ Genomic isomer frequency estimation from genome assembly graphs and long reads.
 conda install numpy pandas scipy pymc3 sympy -c conda-forge
 ```
 
-### Install devel version of ifragaria
+### Install devel version of traversome
 ```bash
 git clone -b modular https://github.com/Kinggerm/Traversome
 pip install -e . --no-deps
@@ -19,7 +19,7 @@ pip install -e . --no-deps
 
 Temporary usage:
 ```bash
-python ifragaria/estimate_isomer_frequencies.py -g graph.gfa -a align.gaf -o .
+python traversome/estimate_isomer_frequencies.py -g graph.gfa -a align.gaf -o .
 ```
 
 future: 
