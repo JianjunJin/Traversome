@@ -1,6 +1,6 @@
 
 from loguru import logger
-from ifragaria.utils import ProcessingGraphFailed #, smart_trans_for_sort
+from traversome.utils import ProcessingGraphFailed #, smart_trans_for_sort
 from copy import deepcopy
 from itertools import combinations
 import sys

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 from loguru import logger
-from ifragaria.utils import get_id_range_in_increasing_values
+from traversome.utils import get_id_range_in_increasing_values
 from scipy import optimize
 import numpy as np
 import sympy
@@ -12,13 +12,13 @@ class ModelFitMaxLike(object):
     """
     Find the parameters (isomer proportions) to maximize the likelihood
     """
-    def __init__(self, ifragaria_obj):
-        self.ifragaria = ifragaria_obj
-        self.num_of_isomers = ifragaria_obj.num_of_isomers
-        self.all_sub_paths = ifragaria_obj.all_sub_paths
-        # self.graph = ifragaria_obj.graph
-        self.isomer_sizes = ifragaria_obj.isomer_sizes
-        self.align_len_at_path_sorted = ifragaria_obj.align_len_at_path_sorted
+    def __init__(self, traversome_obj):
+        self.traversome = traversome_obj
+        self.num_of_isomers = traversome_obj.num_of_isomers
+        self.all_sub_paths = traversome_obj.all_sub_paths
+        # self.graph = traversome_obj.graph
+        self.isomer_sizes = traversome_obj.isomer_sizes
+        self.align_len_at_path_sorted = traversome_obj.align_len_at_path_sorted
 
         # to be generated
         self.isomer_percents = None
@@ -30,7 +30,7 @@ class ModelFitMaxLike(object):
         logger.info("Generating the likelihood function .. ")
         self.get_neg_likelihood_of_iso_freq()
         logger.info("Maximizing the likelihood function .. ")
-        success_runs = self.minimize_neg_likelihood(verbose=self.ifragaria.loglevel in ("DEBUG", "TRACE", "ALL"))
+        success_runs = self.minimize_neg_likelihood(verbose=self.traversome.loglevel in ("DEBUG", "TRACE", "ALL"))
         if success_runs:
             # for run_res in sorted(success_runs, key=lambda x: x.fun):
             #     logger.info(str(run_res.fun) + str([round(m, 8) for m in run_res.x]))
@@ -39,7 +39,7 @@ class ModelFitMaxLike(object):
             return self.best_proportions
 
     def get_neg_likelihood_of_iso_freq(self, scipy_style=True):
-        loglike_expression = self.ifragaria.get_likelihood_formula(self.isomer_percents, log_func=sympy.log)
+        loglike_expression = self.traversome.get_likelihood_formula(self.isomer_percents, log_func=sympy.log)
         # print(maximum_loglike_expression)
         neg_likelihood_of_iso_freq = sympy.lambdify(
             args=[self.isomer_percents[isomer_id] for isomer_id in

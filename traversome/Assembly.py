@@ -5,12 +5,12 @@ Assembly class object and associated class objects
 """
 
 from loguru import logger
-from ifragaria.SimpleAssembly import SimpleAssembly, VertexMergingHistory, VertexEditHistory
-from ifragaria.GraphOnlyPathGenerator import GraphOnlyPathGenerator
-# from ifragaria.GetAllIsomers import GetAllIsomers
-from ifragaria.EstMultiplicityFromCov import EstMultiplicityFromCov
-from ifragaria.EstMultiplicityPrecise import EstMultiplicityPrecise
-from ifragaria.utils import \
+from traversome.SimpleAssembly import SimpleAssembly, VertexMergingHistory, VertexEditHistory
+from traversome.GraphOnlyPathGenerator import GraphOnlyPathGenerator
+# from traversome.GetAllIsomers import GetAllIsomers
+from traversome.EstMultiplicityFromCov import EstMultiplicityFromCov
+from traversome.EstMultiplicityPrecise import EstMultiplicityPrecise
+from traversome.utils import \
     Sequence, SequenceList, ProcessingGraphFailed, INF, get_orf_lengths, generate_clusters_from_connections
     #, smart_trans_for_sort
 from copy import deepcopy

@@ -39,10 +39,18 @@ traversome -g graph.gfa -a align.gaf -o .
 
 ```
 # workflow
+
 |-- __main__.py
 |-- traversome.py
+    |-- __init__.py
+    |-- SimpleAssembly.py
     |-- Assembly.py
     |-- GraphAlignRecords.py
+    |-- CleanGraph.py (still working)
     |-- EstCopyDepthFromCov.py
     |-- EstCopyDepthPrecise.py (still working)
-    |-- ...
+    |-- GetAllIsomers.py (Deprecated)
+    |-- GraphAlignmentPathGenerator.py
+    |-- GraphOnlyPathGenerator.py
+    |-- ModelFitBayesian.py
+    |-- ModelFitMaxLike.py

@@ -8,7 +8,7 @@ Class objects to store Graph Alignments
 import csv
 import re
 from loguru import logger
-from ifragaria.Assembly import Assembly  # used here to validate type
+from traversome.Assembly import Assembly  # used here to validate type
 
 
 

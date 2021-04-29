@@ -1,14 +1,14 @@
 #! /usr/bin/env python
 
 """
-Command-line Interface to ifragaria
+Command-line Interface to traversome
 """
 
 import os
 import sys
 from optparse import OptionParser
 
-from .ifragaria import iFragaria
+from .traversome import Traversome
 
 
 
@@ -16,7 +16,7 @@ def get_options():
     "parse command line with OptionParser"
 
     # init object and set usage
-    parser = OptionParser(usage="ifragaria -g graph.gfa -a align.gaf -o .")
+    parser = OptionParser(usage="traversome -g graph.gfa -a align.gaf -o .")
 
     # create param flags
     parser.add_option(
@@ -90,7 +90,7 @@ def main():
     opts = get_options()
 
     # create object with params
-    frag = iFragaria(
+    frag = Traversome(
         graph=opts.graph_gfa,
         alignment=opts.gaf_file,
         outdir=opts.output_dir,

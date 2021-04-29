@@ -4,7 +4,7 @@ __version__ = "0.0.4"
 __author__ = "Jianjun Jin and Deren Eaton"
 
 
-from .ifragaria import iFragaria
+from .traversome import Traversome
 
 
 

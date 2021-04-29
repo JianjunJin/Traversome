@@ -9,9 +9,9 @@ from optparse import OptionParser
 from sympy import Symbol, log, lambdify
 from scipy import optimize
 import numpy as np
-from ifragaria.assembly_parser import Assembly, ProcessingGraphFailed
-from ifragaria.alignment_parser import GraphAlignRecords
-from ifragaria.pip_control_func import simple_log, timed_log
+from traversome.assembly_parser import Assembly, ProcessingGraphFailed
+from traversome.alignment_parser import GraphAlignRecords
+from traversome.pip_control_func import simple_log, timed_log
 np.seterr(divide="ignore", invalid="ignore")
 import matplotlib.pyplot as plt
 import pymc3 as pm
@@ -55,13 +55,13 @@ def get_options(description):
         if not os.path.exists(options.output_dir):
             os.mkdir(options.output_dir)
         assert 0 <= options.out_seq_prop <= 1
-        log_handler = simple_log(logging.getLogger(), options.output_dir, "ifragaria", file_handler_mode="a")
+        log_handler = simple_log(logging.getLogger(), options.output_dir, "traversome", file_handler_mode="a")
         log_handler.info(description)
         log_handler.info("Python " + str(sys.version).replace("\n", " "))
         log_handler.info("WORKING DIR: " + os.getcwd())
         log_handler.info(" ".join(["\"" + arg + "\"" if " " in arg else arg for arg in sys.argv]) + "\n")
         log_handler = timed_log(
-            log_handler, options.output_dir, "ifragaria", log_level="DEBUG" if options.debug else "INFO")
+            log_handler, options.output_dir, "traversome", log_level="DEBUG" if options.debug else "INFO")
         return options, log_handler
 
 
@@ -276,7 +276,7 @@ def minimize_neg_likelihood(likelihood_function, num_isomers, verbose):
 
 def main():
     time0 = time.time()
-    options, log_handler = get_options(description="\niFragaria\n")
+    options, log_handler = get_options(description="\nTraversome\n")
     try:
         log_handler.info("Parsing graph ..")
         assembly_graph = Assembly(options.graph_gfa)
@@ -375,7 +375,7 @@ def main():
                                 output_handler.write(">" + this_seq.label + " prop=%.4f" % this_prob + "\n" +
                                                      this_seq.seq + "\n")
                                 log_handler.info(">" + this_seq.label + " prop=%.4f" % this_prob)
-        log_handler = simple_log(log_handler, options.output_dir, "ifragaria")
+        log_handler = simple_log(log_handler, options.output_dir, "traversome")
         log_handler.info("\nTotal cost " + "%.2f" % (time.time() - time0) + " s")
         log_handler.info("Thank you!")
     except:

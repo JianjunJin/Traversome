@@ -6,7 +6,7 @@ Base Assembly class for parsing input graph files.
 
 from loguru import logger
 from collections import OrderedDict
-from ifragaria.utils import Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
+from traversome.utils import Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
 from hashlib import sha256
 import os
 

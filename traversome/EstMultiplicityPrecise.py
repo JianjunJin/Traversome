@@ -6,7 +6,7 @@ Maximum Likelihood Optimization
 
 from loguru import logger
 from itertools import product
-from ifragaria.utils import ProcessingGraphFailed, INF, reduce_list_with_gcd, weighted_mean_and_std
+from traversome.utils import ProcessingGraphFailed, INF, reduce_list_with_gcd, weighted_mean_and_std
 from scipy import optimize
 from copy import deepcopy
 import sympy

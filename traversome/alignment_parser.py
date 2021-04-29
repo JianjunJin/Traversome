@@ -1,7 +1,7 @@
 import csv
 import re
 import sys
-from ifragaria.assembly_parser import Assembly
+from traversome.assembly_parser import Assembly
 
 
 def parse_gaf_path(path_str):

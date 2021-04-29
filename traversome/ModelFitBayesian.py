@@ -10,16 +10,16 @@ import numpy as np
 class ModelFitBayesian(object):
     """
     """
-    def __init__(self, ifragaria_obj):
-        self.ifragaria = ifragaria_obj
-        # self.graph = ifragaria_obj.graph
+    def __init__(self, traversome_obj):
+        self.traversome = traversome_obj
+        # self.graph = traversome_obj.graph
         pass
 
     def run_mcmc(self, isomer_num, n_generations, n_burn, log_handler):
-        log_handler.info(str(len(self.ifragaria.all_sub_paths)) + " subpaths in total")
+        log_handler.info(str(len(self.traversome.all_sub_paths)) + " subpaths in total")
         with pm.Model() as isomer_model:
             isomer_percents = pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,))
-            loglike_expression = self.ifragaria.get_likelihood_formula(isomer_percents=isomer_percents, log_func=tt.log)
+            loglike_expression = self.traversome.get_likelihood_formula(isomer_percents=isomer_percents, log_func=tt.log)
             pm.Potential("likelihood", loglike_expression)
             # pm.Deterministic("likelihood", likes)
             # pm.DensityDist?

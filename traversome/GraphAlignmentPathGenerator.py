@@ -1,5 +1,5 @@
 from loguru import logger
-from ifragaria.utils import harmony_weights, ProcessingGraphFailed
+from traversome.utils import harmony_weights, ProcessingGraphFailed
 from copy import deepcopy
 from scipy.stats import norm
 from math import log, exp

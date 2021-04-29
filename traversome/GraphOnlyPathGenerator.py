@@ -1,6 +1,6 @@
 
 from loguru import logger
-from ifragaria.utils import ProcessingGraphFailed
+from traversome.utils import ProcessingGraphFailed
 from copy import deepcopy
 from itertools import combinations
 

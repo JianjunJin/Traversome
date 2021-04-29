@@ -5,7 +5,7 @@ import re
 from setuptools import setup
 
 # parse version from init.py
-with open("ifragaria/__init__.py") as init:
+with open("traversome/__init__.py") as init:
     CUR_VERSION = re.search(
         r"^__version__ = ['\"]([^'\"]*)['\"]",
         init.read(),
@@ -29,14 +29,14 @@ else:
 
 # setup installation
 setup(
-    name="ifragaria",
-    packages=["ifragaria"],
+    name="traversome",
+    packages=["traversome"],
     version=CUR_VERSION,
     author="Jianjun Jin",
     author_email="...",
     install_requires=install_requires,
     entry_points={
-        'console_scripts': ['ifragaria = ifragaria.__main__:main']},    
+        'console_scripts': ['traversome = traversome.__main__:main']},
     license='GPL',
     classifiers=[
         'Programming Language :: Python',
