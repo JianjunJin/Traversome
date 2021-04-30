@@ -8,6 +8,7 @@ import os
 import sys
 import random
 from loguru import logger
+from copy import deepcopy
 from collections import OrderedDict
 from traversome.Assembly import Assembly
 from traversome.GraphAlignRecords import GraphAlignRecords
@@ -27,7 +28,8 @@ class Traversome(object):
     def __init__(
             self,
             graph,
-            alignment, outdir,
+            alignment,
+            outdir,
             do_bayesian=False,
             out_prob_threshold=0.001,
             keep_temp=False,
@@ -65,7 +67,6 @@ class Traversome(object):
         self.random = random
         self.random.seed(random_seed)
 
-
     def run(self):
         """
         Parse the assembly graph files ...
@@ -80,9 +81,9 @@ class Traversome(object):
             assembly_graph=self.graph,
         )
         self.generate_read_paths()
+        self.get_align_len_dist()
         logger.debug("Cleaning graph ...")
         self.clean_graph()
-        self.get_align_len_dist()
         logger.debug("Generating candidate isomer paths ...")
         self.generate_candidate_isopaths()
         logger.debug("Fitting candidate isomer paths model...")
@@ -108,7 +109,6 @@ class Traversome(object):
         self.max_read_path_size = 0
         for this_read_path in self.read_paths:
             self.max_read_path_size = max(self.max_read_path_size, len(this_read_path))
-
 
     def clean_graph(self, min_effective_count=10, ignore_ratio=0.001):
         clean_graph_obj = CleanGraph(self)
@@ -291,6 +291,11 @@ class Traversome(object):
                     output_handler.write(">" + this_seq.label + " prop=%.4f" % this_prob + "\n" +
                                          this_seq.seq + "\n")
                     logger.info(">" + this_seq.label + " prop=%.4f" % this_prob)
+
+    def __shuffled(self, sorted_list):
+        sorted_list = deepcopy(sorted_list)
+        self.random.shuffle(sorted_list)
+        return sorted_list
 
     def setup_logger(self, loglevel="INFO"):
         """

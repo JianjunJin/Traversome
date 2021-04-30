@@ -13,10 +13,11 @@ class CleanGraph(object):
         self.traversome = traversome
         self.graph = traversome.graph
         self.read_paths = traversome.read_paths
+        self.__shuffled = traversome.shuffled
         # to be generated
         self.max_read_path_size = 0
         self.id_to_read_paths = OrderedDict()
-        self.v_name_to_read_paths = OrderedDict()            # {v_name: {read_id: [loc]}}
+        self.v_name_to_read_paths = OrderedDict()            # {v_name: {read_id: {loc: strand(end)}}}
         self.rep_candidate_to_read_paths = OrderedDict()     # {rep_path: {terminal_pair:
                                                              #               {"path_counts": int,
                                                              #                "read_id": [int],
@@ -64,7 +65,7 @@ class CleanGraph(object):
                     self.v_name_to_read_paths[v_name] = OrderedDict()
                 if go_r not in self.v_name_to_read_paths[v_name]:
                     self.v_name_to_read_paths[v_name][go_r] = OrderedDict()
-                self.v_name_to_read_paths[v_name][go_r][go_v] = True
+                self.v_name_to_read_paths[v_name][go_r][go_v] = v_end
 
     def __index_read_path_mers(self):
         # Index read_path_mers by pmer (left_v, repeat_candidate, right_v), with depth counted.
@@ -489,10 +490,21 @@ class CleanGraph(object):
                         self.__rename_read_paths(the_repeat_path, renamed_path, terminal_pair)
 
     def __rename_read_paths(self, inner_path, new_inner_path, terminal_pair):
+        """
+        assign the read paths to the original inner_path or the renamed path
+        which can also be fulfilled by remapping the associated reads to the new graph
+        :param inner_path:
+        :param new_inner_path:
+        :param terminal_pair:
+        :return:
+        """
         if tuple(inner_path) != tuple(new_inner_path):
             # rand_num = random.random()
             # logger.debug("            renaming {} -> {}".format(inner_path, new_inner_path))
+            # Part 1: use rep_candidate_to_read_paths to rename those have inner_path and terminal_pair
             read_info = self.rep_candidate_to_read_paths[inner_path][terminal_pair]
+            left_v_name = terminal_pair[0][0]
+            right_v_name = terminal_pair[1][0]
             for go_p, read_id in enumerate(read_info["read_id"]):
 
                 read_path = list(self.id_to_read_paths[read_id])
@@ -513,62 +525,188 @@ class CleanGraph(object):
                 # logger.debug("            new {}".format(new_read_path))
                 new_read_path = tuple(new_read_path)
                 read_path = tuple(read_path)
-
-                # update self.read_paths
-                self.read_paths[new_read_path] = self.read_paths[read_path]
-                del self.read_paths[read_path]
-                # update self.id_to_read_paths
-                self.id_to_read_paths[read_id] = new_read_path
-                # update self.v_name_to_read_paths
-                for go_del, (del_n, del_e) in enumerate(read_path[pmer_id + 1:pmer_id + 1 + len(inner_path)]):
-                    self.v_name_to_read_paths[del_n][read_id].pop(pmer_id + 1 + go_del)
-                    if not self.v_name_to_read_paths[del_n][read_id]:
-                        del self.v_name_to_read_paths[del_n][read_id]
-                for go_add, (add_n, add_e) in enumerate(new_read_path[pmer_id + 1:pmer_id + 1 + len(inner_path)]):
-                    if add_n not in self.v_name_to_read_paths:
-                        self.v_name_to_read_paths[add_n] = OrderedDict()
-                    if read_id not in self.v_name_to_read_paths[add_n]:
-                        self.v_name_to_read_paths[add_n][read_id] = OrderedDict()
-                    self.v_name_to_read_paths[add_n][read_id][pmer_id + 1 + go_add] = True
-
-            #
+                self.__update_read_path_indices(
+                    read_id, read_path, new_read_path, from_v=pmer_id + 1, to_v=pmer_id + 1 + len(inner_path))
+            # Part 2: use read_id to rename the left (without covering the complete terminal_pair)
             old_path_names = set()
             for v_name, v_end in inner_path:
                 old_path_names.add(v_name)
-            #
             inner_associated_read_ids = set()
             for v_name in sorted(old_path_names):
                 for id_dict in self.v_name_to_read_paths[v_name]:
                     for read_id in id_dict:
                         inner_associated_read_ids.add(read_id)
-            #
             left_associated_read_ids = set()
-            for id_dict in self.v_name_to_read_paths[terminal_pair[0][0]]:
+            for id_dict in self.v_name_to_read_paths[left_v_name]:
                 for read_id in id_dict:
                     left_associated_read_ids.add(read_id)
-            #
             right_associated_read_ids = set()
-            for id_dict in self.v_name_to_read_paths[terminal_pair[1][0]]:
+            for id_dict in self.v_name_to_read_paths[right_v_name]:
                 for read_id in id_dict:
                     right_associated_read_ids.add(read_id)
-            # there should be rare intersect between above three id sets, because of the previous processing
-            # for debug
+            # Part 2 Scenario 1
+            # for debug: there should be rare intersect between above three id sets, because of the previous processing
             for read_id in inner_associated_read_ids & left_associated_read_ids & right_associated_read_ids:
-                logger.debug("unexpected: {} -> {} -> {}: {}".format(
+                logger.debug("unexpected(1): {} -> {} -> {}: {}".format(
                     terminal_pair[0], inner_path, terminal_pair[1], self.id_to_read_paths[read_id]))
-
+            # Part 2 Scenario 2
             # for those does not match current terminal
-            # TODO may need align & rename for sequential repeat
-            for read_id in inner_associated_read_ids - left_associated_read_ids - right_associated_read_ids:
-                for v_name, v_end in self.id_to_read_paths[read_id]:
-                    if v_name not in old_path_names:
-                        break
-                else:
-
-
+            self.__align_inner_v_and_rename(
+                id_set=inner_associated_read_ids - left_associated_read_ids - right_associated_read_ids,
+                inner_path=inner_path,
+                new_inner_path=new_inner_path,
+                terminal_pair=terminal_pair,
+                old_path_names=old_path_names)
+            # Part 2 Scenario 3
+            self.__align_terminal_v_and_rename(
+                id_set=inner_associated_read_ids & left_associated_read_ids,
+                start_v_name=left_v_name,
+                start_v_end=terminal_pair[0][1],
+                is_from_left=True,
+                inner_path=inner_path,
+                new_inner_path=new_inner_path)
+            # Part 2 Scenario 4
+            self.__align_terminal_v_and_rename(
+                id_set=inner_associated_read_ids & right_associated_read_ids,
+                start_v_name=right_v_name,
+                start_v_end=terminal_pair[1][1],
+                is_from_left=False,
+                inner_path=inner_path,
+                new_inner_path=new_inner_path)
             # may need align for sequential repeat
             # only inner_path and partial terminal
 
+    def __align_inner_v_and_rename(
+            self,
+            id_set,
+            inner_path,
+            new_inner_path,
+            terminal_pair,
+            old_path_names):
+        # id_set=inner_associated_read_ids - left_associated_read_ids - right_associated_read_ids
+        for read_id in id_set:
+            for v_name, v_end in self.id_to_read_paths[read_id]:
+                if v_name not in old_path_names:
+                    # other path
+                    break
+            else:
+                # if the original read_path only contain vertices of the inner_path
+                # the length of inner_path should be longer thant the read_path
+                len_inner = len(inner_path)
+                len_read = len(self.id_to_read_paths[read_id])
+                length_dif = len_inner - len_read
+                if length_dif < 0:
+                    self.__del_read_path(
+                        read_id, report=True,
+                        extra_report_info="unexpected(2): {} -> {} -> {}: {}".format(
+                            terminal_pair[0], inner_path, terminal_pair[1], self.id_to_read_paths[read_id]))
+                    continue
+                # if the original read_path is a sequential repeat inside the inner_path
+                # randomly assign the read_path to where it could be aligned
+                aligned = False
+                for r_strand in self.__shuffled([True, False]):
+                    for try_go in self.__shuffled(list(range(length_dif + 1))):
+                        if r_strand:
+                            try_path = self.graph.reverse_path[inner_path]
+                            try_new_path = self.graph.reverse_path[new_inner_path]
+                        else:
+                            try_path = inner_path
+                            try_new_path = new_inner_path
+                        if self.id_to_read_paths[read_id] == try_path[try_go: try_go + len_read]:
+                            self.__update_read_path_indices(
+                                read_id, self.id_to_read_paths[read_id], try_new_path[try_go: try_go + len_read])
+                            aligned = True
+                            break
+                    if aligned:
+                        break
+                if not aligned:
+                    self.__del_read_path(
+                        read_id, report=True,
+                        extra_report_info="unexpected(3): {} -> {} -> {}: {}".format(
+                            terminal_pair[0], inner_path, terminal_pair[1], self.id_to_read_paths[read_id]))
+                    continue
 
+    def __align_terminal_v_and_rename(
+            self,
+            id_set,
+            start_v_name,
+            start_v_end,
+            is_from_left,
+            inner_path,
+            new_inner_path):
+        for read_id in id_set:
+            aligned = False
+            read_path = self.id_to_read_paths[read_id]
+            for try_go, try_e in self.__shuffled(list(self.v_name_to_read_paths[start_v_name][read_id].items())):
+                new_read_path = list(read_path)
+                if is_from_left:
+                    if try_e == start_v_end:
+                        to_change = read_path[try_go + 1:]
+                        if to_change == inner_path[:len(to_change)]:
+                            new_read_path[try_go + 1:] = new_inner_path[:len(to_change)]
+                            self.__update_read_path_indices(read_id, read_path, tuple(new_read_path), from_v=try_go + 1)
+                            aligned = True
+                    else:
+                        to_change = read_path[:try_go]
+                        if to_change == self.graph.reverse_path(inner_path)[-len(to_change):]:
+                            new_read_path[:try_go] = self.graph.reverse_path(new_inner_path)[-len(to_change):]
+                            self.__update_read_path_indices(read_id, read_path, tuple(new_read_path), to_v=try_go)
+                            aligned = True
+                else:
+                    if try_e == start_v_end:
+                        to_change = read_path[:try_go]
+                        if to_change == inner_path[-len(to_change):]:
+                            new_read_path[:try_go] = new_inner_path[-len(to_change):]
+                            self.__update_read_path_indices(read_id, read_path, tuple(new_read_path), to_v=try_go)
+                            aligned = True
+                    else:
+                        to_change = read_path[try_go + 1:]
+                        if to_change == self.graph.reverse_path(inner_path)[:len(to_change)]:
+                            new_read_path[try_go + 1:] = self.graph.reverse_path(new_inner_path)[:len(to_change)]
+                            self.__update_read_path_indices(read_id, read_path, tuple(new_read_path), from_v=try_go + 1)
+                            aligned = True
+                if aligned:
+                    break
+            if not aligned:
+                self.__del_read_path(
+                    read_id, report=True,
+                    extra_report_info="unexpected(4): {} -> {} -> {}: {}".format(
+                        ["*", (start_v_name, start_v_end)][is_from_left],
+                        inner_path,
+                        [(start_v_name, start_v_end), "*"][is_from_left],
+                        self.id_to_read_paths[read_id]))
+
+    def __update_read_path_indices(self, read_id, read_path, new_read_path, from_v=0, to_v=None):
+        assert len(read_path) == len(new_read_path)
+        if to_v is None:
+            to_v = len(new_read_path)
+        # update self.read_paths
+        self.read_paths[new_read_path] = self.read_paths[read_path]
+        del self.read_paths[read_path]
+        # update self.id_to_read_paths
+        self.id_to_read_paths[read_id] = new_read_path
+        # update self.v_name_to_read_paths
+        for go_del, (del_n, del_e) in enumerate(read_path[from_v:to_v]):
+            if read_id in self.v_name_to_read_paths[del_n]:
+                self.v_name_to_read_paths[del_n][read_id].pop(from_v + go_del)
+                if not self.v_name_to_read_paths[del_n][read_id]:
+                    del self.v_name_to_read_paths[del_n][read_id]
+        for go_add, (add_n, add_e) in enumerate(new_read_path[from_v:to_v]):
+            if add_n not in self.v_name_to_read_paths:
+                self.v_name_to_read_paths[add_n] = OrderedDict()
+            if read_id not in self.v_name_to_read_paths[add_n]:
+                self.v_name_to_read_paths[add_n][read_id] = OrderedDict()
+            self.v_name_to_read_paths[add_n][read_id][from_v + go_add] = add_e
+
+    def __del_read_path(self, read_id, report=False, extra_report_info=""):
+        if report:
+            if extra_report_info:
+                logger.debug(extra_report_info)
+            logger.debug("delete read path ({}) {}".format(read_id, self.id_to_read_paths[read_id]))
+        read_path = self.id_to_read_paths[read_id]
+        for go_del, (del_n, del_e) in read_path:
+            self.v_name_to_read_paths[del_n].pop(read_id, None)
+        del self.read_paths[read_path]
+        del self.id_to_read_paths[read_id]
 
 
