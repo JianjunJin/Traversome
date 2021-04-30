@@ -12,7 +12,7 @@ from copy import deepcopy
 from collections import OrderedDict
 from traversome.Assembly import Assembly
 from traversome.GraphAlignRecords import GraphAlignRecords
-from traversome.utils import ProcessingGraphFailed, get_id_range_in_increasing_values, generate_clusters_from_connections
+from traversome.utils import ProcessingGraphFailed, get_id_range_in_increasing_values
 from traversome.ModelFitMaxLike import ModelFitMaxLike
 from traversome.ModelFitBayesian import ModelFitBayesian
 from traversome.CleanGraph import CleanGraph
@@ -292,7 +292,7 @@ class Traversome(object):
                                          this_seq.seq + "\n")
                     logger.info(">" + this_seq.label + " prop=%.4f" % this_prob)
 
-    def __shuffled(self, sorted_list):
+    def shuffled(self, sorted_list):
         sorted_list = deepcopy(sorted_list)
         self.random.shuffle(sorted_list)
         return sorted_list

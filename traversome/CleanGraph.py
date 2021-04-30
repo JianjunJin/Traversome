@@ -533,17 +533,14 @@ class CleanGraph(object):
                 old_path_names.add(v_name)
             inner_associated_read_ids = set()
             for v_name in sorted(old_path_names):
-                for id_dict in self.v_name_to_read_paths[v_name]:
-                    for read_id in id_dict:
-                        inner_associated_read_ids.add(read_id)
+                for read_id in self.v_name_to_read_paths[v_name]:
+                    inner_associated_read_ids.add(read_id)
             left_associated_read_ids = set()
-            for id_dict in self.v_name_to_read_paths[left_v_name]:
-                for read_id in id_dict:
-                    left_associated_read_ids.add(read_id)
+            for read_id in self.v_name_to_read_paths[left_v_name]:
+                left_associated_read_ids.add(read_id)
             right_associated_read_ids = set()
-            for id_dict in self.v_name_to_read_paths[right_v_name]:
-                for read_id in id_dict:
-                    right_associated_read_ids.add(read_id)
+            for read_id in self.v_name_to_read_paths[right_v_name]:
+                right_associated_read_ids.add(read_id)
             # Part 2 Scenario 1
             # for debug: there should be rare intersect between above three id sets, because of the previous processing
             for read_id in inner_associated_read_ids & left_associated_read_ids & right_associated_read_ids:
@@ -607,8 +604,8 @@ class CleanGraph(object):
                 for r_strand in self.__shuffled([True, False]):
                     for try_go in self.__shuffled(list(range(length_dif + 1))):
                         if r_strand:
-                            try_path = self.graph.reverse_path[inner_path]
-                            try_new_path = self.graph.reverse_path[new_inner_path]
+                            try_path = self.graph.reverse_path(inner_path)
+                            try_new_path = self.graph.reverse_path(new_inner_path)
                         else:
                             try_path = inner_path
                             try_new_path = new_inner_path
