@@ -6,8 +6,9 @@ Code copied and simplified from GetOrganelle.
 import os
 import sys
 from copy import deepcopy
-from math import log
+from math import log, inf
 from scipy import stats
+from loguru import logger
 import numpy as np
 import random
 
@@ -152,6 +153,194 @@ class SequenceList(object):
         for seq in self:
             fasta_file_handler.write(seq.fasta_str(this_interleaved))
         fasta_file_handler.close()
+
+
+class WeightedGMMWithEM:
+    def __init__(self,
+                 data_array,
+                 data_weights=None,
+                 minimum_cluster=1,
+                 maximum_cluster=5,
+                 min_sigma_factor=1E-5,
+                 cluster_limited=None):
+        """
+        :param data_array:
+        :param data_weights:
+        :param minimum_cluster:
+        :param maximum_cluster:
+        :param min_sigma_factor:
+        :param cluster_limited: {dat_id1: {0, 1}, dat_id2: {0}, dat_id3: {0} ...}
+        :param log_handler:
+        :param verbose_log:
+        :return:
+        """
+        self.data_array = np.array(data_array)
+        self.data_len = len(self.data_array)
+        self.min_sigma = min_sigma_factor * np.average(data_array, weights=data_weights)
+        self.data_weights = None
+        if not data_weights:
+            self.data_weights = np.array([1. for foo in range(self.data_len)])
+        else:
+            assert len(data_weights) == self.data_len
+            average_weights = float(sum(data_weights)) / self.data_len
+            # normalized
+            self.data_weights = np.array([raw_w / average_weights for raw_w in data_weights])
+        self.cluster_limited = cluster_limited
+        self.freedom_dat_item = None
+        if cluster_limited:
+            cls = set()
+            for sub_cls in cluster_limited.values():
+                cls |= sub_cls
+            self.freedom_dat_item = self.data_len - len(cluster_limited) + len(cls)
+        else:
+            self.freedom_dat_item = self.data_len
+        self.minimum_cluster = min(self.freedom_dat_item, minimum_cluster)
+        self.maximum_cluster = min(self.freedom_dat_item, maximum_cluster)
+
+    def run(self, criteria="bic"):
+        assert criteria in ("aic", "bic")
+        results = []
+        for total_cluster_num in range(self.minimum_cluster, self.maximum_cluster + 1):
+            # initialization
+            labels = np.random.choice(total_cluster_num, self.data_len)
+            if self.cluster_limited:
+                temp_labels = []
+                for dat_id in range(self.data_len):
+                    if dat_id in self.cluster_limited:
+                        if labels[dat_id] in self.cluster_limited[dat_id]:
+                            temp_labels.append(labels[dat_id])
+                        else:
+                            temp_labels.append(sorted(self.cluster_limited[dat_id])[0])
+                    else:
+                        temp_labels.append(labels[dat_id])
+                labels = np.array(temp_labels)
+            norm_parameters = self.updating_parameter(self.data_array, self.data_weights, labels,
+                                                 [{"mu": 0, "sigma": 1, "percent": total_cluster_num / self.data_len}
+                                                  for foo in range(total_cluster_num)])
+            loglike_shift = inf
+            prev_loglike = -inf
+            epsilon = 0.01
+            count_iterations = 0
+            best_loglike = prev_loglike
+            best_parameter = norm_parameters
+            try:
+                while loglike_shift > epsilon:
+                    count_iterations += 1
+                    # expectation
+                    labels = self.assign_cluster_labels(
+                        self.data_array, self.data_weights, norm_parameters, self.cluster_limited)
+                    # maximization
+                    updated_parameters = self.updating_parameter(
+                        self.data_array, self.data_weights, labels, deepcopy(norm_parameters))
+                    # loglike shift
+                    this_loglike = self.model_loglike(
+                        self.data_array, self.data_weights, labels, updated_parameters)
+                    loglike_shift = abs(this_loglike - prev_loglike)
+                    # update
+                    prev_loglike = this_loglike
+                    norm_parameters = updated_parameters
+                    if this_loglike > best_loglike:
+                        best_parameter = updated_parameters
+                        best_loglike = this_loglike
+                labels = self.assign_cluster_labels(self.data_array, self.data_weights, best_parameter, None)
+                results.append({"loglike": best_loglike, "iterates": count_iterations, "cluster_num": total_cluster_num,
+                                "parameters": best_parameter, "labels": labels,
+                                "aic": aic(prev_loglike, 2 * total_cluster_num),
+                                "bic": bic(prev_loglike, 2 * total_cluster_num, self.data_len)})
+            except TypeError as e:
+                logger.error("This error might be caused by outdated version of scipy!")
+                raise e
+        logger.debug(str(results))
+        best_scheme = sorted(results, key=lambda x: x[criteria])[0]
+        return best_scheme
+
+    def model_loglike(self, dat_arr, dat_w, lbs, parameters):
+        total_loglike = 0
+        for go_to_cl, pr in enumerate(parameters):
+            points = dat_arr[lbs == go_to_cl]
+            weights = dat_w[lbs == go_to_cl]
+            if len(points):
+                total_loglike += sum(stats.norm.logpdf(points, pr["mu"], pr["sigma"]) * weights + log(pr["percent"]))
+        return total_loglike
+
+    def assign_cluster_labels(self, dat_arr, dat_w, parameters, limited):
+        # assign every data point to its most likely cluster
+        if len(parameters) == 1:
+            return np.array([0] * self.data_len)
+        else:
+            # the parameter set of the first cluster
+            loglike_res = stats.norm.logpdf(dat_arr, parameters[0]["mu"], parameters[1]["sigma"]) * dat_w + \
+                          log(parameters[1]["percent"])
+            # the parameter set of the rest cluster
+            for pr in parameters[1:]:
+                loglike_res = np.vstack(
+                    (loglike_res, stats.norm.logpdf(dat_arr, pr["mu"], pr["sigma"]) * dat_w + log(pr["percent"])))
+            # assign labels
+            new_labels = loglike_res.argmax(axis=0)
+            if limited:
+                intermediate_labels = []
+                for here_dat_id in range(self.data_len):
+                    if here_dat_id in limited:
+                        if new_labels[here_dat_id] in limited[here_dat_id]:
+                            intermediate_labels.append(new_labels[here_dat_id])
+                        else:
+                            intermediate_labels.append(sorted(limited[here_dat_id])[0])
+                    else:
+                        intermediate_labels.append(new_labels[here_dat_id])
+                new_labels = np.array(intermediate_labels)
+                # new_labels = np.array([
+                # sorted(cluster_limited[dat_item])[0]
+                # if new_labels[here_dat_id] not in cluster_limited[dat_item] else new_labels[here_dat_id]
+                # if dat_item in cluster_limited else
+                # new_labels[here_dat_id]
+                # for here_dat_id, dat_item in enumerate(data_array)])
+                limited_values = set(dat_arr[list(limited)])
+            else:
+                limited_values = set()
+            # re-pick if some cluster are empty
+            label_counts = {lb: 0 for lb in range(len(parameters))}
+            for ct_lb in new_labels:
+                label_counts[ct_lb] += 1
+            for empty_lb in label_counts:
+                if label_counts[empty_lb] == 0:
+                    affordable_lbs = {af_lb: [min, max] for af_lb in label_counts if label_counts[af_lb] > 1}
+                    for af_lb in sorted(affordable_lbs):
+                        these_points = dat_arr[new_labels == af_lb]
+                        if max(these_points) in limited_values:
+                            affordable_lbs[af_lb].remove(max)
+                        if min(these_points) in limited_values:
+                            affordable_lbs[af_lb].remove(min)
+                        if not affordable_lbs[af_lb]:
+                            del affordable_lbs[af_lb]
+                    if affordable_lbs:
+                        chose_lb = random.choice(list(affordable_lbs))
+                        chose_points = dat_arr[new_labels == chose_lb]
+                        data_point = random.choice(affordable_lbs[chose_lb])(chose_points)
+                        transfer_index = np.where(dat_arr == data_point)[0]
+                        new_labels[transfer_index] = empty_lb
+                        label_counts[chose_lb] -= len(transfer_index)
+            return new_labels
+
+    def updating_parameter(self, dat_arr, dat_w, lbs, parameters):
+
+        for go_to_cl, pr in enumerate(parameters):
+            these_points = dat_arr[lbs == go_to_cl]
+            these_weights = dat_w[lbs == go_to_cl]
+            if len(these_points) > 1:
+                this_mean, this_std = weighted_mean_and_std(these_points, these_weights)
+                pr["mu"] = this_mean
+                pr["sigma"] = max(this_std, self.min_sigma)
+                pr["percent"] = sum(these_weights)  # / data_len
+            elif len(these_points) == 1:
+                pr["sigma"] = max(dat_arr.std() / self.data_len, self.min_sigma)
+                pr["mu"] = np.average(these_points, weights=these_weights) + pr["sigma"] * (2 * random.random() - 1)
+                pr["percent"] = sum(these_weights)  # / data_len
+            else:
+                # exclude
+                pr["mu"] = max(dat_arr) * 1E4
+                pr["sigma"] = self.min_sigma
+                pr["percent"] = 1E-10
+        return parameters
 
 
 class ProcessingGraphFailed(Exception):

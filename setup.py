@@ -24,6 +24,8 @@ else:
         "scipy",
     	"pymc3",
         "sympy",
+        "matplotlib",
+        "typer",
     ]
 
 
@@ -36,10 +38,9 @@ setup(
     author_email="...",
     install_requires=install_requires,
     entry_points={
-        'console_scripts': ['traversome = traversome.__main__:main']},
+        'console_scripts': ['traversome = traversome.__main__:app']},
     license='GPL',
     classifiers=[
-        'Programming Language :: Python',
         'Programming Language :: Python :: 3',
     ],
 )

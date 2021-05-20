@@ -6,16 +6,16 @@ from itertools import combinations
 
 
 
-class GraphOnlyPathGenerator(object):
+class PathGeneratorGraphOnly(object):
     """
-    All isomers are defined to have the same contig composition.
+    # All isomers are defined to have the same contig composition.
     """
 
     def __init__(self, graph, mode="embplant_pt", re_estimate_multiplicity=False):
         self.graph = graph
         self.mode = mode
         self.__re_estimate_multiplicity = re_estimate_multiplicity
-        self.isomers = []
+        # self.isomers = []
 
         # temporary values
         self.components = list()
@@ -23,8 +23,7 @@ class GraphOnlyPathGenerator(object):
         self.__start_vertex = None
         self.__start_direction = None
 
-
-    def get_all_circular_isomers(self):
+    def find_all_circular_isomers(self):
         self.components = list()
         self.components_set = set()
         if self.__re_estimate_multiplicity or not self.graph.vertex_to_copy:
@@ -153,11 +152,9 @@ class GraphOnlyPathGenerator(object):
                                                   -self.graph.vertex_info[x[0]].other_attr["orf"][x[1]]["sum_len"], x))[0]
                     for go_p, each_path in enumerate(self.components):
                         self.components[go_p] = reseed_a_path(each_path, (self.__start_vertex, self.__start_direction))
-            #
             # return self.isomers
 
-
-    def get_all_isomers(self):
+    def find_all_isomers(self):
         self.components = list()
         self.components_set = set()
         if self.__re_estimate_multiplicity or not self.graph.vertex_to_copy:

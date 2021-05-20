@@ -5,104 +5,142 @@ Command-line Interface to traversome
 """
 
 import os
-import sys
-from optparse import OptionParser
-
+import typer
+from enum import Enum
 from .traversome import Traversome
+from traversome import __version__
+
+# add the -h option for showing help
+CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
 
 
+class LogLevel(str, Enum):
+    """categorical options for loglevel to CLI"""
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
 
-def get_options():
-    "parse command line with OptionParser"
 
-    # init object and set usage
-    parser = OptionParser(usage="traversome -g graph.gfa -a align.gaf -o .")
+# creates the top-level traversome app
+app = typer.Typer(add_completion=False, context_settings=CONTEXT_SETTINGS)
 
-    # create param flags
-    parser.add_option(
-        "-g", 
-        dest="graph_file",
-        help="GFA format Graph file. ",
-    )
-    parser.add_option(
-        "-a", 
-        dest="gaf_file",
-        help="GAF format alignment file. ",
-    )
-    parser.add_option(
-        "-o", 
-        dest="output_dir",
-        help="Output directory. ",
-    )
-    parser.add_option(
-        "--out-seq-prop",
-        dest="out_seq_prop",
-        default=0.001,
-        type=float,
-        help="(Currently working for ML only) Output sequences with proportion >= %default")
-    parser.add_option(
-        "-B", 
-        dest="do_bayesian", 
-        action="store_true", 
-        default=False,
-        help="Use Bayesian implementation. ",
-    )
-    parser.add_option(
-        "--loglevel", 
-        dest="loglevel", 
-        default="INFO", 
-        action="store",
-        help="Default=INFO. Use DEBUG for more, ERROR for less.",
-    )
-    parser.add_option(
-        "--keep-temp", 
-        dest="keep_temp", 
-        default=False, 
-        action="store_true",
-        help="Keep temporary files for debug. Default: %default",
+
+def version_callback(value: bool):
+    """Adding a --version option to the CLI"""
+    if value:
+        typer.echo(f"traversome {__version__}")
+        raise typer.Exit()
+
+
+def docs_callback(value: bool):
+    """function to open docs"""
+    if value:
+        typer.echo("Opening https://eaton-lab.org/traversome in default browser")
+        typer.launch("https://eaton-lab.org/traversome")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+        version: bool = typer.Option(None, "--version", "-v", callback=version_callback, is_eager=True,
+                                     help="print version and exit."),
+        docs: bool = typer.Option(None, "--docs", callback=docs_callback, is_eager=True,
+                                  help="Open documentation in browser."),
+):
+    """
+    Call traversome commands to access tools in the traversome toolkit,
+    and traversome COMMAND -h to see help options for each tool
+    (e.g., traversome ml -h)
+    """
+    typer.secho(
+        f"traversome (v.{__version__}): genomic isomer frequency estimator",
+        fg=typer.colors.MAGENTA, bold=True,
     )
 
-    
-    # parse and check param args
-    options, argv = parser.parse_args()
 
-    # check for required flags
-    if not (options.graph_gfa and options.gaf_file and options.output_dir):
-        parser.print_help()
-        sys.exit()
+@app.command()
+def ml(
+    graph_file: str = typer.Option(None, "-g", "--graph", help="GFA/FASTG format Graph file. "),
+    alignment_file: str = typer.Option(None, "-a", "--alignment", help="GAF format alignment file. "),
+    output_dir: str = typer.Option(None, "-o", "--output", help="Output directory. "),
+    path_generator: str = typer.Option("H", "-P", help="Path generator: H (Heuristic)/U (User-provided)."),
+    linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
+    out_seq_threshold: float = typer.Option(0.001, "-S", help="Output sequences with proportion >= %(default)s"),
+    keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. Default: %(default)s"),
+    log_level: LogLevel = typer.Option(LogLevel.INFO, help="Logging level. Use DEBUG for more, ERROR for less."),
+    ):
+    """
+    Conduct Maximum Likelihood analysis for solving assembly graph
+    Examples:
+    traversome ml -g graph.gfa -a align.gaf -o .
+    """
+    if not os.path.isfile(graph_file):
+        raise IOError(graph_file + " not found/valid!")
+    if not os.path.isfile(alignment_file):
+        raise IOError(alignment_file + " not found/valid!")
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
+    assert path_generator in ("H", "U")
+    assert 0 <= out_seq_threshold <= 1
+    try:
+        traverser = Traversome(
+            graph=graph_file,
+            alignment=alignment_file,
+            outdir=output_dir,
+            out_prob_threshold=out_seq_threshold,
+            keep_temp=keep_temp,
+            loglevel=log_level
+        )
+        traverser.run(
+            path_generator=path_generator,
+            multi_chromosomes=True,  # opts.is_multi_chromosomes,
+            force_circular=not linear_chr)
+    except:
+        typer.Exit()
 
-    # check file paths
-    if not os.path.isfile(options.graph_gfa):
-        raise IOError(options.graph_gfa + " not found/valid!")
-    if not os.path.isfile(options.gaf_file):
-        raise IOError(options.gaf_file + " not found/valid!")
-    if not os.path.exists(options.output_dir):
-        os.mkdir(options.output_dir)
-    assert 0 <= options.out_seq_prop <= 1
 
-    return options
-
-
-
-def main():
-    "command line interface function workflow"
-    # parse command line params and get logger
-    opts = get_options()
-
-    # create object with params
-    frag = Traversome(
-        graph=opts.graph_gfa,
-        alignment=opts.gaf_file,
-        outdir=opts.output_dir,
-        do_bayesian=opts.do_bayesian,
-        out_prob_threshold=opts.out_seq_prop,
-        keep_temp=opts.keep_temp,
-        loglevel=opts.loglevel
-    )
-
-    # run the object
-    frag.run()
-
-
-if __name__ == "__main__":
-    main()
+@app.command()
+def mc(
+    graph_file: str = typer.Option(None, "-g", "--graph", help="GFA/FASTG format Graph file. "),
+    alignment_file: str = typer.Option(None, "-a", "--alignment", help="GAF format alignment file. "),
+    output_dir: str = typer.Option(None, "-o", "--output", help="Output directory. "),
+    path_generator: str = typer.Option("H", "-P", help="Path generator: H (Heuristic)/U (User-provided)."),
+    linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
+    out_seq_threshold: float = typer.Option(0.001, "-S", help="Output sequences with proportion >= %(default)s"),
+    n_generations: int = typer.Option(10000, "--mcmc", help="Number of MCMC generations. "),
+    n_burn: int = typer.Option(1000, "--burn", help="Number of MCMC Burn-in. "),
+    keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. Default: %(default)s"),
+    log_level: LogLevel = typer.Option(LogLevel.INFO, help="Logging level. Use DEBUG for more, ERROR for less."),
+    ):
+    """
+    Conduct Bayesian MCMC analysis for solving assembly graph
+    Examples:
+    traversome mc -g graph.gfa -a align.gaf -o .
+    """
+    if not os.path.isfile(graph_file):
+        raise IOError(graph_file + " not found/valid!")
+    if not os.path.isfile(alignment_file):
+        raise IOError(alignment_file + " not found/valid!")
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
+    assert path_generator in ("H", "U")
+    assert 0 <= out_seq_threshold <= 1
+    try:
+        traverser = Traversome(
+            graph=graph_file,
+            alignment=alignment_file,
+            outdir=output_dir,
+            out_prob_threshold=out_seq_threshold,
+            do_bayesian=True,
+            n_generations=n_generations,
+            n_burn=n_burn,
+            keep_temp=keep_temp,
+            loglevel=log_level
+        )
+        traverser.run(
+            path_generator=path_generator,
+            multi_chromosomes=True,  # opts.is_multi_chromosomes,
+            force_circular=not linear_chr)
+    except:
+        typer.Exit()

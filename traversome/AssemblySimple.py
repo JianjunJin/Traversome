@@ -198,7 +198,7 @@ class VertexEditHistory(object):
         return v_set
 
 
-class SimpleAssembly(object):
+class AssemblySimple(object):
     """
     Base class for Assembly class objects used to parse input graph files.
 

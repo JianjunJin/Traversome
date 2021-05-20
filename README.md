@@ -6,7 +6,7 @@ Genomic isomer frequency estimation from genome assembly graphs and long reads.
 
 ### Install dependencies
 ```bash
-conda install numpy pandas scipy pymc3 sympy -c conda-forge
+conda install typer numpy pandas scipy pymc3 sympy matplotlib -c conda-forge
 ```
 
 ### Install devel version of traversome
@@ -49,7 +49,6 @@ traversome -g graph.gfa -a align.gaf -o .
     |-- CleanGraph.py (still working)
     |-- EstCopyDepthFromCov.py
     |-- EstCopyDepthPrecise.py (still working)
-    |-- GetAllIsomers.py (Deprecated)
     |-- GraphAlignmentPathGenerator.py
     |-- GraphOnlyPathGenerator.py
     |-- ModelFitBayesian.py

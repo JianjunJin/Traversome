@@ -15,8 +15,9 @@ class ModelFitBayesian(object):
         # self.graph = traversome_obj.graph
         pass
 
-    def run_mcmc(self, isomer_num, n_generations, n_burn, log_handler):
-        log_handler.info(str(len(self.traversome.all_sub_paths)) + " subpaths in total")
+    def run_mcmc(self, n_generations, n_burn):
+        logger.info("{} subpaths in total".format(len(self.traversome.all_sub_paths)))
+        isomer_num = self.traversome.num_of_isomers
         with pm.Model() as isomer_model:
             isomer_percents = pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,))
             loglike_expression = self.traversome.get_likelihood_formula(isomer_percents=isomer_percents, log_func=tt.log)
@@ -30,5 +31,5 @@ class ModelFitBayesian(object):
             # trace = pm.sample_smc(n_generations, parallel=False)
             trace = pm.sample(
                 n_generations, tune=n_burn, discard_tuned_samples=True, cores=1, init='adapt_diag', start=start)
-            log_handler.info(pm.summary(trace))
+            logger.info(pm.summary(trace))
         return trace

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 __version__ = "0.0.4"
-__author__ = "Jianjun Jin and Deren Eaton"
+__author__ = "JianJun Jin and Deren Eaton"
 
 
 from .traversome import Traversome

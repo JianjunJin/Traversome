@@ -50,14 +50,15 @@ class EstMultiplicityPrecise(object):
         self.vertex_to_symbols = {i: sympy.Symbol("V{}".format(i), integer=True) for i in self.vertlist}
         self.symbols_to_vertex = {self.vertex_to_symbols[i]: i for i in self.vertlist}
         self.free_copy_variables = []
-        self.extra_str_to_symbol = {}
-        self.extra_symbol_to_str = {}
+        self.extra_str_to_symbol_m1 = {}
+        self.extra_str_to_symbol_m2 = {}
+        self.extra_symbol_to_str_m1 = {}
+        self.extra_symbol_to_str_m2 = {}
         self.formulae = []
         self.all_v_symbols = []
         self.all_symbols = []
         self.copy_solution = {}
-
-
+        self.self_loop_vertices = set()
 
     def run(self):
         """
@@ -86,8 +87,6 @@ class EstMultiplicityPrecise(object):
             return self.optimize_model()
         else:
             self.optimize_model()
-
-
 
     def get_formula(self, from_vertex, from_end, back_to_vertex, back_to_end, here_record_ends):
         """
@@ -123,8 +122,6 @@ class EstMultiplicityPrecise(object):
                     result_form -= form
 
         return result_form
-
-
 
     def path_without_leakage(self, start_v, start_e, terminating_end_set, terminator):
         """
@@ -173,8 +170,6 @@ class EstMultiplicityPrecise(object):
             return circle_in_between
         else:
             return []
-
-
 
     def is_sequential_repeat(self, search_vertex_name, return_pair_in_the_trunk_path=True):
         """
@@ -230,8 +225,6 @@ class EstMultiplicityPrecise(object):
             return single_pair_in_main_path
         return all_pairs_of_inner_circles
 
-
-
     def get_max_multiplicity(self):
         """
         Finds the maximum copy number based on all contig coverages
@@ -244,8 +237,6 @@ class EstMultiplicityPrecise(object):
             # add the latter one to avoid the influence of bloated self.maximum_copy_num
         )
         logger.info("Maximum multiplicity: {}".format(self.maximum_copy_num))
-
-
 
     def build_formulae(self):
         """
@@ -313,35 +304,31 @@ class EstMultiplicityPrecise(object):
         self.formulae = formulae
         logger.info('formulae step 1: {}'.format(self.formulae))
 
-
-
     def add_self_loop_formulae(self):
         """
-
         """
         # add self-loop formulae
         for vname in self.vertlist:
             if self.vertex_info[vname].is_self_loop():
+                self.self_loop_vertices.add(vname)
                 logger.warning("Self-loop contig detected: Vertex_{}".format(vname))
 
                 # create pseudo self loop vertex
                 pseudo_self_loop_str = "P" + vname
 
                 # check if it is already in extra dict
-                if pseudo_self_loop_str not in self.extra_str_to_symbol:
+                if pseudo_self_loop_str not in self.extra_str_to_symbol_m1:
 
                     # store symbol and psuedo vertex name in dict and revdict
-                    self.extra_str_to_symbol[pseudo_self_loop_str] = sympy.Symbol(pseudo_self_loop_str, integer=True)
-                    self.extra_symbol_to_str[self.extra_str_to_symbol[pseudo_self_loop_str]] = pseudo_self_loop_str
+                    self.extra_str_to_symbol_m1[pseudo_self_loop_str] = sympy.Symbol(pseudo_self_loop_str, integer=True)
+                    self.extra_symbol_to_str_m1[self.extra_str_to_symbol_m1[pseudo_self_loop_str]] = pseudo_self_loop_str
 
                 # subtract psuedovertex from this vertex
-                this_formula = self.vertex_to_symbols[vname] - self.extra_str_to_symbol[pseudo_self_loop_str]
+                this_formula = self.vertex_to_symbols[vname] - self.extra_str_to_symbol_m1[pseudo_self_loop_str]
                 
                 # store this to formulae
                 self.formulae.append(this_formula)
                 logger.info("formulating for: {}{}:{}".format(vname, ECHO_DIRECTION[True], this_formula))
-
-
 
     def add_limit_formulae(self):
         """
@@ -366,24 +353,32 @@ class EstMultiplicityPrecise(object):
                 if from_v != to_v:
 
                     # create a new extra symbol
-                    new_str = "E" + str(len(self.extra_str_to_symbol))
-                    self.extra_str_to_symbol[new_str] = sympy.Symbol(new_str, integer=True)
-                    self.extra_symbol_to_str[self.extra_str_to_symbol[new_str]] = new_str
+                    new_str = "E" + str(len(self.extra_str_to_symbol_m1) + len(self.extra_str_to_symbol_m2))
+                    if vname in self.self_loop_vertices:
+                        self.extra_str_to_symbol_m1[new_str] = sympy.Symbol(new_str, integer=True)
+                        self.extra_symbol_to_str_m1[self.extra_str_to_symbol_m1[new_str]] = new_str
 
-                    # write as a formula and add to formulae list
-                    this_formula = (
-                        self.vertex_to_symbols[vname] -
-                        self.vertex_to_symbols[from_v] * self.extra_str_to_symbol[new_str]
-                    )
+                        # write as a formula and add to formulae list
+                        this_formula = (
+                            self.vertex_to_symbols[vname] -
+                            self.vertex_to_symbols[from_v] * self.extra_str_to_symbol_m1[new_str]
+                        )
+                    else:
+                        self.extra_str_to_symbol_m2[new_str] = sympy.Symbol(new_str, integer=True)
+                        self.extra_symbol_to_str_m2[self.extra_str_to_symbol_m2[new_str]] = new_str
+
+                        # write as a formula and add to formulae list
+                        this_formula = (
+                                self.vertex_to_symbols[vname] -
+                                self.vertex_to_symbols[from_v] * self.extra_str_to_symbol_m2[new_str]
+                        )
                     self.formulae.append(this_formula)
                     logger.info("formulating for: {}:{}".format(vname, this_formula))
 
         # get all symbols
         self.all_v_symbols = list(self.symbols_to_vertex)
-        self.all_symbols = self.all_v_symbols + list(self.extra_symbol_to_str)
+        self.all_symbols = self.all_v_symbols + list(self.extra_symbol_to_str_m1) + list(self.extra_symbol_to_str_m2)
         logger.info("formulae: " + str(self.formulae))
-
-
 
     def sympy_solve_equations(self):
         """
@@ -483,7 +478,6 @@ class EstMultiplicityPrecise(object):
         # store these for now
         self.core_function = core_function
         self.core_function_v = core_function_v
-
 
     def optimize_model(self):
         """
@@ -653,7 +647,6 @@ class EstMultiplicityPrecise(object):
                 final_results[go_res]["cov"] = total_product / total_len
             return final_results
 
-
         # not returning the graph, so record new values to the original graph object
         else:
             # produce the first-ranked copy combination
@@ -700,7 +693,6 @@ class EstMultiplicityPrecise(object):
                     self.graph.copy_to_vertex[this_copy] = set()
                 self.graph.copy_to_vertex[this_copy].add(vertex_name)
 
-
             # re-estimate baseline depth
             total_product = 0.
             total_len = 0
@@ -714,22 +706,17 @@ class EstMultiplicityPrecise(object):
             new_val = total_product / total_len
             logger.debug("Average " + self.label + " kmer-coverage = " + str(round(new_val, 2)))
 
-
-
-
-
-
     def __constraint_min_function(self, x):
         """
         create constraints by creating inequations: the copy of every contig has to be >= 1
         """
         replacements = [(symbol_used, x[go_sym]) for go_sym, symbol_used in enumerate(self.free_copy_variables)]
         expression_array = np.array([self.copy_solution[this_sym].subs(replacements) for this_sym in self.all_symbols])
-        min_copy = np.array([1.001] * len(self.all_v_symbols) + [2.001] * len(self.extra_symbol_to_str))
+        min_copy = np.array([1.001] * len(self.all_v_symbols) +
+                            [1.001] * len(self.extra_symbol_to_str_m1) +
+                            [2.001] * len(self.extra_symbol_to_str_m2))
         # effect: expression_array >= int(min_copy)
         return expression_array - min_copy
-
-
 
     def __constraint_min_function_for_customized_brute(self, x):
         """
@@ -743,11 +730,11 @@ class EstMultiplicityPrecise(object):
             self.copy_solution[this_sym].subs(replacements)
             for this_sym in self.all_symbols
         ])
-        min_copy = np.array([1.0] * len(self.all_v_symbols) + [2.0] * len(self.extra_symbol_to_str))
+        min_copy = np.array([1.0] * len(self.all_v_symbols) +
+                            [1.0] * len(self.extra_symbol_to_str_m1) +
+                            [2.0] * len(self.extra_symbol_to_str_m2))
         # effect: expression_array >= min_copy
         return expression_array - min_copy
-
-
 
     def __constraint_max_function(self, x):
         """
@@ -756,20 +743,16 @@ class EstMultiplicityPrecise(object):
         replacements = [(symbol_used, x[go_sym]) for go_sym, symbol_used in enumerate(self.free_copy_variables)]
         expression_array = np.array([self.copy_solution[this_sym].subs(replacements) for this_sym in self.all_symbols])
         max_copy = np.array([self.maximum_copy_num] * len(self.all_v_symbols) +
-                            [self.maximum_copy_num * 2] * len(self.extra_symbol_to_str))
+                            [self.maximum_copy_num] * len(self.extra_symbol_to_str_m1) +
+                            [self.maximum_copy_num * 2] * len(self.extra_symbol_to_str_m2))
         # effect: expression_array <= max_copy
         return max_copy - expression_array
-
-
 
     def __constraint_int_function(self, x):
         replacements = [(symbol_used, x[go_sym]) for go_sym, symbol_used in enumerate(self.free_copy_variables)]
         expression_array = np.array([self.copy_solution[this_sym].subs(replacements) for this_sym in self.all_symbols])
         # diff = np.array([0] * len(all_symbols))
         return sum([abs(every_copy - int(every_copy)) for every_copy in expression_array])
-
-
-
 
     def minimize_brute_force(self,
         func, 

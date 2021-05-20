@@ -34,7 +34,8 @@ class Traversome(object):
             out_prob_threshold=0.001,
             keep_temp=False,
             random_seed=12345,
-            loglevel="DEBUG"):
+            loglevel="DEBUG",
+            **kwargs):
         # store input files and params
         self.graph_gfa = graph
         self.alignment_gaf = alignment
@@ -42,6 +43,7 @@ class Traversome(object):
         self.do_bayesian = do_bayesian,
         self.out_prob_threshold = out_prob_threshold
         self.keep_temp = keep_temp
+        self.kwargs = kwargs
 
         # init logger
         self.logfile = os.path.join(self.outdir, "logfile.txt")
@@ -53,7 +55,7 @@ class Traversome(object):
         self.alignment = None
         self.align_len_at_path_sorted = None
         self.max_alignment_length = None
-        self.isomer_paths_with_labels = []  # each element is a tuple(path, path_label)
+        self.component_paths = []  # each element is a tuple(path, path_label)
         self.isomer_sizes = None
         self.num_of_isomers = None
         self.isomer_subpath_counters = []  # each element is a dict(sub_path->sub_path_counts)
@@ -67,7 +69,7 @@ class Traversome(object):
         self.random = random
         self.random.seed(random_seed)
 
-    def run(self):
+    def run(self, path_generator="heuristic", multi_chromosomes=True, force_circular=True):
         """
         Parse the assembly graph files ...
         """
@@ -82,18 +84,21 @@ class Traversome(object):
         )
         self.generate_read_paths()
         self.get_align_len_dist()
-        logger.debug("Cleaning graph ...")
-        self.clean_graph()
+        # logger.debug("Cleaning graph ...")
+        # self.clean_graph()
         logger.debug("Generating candidate isomer paths ...")
-        self.generate_candidate_isopaths()
+        self.generate_candidate_paths(
+            path_generator=path_generator,
+            multi_chromosomes=multi_chromosomes,
+            force_circular=force_circular
+        )
         logger.debug("Fitting candidate isomer paths model...")
         if self.do_bayesian:
-            pass
+            probs = self.fit_model_using_bayesian_mcmc()
         else:
             probs = self.fit_model_using_maximum_likelihood()
-
-
-        logger.exception("end of devel.")
+        logger.info(probs)
+        # logger.exception("end of devel.")
 
     def generate_read_paths(self):
         for go_record, record in enumerate(self.alignment.records):
@@ -139,23 +144,36 @@ class Traversome(object):
             self.max_alignment_length)
         )
 
-    def generate_candidate_isopaths(self):
+    def generate_candidate_paths(self, path_generator="heuristic", multi_chromosomes=True, force_circular=True):
         """
         generate candidate isomer paths from the graph
         """
-        self.graph.estimate_multiplicity_by_cov(mode="all")
-        self.graph.estimate_multiplicity_precisely(maximum_copy_num=8, debug=self.loglevel in ("DEBUG", "TRACE", "ALL"))
+        if path_generator == "all":
+            # if multi_chromosomes:
+            #     logger.error("Simultaneously using 'all' generator and 'multi-chromosome' mode is not implemented!")
+            #     raise Exception
+            self.graph.estimate_multiplicity_by_cov(mode="all")
+            self.graph.estimate_multiplicity_precisely(maximum_copy_num=8, debug=self.loglevel in ("DEBUG", "TRACE", "ALL"))
+            if force_circular:
+                try:
+                    self.component_paths = self.graph.find_all_circular_isomers(mode="all")
+                except ProcessingGraphFailed as e:
+                    logger.info("Disentangling circular isomers failed: " + str(e).strip())
+            else:
+                self.component_paths = self.graph.find_all_isomers(mode="all")
+        else:
+            # if not multi_chromosomes:
+            #     logger.error(
+            #         "Simultaneously using 'heuristic' generator and 'single-chromosome' mode is not implemented!")
+            #     raise Exception
+            self.component_paths = self.graph.generate_heuristic_components(
+                graph_alignment=self.alignment,
+                random_obj=self.random,
+                force_circular=True)
 
-        try:
-            self.isomer_paths_with_labels = self.graph.get_all_circular_isomers(mode="all")
-        except ProcessingGraphFailed as e:
-            logger.info("Disentangling circular isomers failed: " + str(e).strip())
-            logger.info("Disentangling linear isomers ..")
-            self.isomer_paths_with_labels = self.graph.get_all_isomers(mode="all")
-        #
         self.isomer_sizes = [self.graph.get_path_length(isomer_p)
-                             for (isomer_p, isomer_l) in self.isomer_paths_with_labels]
-        self.num_of_isomers = len(self.isomer_paths_with_labels)
+                             for isomer_p in self.component_paths]
+        self.num_of_isomers = len(self.component_paths)
 
         # generate subpaths: the binomial sets
         if self.num_of_isomers > 1:
@@ -172,7 +190,7 @@ class Traversome(object):
         # count sub path occurrences for each candidate isomer and recorded in self.isomer_subpath_counters
         this_overlap = self.graph.overlap()
         self.isomer_subpath_counters = []
-        for go_path, (this_path, extra_label) in enumerate(self.isomer_paths_with_labels):
+        for go_path, this_path in enumerate(self.component_paths):
             these_sub_paths = dict()
             num_seg = len(this_path)
             for go_start_v, start_segment in enumerate(this_path):
@@ -269,7 +287,7 @@ class Traversome(object):
             n__num_reads_in_range = right_id + 1 - left_id
             x__num_matched_reads = len(this_sub_path_info["mapped_records"])
             loglike_expression += x__num_matched_reads * log_func(this_prob) + \
-                                          (n__num_reads_in_range - x__num_matched_reads) * log_func(1 - this_prob)
+                                  (n__num_reads_in_range - x__num_matched_reads) * log_func(1 - this_prob)
             if go_sp % logger_step == 0:
                 logger.debug("Summarized subpaths: %i/%i" % (go_sp, total_sp_num))
         return loglike_expression
@@ -280,14 +298,14 @@ class Traversome(object):
 
     def fit_model_using_bayesian_mcmc(self):
         self.bayesian_fit = ModelFitBayesian(self)
-        return self.bayesian_fit.run_mcmc()
+        return self.bayesian_fit.run_mcmc(self.kwargs["n_generations"], self.kwargs["n_burn"])
 
     def output_seqs(self, probs, threshold=0.001):
         logger.info("Output seqs: ")
         with open(os.path.join(self.outdir, "isomers.fasta"), "w") as output_handler:
             for go_isomer, this_prob in enumerate(probs):
                 if this_prob > threshold:
-                    this_seq = self.graph.export_path(self.isomer_paths_with_labels[go_isomer][0])
+                    this_seq = self.graph.export_path(self.component_paths[go_isomer])
                     output_handler.write(">" + this_seq.label + " prop=%.4f" % this_prob + "\n" +
                                          this_seq.seq + "\n")
                     logger.info(">" + this_seq.label + " prop=%.4f" % this_prob)
@@ -308,8 +326,8 @@ class Traversome(object):
                     "sink": sys.stdout, 
                     "format": (
                         "{time:YYYY-MM-DD-hh:mm:ss.SS} | "
-                        "<magenta>{file: >24} | </magenta>"
-                        "<cyan>{function: <24} | </cyan>"
+                        "<magenta>{file: >30} | </magenta>"
+                        "<cyan>{function: <30} | </cyan>"
                         "<level>{message}</level>"
                     ),
                     "level": loglevel,
@@ -317,8 +335,8 @@ class Traversome(object):
                 {
                     "sink": self.logfile,                   
                     "format": "{time:YYYY-MM-DD-hh:mm:ss.SS} | "
-                              "<magenta>{file: >24} | </magenta>"
-                              "<cyan>{function: <24} | </cyan>"
+                              "<magenta>{file: >30} | </magenta>"
+                              "<cyan>{function: <30} | </cyan>"
                               "<level>{message}</level>",
                     "level": loglevel,
                     }

@@ -5,9 +5,9 @@ Assembly class object and associated class objects
 """
 
 from loguru import logger
-from traversome.SimpleAssembly import SimpleAssembly, VertexMergingHistory, VertexEditHistory
-from traversome.GraphOnlyPathGenerator import GraphOnlyPathGenerator
-# from traversome.GetAllIsomers import GetAllIsomers
+from traversome.AssemblySimple import AssemblySimple, VertexMergingHistory, VertexEditHistory
+from traversome.PathGeneratorGraphOnly import PathGeneratorGraphOnly
+from traversome.PathGeneratorGraphAlignment import PathGeneratorGraphAlignment
 from traversome.EstMultiplicityFromCov import EstMultiplicityFromCov
 from traversome.EstMultiplicityPrecise import EstMultiplicityPrecise
 from traversome.utils import \
@@ -19,7 +19,7 @@ import os
 import sys
 
 
-class Assembly(SimpleAssembly):
+class Assembly(AssemblySimple):
     """
     Main class object for storing and 
     """
@@ -862,24 +862,44 @@ class Assembly(SimpleAssembly):
             rm_contigs = {candidate_v for candidate_v in self.vertex_info if candidate_v not in accepted}
             self.remove_vertex(rm_contigs, update_cluster=True)
 
-    def get_all_circular_isomers(self, mode="embplant_pt", re_estimate_multiplicity=False):
+    def generate_heuristic_components(self, graph_alignment, random_obj, force_circular=True):
+        """
+        :param graph_alignment:
+        :param random_obj: random
+            passed from traversome.random [or from import random]
+        :param force_circular
+        """
+        generator = PathGeneratorGraphAlignment(
+            assembly_graph=self,
+            graph_alignment=graph_alignment,
+            random_obj=random_obj)
+        generator.generate_heuristic_components(force_circular=force_circular)
+        return generator.components
+
+    def find_all_circular_isomers(self, mode="embplant_pt", re_estimate_multiplicity=False):
         """
         :param mode:
         :param library_info: not used currently
         :return: sorted_paths
         """
-        return GraphOnlyPathGenerator(graph=self, mode=mode, re_estimate_multiplicity=re_estimate_multiplicity).get_all_circular_isomers()
+        generator = PathGeneratorGraphOnly(
+            graph=self,
+            mode=mode,
+            re_estimate_multiplicity=re_estimate_multiplicity)
+        generator.find_all_circular_isomers()
+        return generator.components
 
-    def get_all_isomers(self, mode="embplant_pt"):
+    def find_all_isomers(self, mode="embplant_pt"):
         """
         :param mode:
         :return: sorted_paths
         """
-        return GraphOnlyPathGenerator(graph=self, mode=mode).get_all_isomers()
+        generator = PathGeneratorGraphOnly(graph=self, mode=mode).find_all_isomers()
+        return generator.components
 
     def is_circular_path(self, input_path):
-        return (input_path[-1][0], not input_path[-1][1]) in \
-               self.vertex_info[input_path[0][0]].connections[input_path[0][1]]
+        return (input_path[0][0], not input_path[0][1]) in \
+               self.vertex_info[input_path[-1][0]].connections[input_path[-1][1]]
 
     def get_path_length(self, input_path):
         overlap = self.__overlap if self.__overlap else 0
