@@ -107,10 +107,10 @@ def mc(
     output_dir: str = typer.Option(None, "-o", "--output", help="Output directory. "),
     path_generator: str = typer.Option("H", "-P", help="Path generator: H (Heuristic)/U (User-provided)."),
     linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
-    out_seq_threshold: float = typer.Option(0.001, "-S", help="Output sequences with proportion >= %(default)s"),
+    out_seq_threshold: float = typer.Option(0.001, "-S", help="Output sequences over threshold. "),
     n_generations: int = typer.Option(10000, "--mcmc", help="Number of MCMC generations. "),
     n_burn: int = typer.Option(1000, "--burn", help="Number of MCMC Burn-in. "),
-    keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. Default: %(default)s"),
+    keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
     log_level: LogLevel = typer.Option(LogLevel.INFO, help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
     """
