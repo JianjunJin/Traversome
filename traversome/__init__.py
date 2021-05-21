@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 
-__version__ = "0.0.2"
-__author__ = "Jianjun Jin and Deren Eaton"
+__version__ = "0.0.4"
+__author__ = "JianJun Jin and Deren Eaton"
 
 
-from .ifragaria import Fragaria
+from .traversome import Traversome
 
 
 

@@ -5,7 +5,8 @@ Base Assembly class for parsing input graph files.
 """
 
 from loguru import logger
-from .utils import Vertex, VertexInfo, Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
+from collections import OrderedDict
+from traversome.utils import Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
 from hashlib import sha256
 import os
 
@@ -16,14 +17,188 @@ import os
 #######################################################
 INF = float("inf")
 DEFAULT_COV = 1
-
+VERTEX_DIRECTION_BOOL_TO_STR = {True: "+", False: "-"}
 
 #######################################################
 ###   CLASSES
 #######################################################
 
 
-class SimpleAssembly(object):
+class Vertex(object):
+    def __init__(self, v_name, length=None, coverage=None, forward_seq=None, reverse_seq=None,
+                 tail_connections=None, head_connections=None, fastg_form_long_name=None):
+        """
+        :param v_name: str
+        :param length: int
+        :param coverage: float
+        :param forward_seq: str
+        :param reverse_seq: str
+        :param tail_connections: OrderedDict()
+        :param head_connections: OrderedDict()
+        :param fastg_form_long_name: str
+        self.seq={True: FORWARD_SEQ, False: REVERSE_SEQ}
+        self.connections={True: tail_connection_set, False: head_connection_set}
+        """
+        self.name = v_name
+        self.len = length
+        self.cov = coverage
+
+        """ True: forward, False: reverse """
+        if forward_seq and reverse_seq:
+            assert forward_seq == complementary_seq(reverse_seq), "forward_seq != complementary_seq(reverse_seq)"
+            self.seq = {True: forward_seq, False: reverse_seq}
+        elif forward_seq:
+            self.seq = {True: forward_seq, False: complementary_seq(forward_seq)}
+        elif reverse_seq:
+            self.seq = {True: complementary_seq(reverse_seq), False: reverse_seq}
+        else:
+            self.seq = {True: None, False: None}
+
+        # True: tail, False: head
+        self.connections = {True: OrderedDict(), False: OrderedDict()}
+        assert tail_connections is None or isinstance(tail_connections, OrderedDict), \
+            "tail_connections must be an OrderedDict()"
+        assert head_connections is None or isinstance(head_connections, OrderedDict), \
+            "head_connections must be an OrderedDict()"
+        if tail_connections:
+            self.connections[True] = tail_connections
+        if head_connections:
+            self.connections[False] = head_connections
+        self.fastg_form_name = fastg_form_long_name
+        self.merging_history = VertexMergingHistory([(v_name, True)])
+        self.other_attr = {}
+
+    def __repr__(self):
+        return self.name
+
+    def fill_fastg_form_name(self, check_valid=False):
+        """
+        ensures vertex (contig) names are valid, i.e., avoids ints.
+        """
+        if check_valid:
+            if not str(self.name).isdigit():
+                raise ValueError("Invalid vertex name for fastg format!")
+            if not isinstance(self.len, int):
+                raise ValueError("Invalid vertex length for fastg format!")
+            if not (isinstance(self.cov, int) or isinstance(self.cov, float)):
+                raise ValueError("Invalid vertex coverage for fastg format!")
+        self.fastg_form_name = (
+            "EDGE_{}_length_{}_cov_{}"
+                .format(
+                str(self.name),
+                str(self.len),
+                str(round(self.cov, 5)),
+            )
+        )
+
+    def is_terminal(self):
+        return not (self.connections[True] and self.connections[False])
+
+    def is_self_loop(self):
+        return (self.name, False) in self.connections[True]
+
+
+class VertexInfo(dict):
+    """
+    Superclass of dict that requires values to be Vertices
+    """
+
+    def __init__(self, **kwargs):
+        for key, val in kwargs.items():
+            if not isinstance(val, Vertex):
+                raise ValueError("Value must be a Vertex type! Current: " + str(type(val)))
+        dict.__init__(kwargs)
+
+    def __setitem__(self, key, val):
+        if not isinstance(val, Vertex):
+            raise ValueError("Value must be a Vertex type! Current: " + str(type(val)))
+        val.name = key
+        dict.__setitem__(self, key, val)
+
+
+class VertexMergingHistory(object):
+    def __init__(self, history_or_path=None):
+        self.__list = []
+        if history_or_path:
+            for each_item in history_or_path:
+                is_vertex = isinstance(each_item, tuple) and len(each_item) == 2 and isinstance(each_item[1], bool)
+                is_hist = isinstance(each_item, VertexMergingHistory)
+                assert is_vertex or is_hist
+                if is_vertex:
+                    self.__list.append(each_item)
+                else:
+                    self.__list.extend(each_item.list())
+
+    def add(self, new_history_or_vertex, add_new_to_front=False, reverse_the_latter=False):
+        is_vertex = isinstance(new_history_or_vertex, tuple) and len(new_history_or_vertex) == 2
+        is_hist = isinstance(new_history_or_vertex, VertexMergingHistory)
+        assert is_vertex or is_hist
+        if add_new_to_front:
+            if reverse_the_latter:
+                self.reverse()
+            self.__list.insert(0, new_history_or_vertex)
+        else:
+            if reverse_the_latter:
+                if is_vertex:
+                    self.__list.append((new_history_or_vertex[0], not new_history_or_vertex[1]))
+                else:
+                    self.__list.extend(list(-new_history_or_vertex))
+            else:
+                if is_vertex:
+                    self.__list.append(new_history_or_vertex)
+                else:
+                    self.__list.extend(list(new_history_or_vertex))
+
+    def __neg__(self):
+        return VertexMergingHistory([(each_vertex[0], not each_vertex[1]) for each_vertex in self.__list[::-1]])
+
+    def __iter__(self):
+        for item in self.__list:
+            yield item
+
+    def __str__(self):
+        return "_".join([str(each_vertex[0]) if isinstance(each_vertex, tuple) else str(each_vertex)
+                         for each_vertex in self.__list])
+
+    def reverse(self):
+        self.__list = [(each_vertex[0], not each_vertex[1]) for each_vertex in self.__list[::-1]]
+
+    def path_list(self):
+        return list(self.__list)
+        # return [each_vertex.path_list() if isinstance(each_vertex, MergingHistory) else each_vertex
+        #         for each_vertex in self.__list]
+
+    def vertex_set(self):
+        v_set = set()
+        for each_item in self.__list:
+            if isinstance(each_item[0], VertexEditHistory):
+                v_set.update(each_item[0].vertex_set())
+            else:
+                v_set.add(each_item[0])
+        return v_set
+
+
+class VertexEditHistory(object):
+    def __init__(self, raw_item):
+        """
+        :param raw_item: (name1 or VertexMergingHistory(), label)
+        """
+        assert isinstance(raw_item, tuple) and len(raw_item) == 2
+        self.__item = raw_item
+
+    def __str__(self):
+        return str(self.__item[0]) + "__" + self.__item[1]
+
+    def vertex_set(self):
+        v_set = set()
+        if isinstance(self.__item[0], VertexMergingHistory):
+            v_set.update(self.__item[0].vertex_set())
+        else:
+            v_set.add(self.__item[0])
+        return v_set
+
+
+class AssemblySimple(object):
     """
     Base class for Assembly class objects used to parse input graph files.
 
@@ -49,19 +224,19 @@ class SimpleAssembly(object):
         self.graph_file = graph_file
         self.min_cov = min_cov
         self.max_cov = max_cov
-        self._overlap = overlap
+        self.__overlap = overlap
 
         # destination to be filled with parsed GFA data.
         self.vertex_info = VertexInfo()
 
         # parse the 
         if self.graph_file:
-            logger.info("Parsing graph to Assembly object")
             if self.graph_file.endswith(".gfa"):
+                logger.info("Parsing graph (GFA) to Assembly object")
                 self.parse_gfa()
             else:
+                logger.info("Parsing graph (FASTG) to Assembly object")
                 self.parse_fastg()
-
 
     def __repr__(self):
         """
@@ -79,17 +254,13 @@ class SimpleAssembly(object):
             res.append("\n")
         return "".join(res)
 
-
     def __bool__(self):
         return bool(self.vertex_info)
-
 
     def __iter__(self):
         "allow iteration of Assembly objects to return ordered vertex info."
         for vertex in sorted(self.vertex_info):
             yield self.vertex_info[vertex]
-
-
 
     def parse_gfa(self):
         """
@@ -123,8 +294,6 @@ class SimpleAssembly(object):
             else:
                 raise ProcessingGraphFailed("Unrecognized GFA version number: " + gfa_version_number)
 
-
-
     def parse_gfa_v1(self, gfa_open):
         """
         Fills .vertex_info with the sequence tag lines and 
@@ -139,7 +308,7 @@ class SimpleAssembly(object):
             # if the line contains a sequence tag 
             if line.startswith("S\t"):
                 elements = line.strip().split("\t")
-                record_type = elements.pop(0)  # not used
+                elements.pop(0)  # record_type
                 vertex_name = elements.pop(0)  # segment name
                 sequence = elements.pop(0)
                 seq_len_tag = None
@@ -231,7 +400,13 @@ class SimpleAssembly(object):
             if line.startswith("L\t"):
 
                 # parse link info
-                flag, vertex_1, end_1, vertex_2, end_2, alignment_cigar = line.strip().split("\t")
+                elements = line.strip().split("\t")
+                elements.pop(0)  # flag
+                vertex_1 = elements.pop(0)
+                end_1 = elements.pop(0)
+                vertex_2 = elements.pop(0)
+                end_2 = elements.pop(0)
+                alignment_cigar = elements.pop(0)
 
                 # "head"~False, "tail"~True
                 if (vertex_1 in self.vertex_info) and (vertex_2 in self.vertex_info):
@@ -263,8 +438,6 @@ class SimpleAssembly(object):
         else:
             self.__overlap = int(kmer_values.pop()[:-1])
 
-
-
     def parse_gfa_v2(self, gfa_open):
         "GFA VERSION 2 PARSING"
 
@@ -275,9 +448,9 @@ class SimpleAssembly(object):
         for line in gfa_open:
             if line.startswith("S\t"):
                 elements = line.strip().split("\t")
-                record_type = elements.pop(0)  # not used
+                elements.pop(0)  # record_type
                 vertex_name = elements.pop(0)  # segment name
-                seq_len_tag = int(elements.pop(0))
+                int(elements.pop(0))  # seq_len_tag
                 sequence = elements.pop(0)
                 seq_len_tag = None
                 kmer_count = None
@@ -315,7 +488,7 @@ class SimpleAssembly(object):
                 if kmer_count is not None or seq_depth_tag is not None:
                     if kmer_count is not None:
                         seq_depth = kmer_count / float(seq_len)
-                    elif seq_depth_tag is not None:
+                    else:  # seq_depth_tag is not None:
                         seq_depth = seq_depth_tag
                     if self.min_cov <= seq_depth <= self.max_cov:
                         self.vertex_info[vertex_name] = Vertex(vertex_name, seq_len, seq_depth, sequence)
@@ -328,7 +501,13 @@ class SimpleAssembly(object):
         gfa_open.seek(0)
         for line in gfa_open:
             if line.startswith("E\t"):  # gfa2 uses E
-                flag, vertex_1, end_1, vertex_2, end_2, alignment_cigar = line.strip().split("\t")
+                elements = line.strip().split("\t")
+                elements.pop(0)  # flag
+                vertex_1 = elements.pop(0)
+                end_1 = elements.pop(0)
+                vertex_2 = elements.pop(0)
+                end_2 = elements.pop(0)
+                alignment_cigar = elements.pop(0)
                 # "head"~False, "tail"~True
                 if vertex_1 in self.vertex_info and vertex_2 in self.vertex_info:
                     end_1 = {"+": True, "-": False}[end_1]
@@ -345,13 +524,11 @@ class SimpleAssembly(object):
         else:
             self.__overlap = int(kmer_values.pop()[:-1])
 
-
-
-    def parse_fastg(self, fastg_file, min_cov=0., max_cov=INF):
+    def parse_fastg(self, min_cov=0., max_cov=INF):
         """
         Parse alternative graph format in FASTG format. Store results in self.vertex_info.
         """
-        fastg_matrix = SequenceList(fastg_file)
+        fastg_matrix = SequenceList(self.graph_file)
         # initialize names; only accept vertex that are formally stored, skip those that are only mentioned after ":"
         for i, seq in enumerate(fastg_matrix):
             if ":" in seq.label:
@@ -435,15 +612,11 @@ class SimpleAssembly(object):
                 self.__overlap = 0
                 # raise ProcessingGraphFailed("No kmer detected!")
 
-
-
     def overlap(self):
         if self.__overlap is None:
             return None
         else:
             return int(self.__overlap)
-
-
 
     def write_to_fasta(self, out_file, interleaved=None, check_postfix=True):
         if check_postfix and not out_file.endswith(".fasta"):
@@ -453,8 +626,6 @@ class SimpleAssembly(object):
             out_matrix.append(Sequence(vertex_name, self.vertex_info[vertex_name].seq[True]))
         out_matrix.interleaved = 70
         out_matrix.write_fasta(out_file, interleaved=interleaved)
-
-
 
     def write_to_gfa(self, out_file, check_postfix=True):
         if check_postfix and not out_file.endswith(".gfa"):

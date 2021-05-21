@@ -5,13 +5,10 @@ Code copied and simplified from GetOrganelle.
 """
 import os
 import sys
-from itertools import combinations, product
-from hashlib import sha256
-from collections import OrderedDict
 from copy import deepcopy
-from math import log, ceil
-# from sympy import Symbol, solve, lambdify
-from scipy import optimize, stats
+from math import log, inf
+from scipy import stats
+from loguru import logger
 import numpy as np
 import random
 
@@ -158,6 +155,194 @@ class SequenceList(object):
         fasta_file_handler.close()
 
 
+class WeightedGMMWithEM:
+    def __init__(self,
+                 data_array,
+                 data_weights=None,
+                 minimum_cluster=1,
+                 maximum_cluster=5,
+                 min_sigma_factor=1E-5,
+                 cluster_limited=None):
+        """
+        :param data_array:
+        :param data_weights:
+        :param minimum_cluster:
+        :param maximum_cluster:
+        :param min_sigma_factor:
+        :param cluster_limited: {dat_id1: {0, 1}, dat_id2: {0}, dat_id3: {0} ...}
+        :param log_handler:
+        :param verbose_log:
+        :return:
+        """
+        self.data_array = np.array(data_array)
+        self.data_len = len(self.data_array)
+        self.min_sigma = min_sigma_factor * np.average(data_array, weights=data_weights)
+        self.data_weights = None
+        if not data_weights:
+            self.data_weights = np.array([1. for foo in range(self.data_len)])
+        else:
+            assert len(data_weights) == self.data_len
+            average_weights = float(sum(data_weights)) / self.data_len
+            # normalized
+            self.data_weights = np.array([raw_w / average_weights for raw_w in data_weights])
+        self.cluster_limited = cluster_limited
+        self.freedom_dat_item = None
+        if cluster_limited:
+            cls = set()
+            for sub_cls in cluster_limited.values():
+                cls |= sub_cls
+            self.freedom_dat_item = self.data_len - len(cluster_limited) + len(cls)
+        else:
+            self.freedom_dat_item = self.data_len
+        self.minimum_cluster = min(self.freedom_dat_item, minimum_cluster)
+        self.maximum_cluster = min(self.freedom_dat_item, maximum_cluster)
+
+    def run(self, criteria="bic"):
+        assert criteria in ("aic", "bic")
+        results = []
+        for total_cluster_num in range(self.minimum_cluster, self.maximum_cluster + 1):
+            # initialization
+            labels = np.random.choice(total_cluster_num, self.data_len)
+            if self.cluster_limited:
+                temp_labels = []
+                for dat_id in range(self.data_len):
+                    if dat_id in self.cluster_limited:
+                        if labels[dat_id] in self.cluster_limited[dat_id]:
+                            temp_labels.append(labels[dat_id])
+                        else:
+                            temp_labels.append(sorted(self.cluster_limited[dat_id])[0])
+                    else:
+                        temp_labels.append(labels[dat_id])
+                labels = np.array(temp_labels)
+            norm_parameters = self.updating_parameter(self.data_array, self.data_weights, labels,
+                                                 [{"mu": 0, "sigma": 1, "percent": total_cluster_num / self.data_len}
+                                                  for foo in range(total_cluster_num)])
+            loglike_shift = inf
+            prev_loglike = -inf
+            epsilon = 0.01
+            count_iterations = 0
+            best_loglike = prev_loglike
+            best_parameter = norm_parameters
+            try:
+                while loglike_shift > epsilon:
+                    count_iterations += 1
+                    # expectation
+                    labels = self.assign_cluster_labels(
+                        self.data_array, self.data_weights, norm_parameters, self.cluster_limited)
+                    # maximization
+                    updated_parameters = self.updating_parameter(
+                        self.data_array, self.data_weights, labels, deepcopy(norm_parameters))
+                    # loglike shift
+                    this_loglike = self.model_loglike(
+                        self.data_array, self.data_weights, labels, updated_parameters)
+                    loglike_shift = abs(this_loglike - prev_loglike)
+                    # update
+                    prev_loglike = this_loglike
+                    norm_parameters = updated_parameters
+                    if this_loglike > best_loglike:
+                        best_parameter = updated_parameters
+                        best_loglike = this_loglike
+                labels = self.assign_cluster_labels(self.data_array, self.data_weights, best_parameter, None)
+                results.append({"loglike": best_loglike, "iterates": count_iterations, "cluster_num": total_cluster_num,
+                                "parameters": best_parameter, "labels": labels,
+                                "aic": aic(prev_loglike, 2 * total_cluster_num),
+                                "bic": bic(prev_loglike, 2 * total_cluster_num, self.data_len)})
+            except TypeError as e:
+                logger.error("This error might be caused by outdated version of scipy!")
+                raise e
+        logger.debug(str(results))
+        best_scheme = sorted(results, key=lambda x: x[criteria])[0]
+        return best_scheme
+
+    def model_loglike(self, dat_arr, dat_w, lbs, parameters):
+        total_loglike = 0
+        for go_to_cl, pr in enumerate(parameters):
+            points = dat_arr[lbs == go_to_cl]
+            weights = dat_w[lbs == go_to_cl]
+            if len(points):
+                total_loglike += sum(stats.norm.logpdf(points, pr["mu"], pr["sigma"]) * weights + log(pr["percent"]))
+        return total_loglike
+
+    def assign_cluster_labels(self, dat_arr, dat_w, parameters, limited):
+        # assign every data point to its most likely cluster
+        if len(parameters) == 1:
+            return np.array([0] * self.data_len)
+        else:
+            # the parameter set of the first cluster
+            loglike_res = stats.norm.logpdf(dat_arr, parameters[0]["mu"], parameters[1]["sigma"]) * dat_w + \
+                          log(parameters[1]["percent"])
+            # the parameter set of the rest cluster
+            for pr in parameters[1:]:
+                loglike_res = np.vstack(
+                    (loglike_res, stats.norm.logpdf(dat_arr, pr["mu"], pr["sigma"]) * dat_w + log(pr["percent"])))
+            # assign labels
+            new_labels = loglike_res.argmax(axis=0)
+            if limited:
+                intermediate_labels = []
+                for here_dat_id in range(self.data_len):
+                    if here_dat_id in limited:
+                        if new_labels[here_dat_id] in limited[here_dat_id]:
+                            intermediate_labels.append(new_labels[here_dat_id])
+                        else:
+                            intermediate_labels.append(sorted(limited[here_dat_id])[0])
+                    else:
+                        intermediate_labels.append(new_labels[here_dat_id])
+                new_labels = np.array(intermediate_labels)
+                # new_labels = np.array([
+                # sorted(cluster_limited[dat_item])[0]
+                # if new_labels[here_dat_id] not in cluster_limited[dat_item] else new_labels[here_dat_id]
+                # if dat_item in cluster_limited else
+                # new_labels[here_dat_id]
+                # for here_dat_id, dat_item in enumerate(data_array)])
+                limited_values = set(dat_arr[list(limited)])
+            else:
+                limited_values = set()
+            # re-pick if some cluster are empty
+            label_counts = {lb: 0 for lb in range(len(parameters))}
+            for ct_lb in new_labels:
+                label_counts[ct_lb] += 1
+            for empty_lb in label_counts:
+                if label_counts[empty_lb] == 0:
+                    affordable_lbs = {af_lb: [min, max] for af_lb in label_counts if label_counts[af_lb] > 1}
+                    for af_lb in sorted(affordable_lbs):
+                        these_points = dat_arr[new_labels == af_lb]
+                        if max(these_points) in limited_values:
+                            affordable_lbs[af_lb].remove(max)
+                        if min(these_points) in limited_values:
+                            affordable_lbs[af_lb].remove(min)
+                        if not affordable_lbs[af_lb]:
+                            del affordable_lbs[af_lb]
+                    if affordable_lbs:
+                        chose_lb = random.choice(list(affordable_lbs))
+                        chose_points = dat_arr[new_labels == chose_lb]
+                        data_point = random.choice(affordable_lbs[chose_lb])(chose_points)
+                        transfer_index = np.where(dat_arr == data_point)[0]
+                        new_labels[transfer_index] = empty_lb
+                        label_counts[chose_lb] -= len(transfer_index)
+            return new_labels
+
+    def updating_parameter(self, dat_arr, dat_w, lbs, parameters):
+
+        for go_to_cl, pr in enumerate(parameters):
+            these_points = dat_arr[lbs == go_to_cl]
+            these_weights = dat_w[lbs == go_to_cl]
+            if len(these_points) > 1:
+                this_mean, this_std = weighted_mean_and_std(these_points, these_weights)
+                pr["mu"] = this_mean
+                pr["sigma"] = max(this_std, self.min_sigma)
+                pr["percent"] = sum(these_weights)  # / data_len
+            elif len(these_points) == 1:
+                pr["sigma"] = max(dat_arr.std() / self.data_len, self.min_sigma)
+                pr["mu"] = np.average(these_points, weights=these_weights) + pr["sigma"] * (2 * random.random() - 1)
+                pr["percent"] = sum(these_weights)  # / data_len
+            else:
+                # exclude
+                pr["mu"] = max(dat_arr) * 1E4
+                pr["sigma"] = self.min_sigma
+                pr["percent"] = 1E-10
+        return parameters
+
+
 class ProcessingGraphFailed(Exception):
     def __init__(self, value=""):
         self.value = value
@@ -166,106 +351,53 @@ class ProcessingGraphFailed(Exception):
         return repr(self.value)
 
 
-class Vertex(object):
-    def __init__(self, v_name, length=None, coverage=None, forward_seq=None, reverse_seq=None,
-                 tail_connections=None, head_connections=None, fastg_form_long_name=None):
-        """
-        :param v_name: str
-        :param length: int
-        :param coverage: float
-        :param forward_seq: str
-        :param reverse_seq: str
-        :param tail_connections: OrderedDict()
-        :param head_connections: OrderedDict()
-        :param fastg_form_long_name: str
-        self.seq={True: FORWARD_SEQ, False: REVERSE_SEQ}
-        self.connections={True: tail_connection_set, False: head_connection_set}
-        """
-        self.name = v_name
-        self.len = length
-        self.cov = coverage
-        
-        """ True: forward, False: reverse """
-        if forward_seq and reverse_seq:
-            assert forward_seq == complementary_seq(reverse_seq), "forward_seq != complementary_seq(reverse_seq)"
-            self.seq = {True: forward_seq, False: reverse_seq}
-        elif forward_seq:
-            self.seq = {True: forward_seq, False: complementary_seq(forward_seq)}
-        elif reverse_seq:
-            self.seq = {True: complementary_seq(reverse_seq), False: reverse_seq}
-        else:
-            self.seq = {True: None, False: None}
-        
-        # True: tail, False: head
-        self.connections = {True: OrderedDict(), False: OrderedDict()}
-        assert tail_connections is None or isinstance(tail_connections, OrderedDict), \
-            "tail_connections must be an OrderedDict()"
-        assert head_connections is None or isinstance(head_connections, OrderedDict), \
-            "head_connections must be an OrderedDict()"
-        if tail_connections:
-            self.connections[True] = tail_connections
-        if head_connections:
-            self.connections[False] = head_connections
-        self.fastg_form_name = fastg_form_long_name
-        self.other_attr = {}
-
-
-    def __repr__(self):
-        return self.name
-
-
-    def fill_fastg_form_name(self, check_valid=False):
-        """
-        ensures vertex (contig) names are valid, i.e., avoids ints.
-        """
-        if check_valid:
-            if not str(self.name).isdigit():
-                raise ValueError("Invalid vertex name for fastg format!")
-            if not isinstance(self.len, int):
-                raise ValueError("Invalid vertex length for fastg format!")
-            if not (isinstance(self.cov, int) or isinstance(self.cov, float)):
-                raise ValueError("Invalid vertex coverage for fastg format!")
-        self.fastg_form_name = (
-            "EDGE_{}_length_{}_cov_{}"
-            .format(
-                str(self.name), 
-                str(self.len),
-                str(round(self.cov, 5)),
-            )
-        )
-
-
-    def is_terminal(self):
-        return not (self.connections[True] and self.connections[False])
-
-
-    def is_self_loop(self):
-        return (self.name, False) in self.connections[True]
-
-
-
-class VertexInfo(dict):
-    """
-    Superclass of dict that requires values to be Vertices
-    """
-    def __init__(self, **kwargs):
-        for key, val in kwargs.items():
-            if not isinstance(val, Vertex):
-                raise ValueError("Value must be a Vertex type! Current: " + str(type(val)))
-        dict.__init__(kwargs)
-
-    def __setitem__(self, key, val):
-        if not isinstance(val, Vertex):
-            raise ValueError("Value must be a Vertex type! Current: " + str(type(val)))
-        val.name = key
-        dict.__setitem__(self, key, val)
-
-
-
 ########################################################################
 ###   FUNCTIONS OUTSIDE OF CLASSES
 ########################################################################
 
+def generate_clusters_from_connections(vertices, connections):
+    """
+    :param vertices: list or set
+    :param connections: symmetric records, e.g.
+                        {"vertex_1": ["vertex_2", "vertex_3"],
+                         "vertex_2": ["vertex_1"],
+                         "vertex_3": ["vertex_1", "vertex_5"],
+                         "vertex_4": [],
+                         "vertex_5": ["vertex_3"]}
+    :return: e.g. [{"vertex_1", "vertex_2", "vertex_3", "vertex_5"}, {"vertex_4"}]
+    """
+    # Each cluster is a connected set of vertices.
+    vertex_clusters = []
+
+    # iterate over vertices
+    for this_vertex in sorted(vertices):
+
+        # build a set of connections (edges) from this vertex to established clusters
+        connecting_those = set()
+        for next_v in connections.get(this_vertex, []):
+            # for connected_set in self.vertex_info[this_vertex].connections.values():
+            #     for next_v, next_d in connected_set:
+            for go_to_set, cluster in enumerate(vertex_clusters):
+                if next_v in cluster:
+                    connecting_those.add(go_to_set)
+
+        # if no edges then store just this one
+        if not connecting_those:
+            vertex_clusters.append({this_vertex})
+
+        # if 1 then add this one to its cluster.
+        elif len(connecting_those) == 1:
+            vertex_clusters[connecting_those.pop()].add(this_vertex)
+
+        # if many then ...
+        else:
+            sorted_those = sorted(connecting_those, reverse=True)
+            vertex_clusters[sorted_those[-1]].add(this_vertex)
+            for go_to_set in sorted_those[:-1]:
+                for that_vertex in vertex_clusters[go_to_set]:
+                    vertex_clusters[sorted_those[-1]].add(that_vertex)
+                del vertex_clusters[go_to_set]
+    return vertex_clusters
 
 
 def find_greatest_common_divisor(number_list):  
@@ -286,6 +418,7 @@ def find_greatest_common_divisor(number_list):
         return a
 
 
+# divide numbers by their greatest common divisor
 def reduce_list_with_gcd(number_list):
     if len(number_list) == 1:
         return [1] if number_list[0] != 0 else number_list
@@ -509,24 +642,24 @@ def generate_index_combinations(index_list):
             for next_ids in generate_index_combinations(index_list[1:]):
                 yield [go_id] + next_ids
 
-
-
-def smart_trans_for_sort(candidate_item):
-    if type(candidate_item) in (tuple, list):
-        return [smart_trans_for_sort(this_sub) for this_sub in candidate_item]
-    elif type(candidate_item) == bool:
-        return not candidate_item
-    else:
-        all_e = candidate_item.split("_")
-        for go_e, this_ele in enumerate(all_e):
-            try:
-                all_e[go_e] = int(this_ele)
-            except ValueError:
-                try:
-                    all_e[go_e] = float(this_ele)
-                except ValueError:
-                    pass
-        return all_e
+#
+#
+# def smart_trans_for_sort(candidate_item):
+#     if type(candidate_item) in (tuple, list):
+#         return [smart_trans_for_sort(this_sub) for this_sub in candidate_item]
+#     elif type(candidate_item) == bool:
+#         return not candidate_item
+#     else:
+#         all_e = candidate_item.split("_")
+#         for go_e, this_ele in enumerate(all_e):
+#             try:
+#                 all_e[go_e] = int(this_ele)
+#             except ValueError:
+#                 try:
+#                     all_e[go_e] = float(this_ele)
+#                 except ValueError:
+#                     pass
+#         return all_e
 
 
 def get_orf_lengths(sequence_string, threshold=200, which_frame=None,
@@ -567,3 +700,26 @@ def get_orf_lengths(sequence_string, threshold=200, which_frame=None,
                 else:
                     pass
     return sorted(orf_lengths.values(), key=lambda x: -sum(x))[0]
+
+
+def get_id_range_in_increasing_values(min_num, max_num, increasing_numbers):
+    assert max_num >= min_num
+    assert min_num <= increasing_numbers[-1], \
+        "minimum value {} out of range {}..{}".format(min_num, increasing_numbers[0], increasing_numbers[-1])
+    assert max_num >= increasing_numbers[0], \
+        "maximum value {} out of range {}..{}".format(max_num, increasing_numbers[0], increasing_numbers[-1])
+    len_list = len(increasing_numbers)
+    left_id = 0
+    while left_id < len_list and increasing_numbers[left_id] < min_num:
+        left_id += 1
+    right_id = len_list - 1
+    while right_id > -1 and increasing_numbers[right_id] > max_num:
+        right_id -= 1
+    return left_id, right_id
+
+
+def harmony_weights(raw_weights, diff):
+    weights = np.array(raw_weights)
+    weights_trans = weights**diff
+    return weights_trans / sum(weights_trans)
+

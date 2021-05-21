@@ -1,30 +1,26 @@
 
 
-# ifragaria
+# Traversome (Under active development)
 Genomic isomer frequency estimation from genome assembly graphs and long reads.
 
 
 ### Install dependencies
 ```bash
-conda install numpy pandas scipy pymc3 sympy -c conda-forge
+conda install typer numpy pandas scipy pymc3 sympy matplotlib -c conda-forge
 ```
 
-### Install devel version of ifragaria
+### Install devel version of traversome
 ```bash
-git clone -b modular https://github.com/dereneaton/Fragaria
+git clone -b modular https://github.com/Kinggerm/Traversome
 pip install -e . --no-deps
 ```
 
 ### Command line interface (CLI)
 
-Temporary usage:
 ```bash
-python ifragaria/estimate_isomer_frequencies.py -g graph.gfa -a align.gaf -o .
-```
+traversome ml -g graph.gfa -a align.gaf -o outdir
 
-future: 
-```bash
-ifragaria -g graph.gfa -a align.gaf -o .
+traversome mc -g graph.gfa -a align.gaf -o outdir (pymc3 crashes when the graph becomes complicated)
 ```
 
 ### Interpreting results
@@ -37,26 +33,19 @@ ifragaria -g graph.gfa -a align.gaf -o .
 
 ## Development
 
-I'm working through the code starting from the very beginning of `estimate_isomer_frequencies.py` and moving step-by-step forward. At each step
-if I find a large contiguous chunk of code I break it out into a new class
-module, often in a new file. As I work through the class I try to understand
-what it is doing at each step by adding comments at each block if there are 
-none. If I do not fully understand I usually insert a comment block but may 
-just write "...". 
-
-
-The `ifragaria.Fragaria` class object is the main object, and the `.run()` 
-function of this object will perform the core functions of ifragaria. This 
-is currently unfinished. It completes up to the step of using sympy to 
-simplify the equation, but I am only starting now on the scipy estimation.
-
-
 ```
 # workflow
+
 |-- __main__.py
-|-- ifragaria.py
+|-- traversome.py
+    |-- __init__.py
+    |-- SimpleAssembly.py
     |-- Assembly.py
     |-- GraphAlignRecords.py
+    |-- CleanGraph.py (still working)
     |-- EstCopyDepthFromCov.py
     |-- EstCopyDepthPrecise.py (still working)
-    |-- ...
+    |-- GraphAlignmentPathGenerator.py
+    |-- GraphOnlyPathGenerator.py
+    |-- ModelFitBayesian.py
+    |-- ModelFitMaxLike.py

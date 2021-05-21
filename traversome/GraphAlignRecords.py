@@ -7,9 +7,8 @@ Class objects to store Graph Alignments
 
 import csv
 import re
-import sys
 from loguru import logger
-from .Assembly import Assembly  # used here to validate type
+from traversome.Assembly import Assembly  # used here to validate type
 
 
 
@@ -61,12 +60,13 @@ class GAFRecord(object):
     def parse_gaf_path(self):
         path_list = []
         for segment in re.findall(r".[^\s><]*", self.path_str):
+            # omit the coordinates using .split(":")[0]
             if segment[0] == ">":
-                path_list.append((segment[1:], True))
+                path_list.append((segment[1:].split(":")[0], True))
             elif segment[0] == "<":
-                path_list.append((segment[1:], False))
+                path_list.append((segment[1:].split(":")[0], False))
             else:
-                path_list.append((segment, True))
+                path_list.append((segment.split(":")[0], True))
         return path_list
 
 
@@ -119,7 +119,7 @@ class GraphAlignRecords(object):
         self.records = []
 
         # run the parsing function
-        logger.debug("Parsing GAF to GraphAlignRecords (.alignment)")
+        logger.info("Parsing alignment (GAF) to GraphAlignRecords object")
         self.parse_gaf()
 
 
@@ -193,3 +193,6 @@ class GraphAlignRecords(object):
         else:
             logger.warning("assembly graph not available, overlaps untrimmed")
 
+    def __iter__(self):
+        for record in self.records:
+            yield record
