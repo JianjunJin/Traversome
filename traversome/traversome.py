@@ -317,32 +317,14 @@ class Traversome(object):
             go_sp += 1
             internal_len = self.graph.get_path_internal_length(this_sub_path)
             external_len_without_overlap = self.graph.get_path_len_without_terminal_overlaps(this_sub_path)
-            try:
-                left_id, right_id = get_id_range_in_increasing_values(
-                    min_num=internal_len + 2, max_num=external_len_without_overlap,
-                    increasing_numbers=self.align_len_at_path_sorted)
-            except AssertionError as e:
-                logger.error(this_sub_path)
-                logger.error("internal_len:{}, external_len:{}, lengths:{}...{}".format(
-                        internal_len, external_len_without_overlap,
-                        self.align_len_at_path_sorted[:3], self.align_len_at_path_sorted[-3:]))
-                raise e
+            left_id, right_id = get_id_range_in_increasing_values(
+                min_num=internal_len + 2, max_num=external_len_without_overlap,
+                increasing_numbers=self.align_len_at_path_sorted)
             if int((left_id + right_id) / 2) == (left_id + right_id) / 2.:
                 median_len = self.align_len_at_path_sorted[int((left_id + right_id) / 2)]
             else:
-                # try:
-                    median_len = (self.align_len_at_path_sorted[int((left_id + right_id) / 2)] +
-                                  self.align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
-
-                # one-time debug
-                # except IndexError:
-                #     logger.error("subpath:{}".format(this_sub_path))
-                #     logger.error("internal_len:{}, external_len:{}, lengths:{}...{}".format(
-                #         internal_len, external_len_without_overlap,
-                #         self.align_len_at_path_sorted[:3], self.align_len_at_path_sorted[-3:]))
-                #     logger.error("left_id:{}, right_id:{}, total:{}".format(
-                #         left_id, right_id, len(self.align_len_at_path_sorted)))
-                #     raise IndexError
+                median_len = (self.align_len_at_path_sorted[int((left_id + right_id) / 2)] +
+                              self.align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
             num_possible_X = self.graph.get_num_of_possible_alignment_start_points(
                 read_len=median_len, align_to_path=this_sub_path, path_internal_len=internal_len)
             if num_possible_X < 1:
