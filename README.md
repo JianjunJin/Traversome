@@ -1,6 +1,6 @@
 
 
-# Traversome (Underdevelopment)
+# Traversome (Under active development)
 Genomic isomer frequency estimation from genome assembly graphs and long reads.
 
 
