@@ -290,6 +290,7 @@ class Traversome(object):
         #     this_sub_path = self.graph.get_standardized_path(record.path, dc=False)
         #     if this_sub_path in self.all_sub_paths:
         #         self.all_sub_paths[this_sub_path]["mapped_records"].append(go_record)
+        logger.info("Generated {} sub-paths".format(len(self.all_sub_paths)))
 
     def get_likelihood_formula(self, isomer_percents, log_func):
         """
