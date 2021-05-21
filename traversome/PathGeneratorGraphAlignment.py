@@ -178,12 +178,12 @@ class PathGeneratorGraphAlignment(object):
             count_valid += 1
             if new_path in self.components_counts:
                 self.components_counts[new_path] += 1
-                logger.debug("{} unique paths in {}/{} legal paths, {} traversals".format(
+                logger.debug("  {} unique paths in {}/{} legal paths, {} traversals".format(
                     len(self.components), count_valid, self.num_search, count_search))
             else:
                 self.components_counts[new_path] = 1
                 self.components.append(new_path)
-                logger.info("{} unique paths in {}/{} legal paths, {} traversals".format(
+                logger.info("  {} unique paths in {}/{} legal paths, {} traversals".format(
                     len(self.components), count_valid, self.num_search, count_search))
 
     def __heuristic_extend_path(

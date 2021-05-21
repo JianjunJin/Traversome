@@ -65,10 +65,12 @@ def ml(
     alignment_file: str = typer.Option(None, "-a", "--alignment", help="GAF format alignment file. "),
     output_dir: str = typer.Option(None, "-o", "--output", help="Output directory. "),
     path_generator: str = typer.Option("H", "-P", help="Path generator: H (Heuristic)/U (User-provided)."),
+    random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed. "),
     linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
     out_seq_threshold: float = typer.Option(0.001, "-S", help="Output sequences over threshold. "),
     keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
-    log_level: LogLevel = typer.Option(LogLevel.INFO, "--log-level", help="Logging level. Use DEBUG for more, ERROR for less."),
+    log_level: LogLevel = typer.Option(LogLevel.INFO, "--loglevel", "--log-level",
+                                       help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
     """
     Conduct Maximum Likelihood analysis for solving assembly graph
@@ -88,13 +90,15 @@ def ml(
         alignment=alignment_file,
         outdir=output_dir,
         out_prob_threshold=out_seq_threshold,
+        force_circular=not linear_chr,
+        random_seed=random_seed,
         keep_temp=keep_temp,
         loglevel=log_level
     )
     traverser.run(
         path_generator=path_generator,
-        multi_chromosomes=True,  # opts.is_multi_chromosomes,
-        force_circular=not linear_chr)
+        multi_chromosomes=True  # opts.is_multi_chromosomes,
+        )
 
 
 @app.command()
@@ -103,12 +107,14 @@ def mc(
     alignment_file: str = typer.Option(None, "-a", "--alignment", help="GAF format alignment file. "),
     output_dir: str = typer.Option(None, "-o", "--output", help="Output directory. "),
     path_generator: str = typer.Option("H", "-P", help="Path generator: H (Heuristic)/U (User-provided)."),
+    random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed. "),
     linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
     out_seq_threshold: float = typer.Option(0.001, "-S", help="Output sequences over threshold. "),
     n_generations: int = typer.Option(10000, "--mcmc", help="Number of MCMC generations. "),
     n_burn: int = typer.Option(1000, "--burn", help="Number of MCMC Burn-in. "),
     keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
-    log_level: LogLevel = typer.Option(LogLevel.INFO, "--log-level", help="Logging level. Use DEBUG for more, ERROR for less."),
+        log_level: LogLevel = typer.Option(LogLevel.INFO, "--loglevel", "--log-level",
+                                           help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
     """
     Conduct Bayesian MCMC analysis for solving assembly graph
@@ -129,14 +135,16 @@ def mc(
         outdir=output_dir,
         out_prob_threshold=out_seq_threshold,
         do_bayesian=True,
+        force_circular=not linear_chr,
         n_generations=n_generations,
         n_burn=n_burn,
+        random_seed=random_seed,
         keep_temp=keep_temp,
         loglevel=log_level
     )
     traverser.run(
         path_generator=path_generator,
-        multi_chromosomes=True,  # opts.is_multi_chromosomes,
-        force_circular=not linear_chr)
+        multi_chromosomes=True  # opts.is_multi_chromosomes,
+        )
 
 

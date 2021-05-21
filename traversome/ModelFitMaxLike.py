@@ -34,7 +34,8 @@ class ModelFitMaxLike(object):
         if success_runs:
             # for run_res in sorted(success_runs, key=lambda x: x.fun):
             #     logger.info(str(run_res.fun) + str([round(m, 8) for m in run_res.x]))
-            logger.info("Proportion: %s Log-likelihood: %s" % (success_runs[0].x, -success_runs[0].fun))
+            logger.info("Proportion: %s " % (list(success_runs[0].x)))
+            logger.info("Log-likelihood: %s" % (-success_runs[0].fun))
             self.best_proportions = success_runs[0].x
             return self.best_proportions
 

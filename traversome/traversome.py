@@ -31,6 +31,7 @@ class Traversome(object):
             alignment,
             outdir,
             do_bayesian=False,
+            force_circular=True,
             out_prob_threshold=0.001,
             keep_temp=False,
             random_seed=12345,
@@ -41,6 +42,7 @@ class Traversome(object):
         self.alignment_gaf = alignment
         self.outdir = outdir
         self.do_bayesian = do_bayesian
+        self.force_circular = force_circular
         self.out_prob_threshold = out_prob_threshold
         self.keep_temp = keep_temp
         self.kwargs = kwargs
@@ -55,6 +57,7 @@ class Traversome(object):
         self.alignment = None
         self.align_len_at_path_sorted = None
         self.max_alignment_length = None
+        self.min_alignment_length = None
         self.component_paths = []  # each element is a tuple(path)
         self.component_probs = []
         self.isomer_sizes = None
@@ -70,7 +73,7 @@ class Traversome(object):
         self.random = random
         self.random.seed(random_seed)
 
-    def run(self, path_generator="heuristic", multi_chromosomes=True, force_circular=True):
+    def run(self, path_generator="heuristic", multi_chromosomes=True):
         """
         Parse the assembly graph files ...
         """
@@ -79,7 +82,7 @@ class Traversome(object):
         self.alignment = GraphAlignRecords(
             self.alignment_gaf,
             min_aligned_path_len=100, 
-            min_identity=0.7,
+            min_identity=0.8,
             trim_overlap_with_graph=True,
             assembly_graph=self.graph,
         )
@@ -90,8 +93,7 @@ class Traversome(object):
         logger.debug("Generating candidate isomer paths ...")
         self.generate_candidate_paths(
             path_generator=path_generator,
-            multi_chromosomes=multi_chromosomes,
-            force_circular=force_circular
+            multi_chromosomes=multi_chromosomes
         )
 
         if self.do_bayesian:
@@ -100,7 +102,6 @@ class Traversome(object):
         else:
             logger.debug("Fitting candidate isomer paths model using Maximum Likelihood...")
             self.component_probs = self.fit_model_using_maximum_likelihood()
-        logger.debug(self.component_probs)
 
         self.output_seqs()
 
@@ -140,15 +141,14 @@ class Traversome(object):
                 out.write("\n".join(map(str, self.align_len_at_path_sorted)))
 
         # store max value 
+        self.min_alignment_length = self.align_len_at_path_sorted[0]
         self.max_alignment_length = self.align_len_at_path_sorted[-1]
 
         # report result
         logger.info(
-            "Maximum alignment length at path: {}".format(
-            self.max_alignment_length)
-        )
+            "Alignment length range at path: [{}, {}]".format(self.min_alignment_length, self.max_alignment_length))
 
-    def generate_candidate_paths(self, path_generator="heuristic", multi_chromosomes=True, force_circular=True):
+    def generate_candidate_paths(self, path_generator="heuristic", multi_chromosomes=True):
         """
         generate candidate isomer paths from the graph
         """
@@ -158,7 +158,7 @@ class Traversome(object):
             #     raise Exception
             self.graph.estimate_multiplicity_by_cov(mode="all")
             self.graph.estimate_multiplicity_precisely(maximum_copy_num=8, debug=self.loglevel in ("DEBUG", "TRACE", "ALL"))
-            if force_circular:
+            if self.force_circular:
                 try:
                     self.component_paths = self.graph.find_all_circular_isomers(mode="all")
                 except ProcessingGraphFailed as e:
@@ -180,7 +180,7 @@ class Traversome(object):
         self.num_of_isomers = len(self.component_paths)
 
         for go_p, path in enumerate(self.component_paths):
-            logger.debug("PATH{}: {}".format(go_p + 1, path))
+            logger.debug("PATH{}: {}".format(go_p + 1, self.graph.repr_path(path)))
 
         # generate subpaths: the binomial sets
         if self.num_of_isomers > 1:
@@ -193,30 +193,72 @@ class Traversome(object):
         """
         generate all sub paths and their occurrences for each candidate isomer
         """
-
         # count sub path occurrences for each candidate isomer and recorded in self.isomer_subpath_counters
         this_overlap = self.graph.overlap()
         self.isomer_subpath_counters = []
         for go_path, this_path in enumerate(self.component_paths):
             these_sub_paths = dict()
             num_seg = len(this_path)
-            for go_start_v, start_segment in enumerate(this_path):
-                this_longest_sub_path = [start_segment]
-                this_internal_path_len = 0
-                go_next = (go_start_v + 1) % num_seg
-                while this_internal_path_len < self.max_alignment_length:
-                    next_segment = this_path[go_next]
-                    this_longest_sub_path.append(next_segment)
-                    this_internal_path_len += self.graph.vertex_info[next_segment[0]].len - this_overlap
-                    go_next = (go_next + 1) % num_seg
-                # this_internal_path_len -= assembly_graph.vertex_info[this_longest_sub_path[-1][0]].len
-                len_this_sub_p = len(this_longest_sub_path)
-                for skip_tail in range(len_this_sub_p - 1):
-                    this_sub_path = \
-                        self.graph.get_standardized_circular_path(this_longest_sub_path[:len_this_sub_p - skip_tail])
-                    if this_sub_path not in these_sub_paths:
-                        these_sub_paths[this_sub_path] = 0
-                    these_sub_paths[this_sub_path] += 1
+            if self.force_circular:
+                for go_start_v, start_segment in enumerate(this_path):
+                    # find the longest sub_path,
+                    # that begins with start_segment and be in the range of alignment length
+                    this_longest_sub_path = [start_segment]
+                    this_internal_path_len = 0
+                    go_next = (go_start_v + 1) % num_seg
+                    while this_internal_path_len < self.max_alignment_length:
+                        next_segment = this_path[go_next]
+                        this_longest_sub_path.append(next_segment)
+                        this_internal_path_len += self.graph.vertex_info[next_segment[0]].len - this_overlap
+                        go_next = (go_next + 1) % num_seg
+                    if self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_length:
+                        continue
+
+                    # record shorter sub_paths starting from start_segment
+                    len_this_sub_p = len(this_longest_sub_path)
+                    for skip_tail in range(len_this_sub_p - 1):
+                        this_sub_path = \
+                            self.graph.get_standardized_path(this_longest_sub_path[:len_this_sub_p - skip_tail])
+                        if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_length:
+                            break
+                        # one-time debug
+                        # if this_sub_path == (
+                        # ('1', False), ('4', False), ('1', False), ('7', False), ('5', True), ('7', True), ('1', True),
+                        # ('2', True), ('3', True), ('6', False), ('8', False), ('10', False), ('12', False),
+                        # ('10', False), ('11', False), ('3', False), ('2', False)):
+                        #     logger.debug("this_longest_internal_path_len:{}".format(
+                        #         this_internal_path_len - self.graph.vertex_info[
+                        #             this_longest_sub_path[-1][0]].len + this_overlap))
+                        #     logger.debug(
+                        #         "new internal: {}".format(self.graph.get_path_internal_length(this_sub_path)))
+
+                        if this_sub_path not in these_sub_paths:
+                            these_sub_paths[this_sub_path] = 0
+                        these_sub_paths[this_sub_path] += 1
+            else:
+                for go_start_v, start_segment in enumerate(this_path):
+                    # find the longest sub_path,
+                    # that begins with start_segment and be in the range of alignment length
+                    this_longest_sub_path = [start_segment]
+                    this_internal_path_len = 0
+                    go_next = go_start_v + 1
+                    while go_next < num_seg and this_internal_path_len < self.max_alignment_length:
+                        next_segment = this_path[go_next]
+                        this_longest_sub_path.append(next_segment)
+                        this_internal_path_len += self.graph.vertex_info[next_segment[0]].len - this_overlap
+                        go_next += 1
+                    if self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_length:
+                        continue
+                    # record shorter sub_paths starting from start_segment
+                    len_this_sub_p = len(this_longest_sub_path)
+                    for skip_tail in range(len_this_sub_p - 1):
+                        this_sub_path = \
+                            self.graph.get_standardized_circular_path(this_longest_sub_path[:len_this_sub_p - skip_tail])
+                        if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_length:
+                            break
+                        if this_sub_path not in these_sub_paths:
+                            these_sub_paths[this_sub_path] = 0
+                        these_sub_paths[this_sub_path] += 1
             self.isomer_subpath_counters.append(these_sub_paths)
 
         # transform self.isomer_subpath_counters to self.all_sub_paths
@@ -236,6 +278,9 @@ class Traversome(object):
                     deleted.append(this_sub_path)
                     del sub_paths_group[this_sub_path]
                 del self.all_sub_paths[this_sub_path]
+        if not self.all_sub_paths:
+            logger.error("No valid subpath found!")
+            exit()
 
         # match graph alignments to all_sub_paths
         for read_path, record_ids in self.read_paths.items():
@@ -272,14 +317,32 @@ class Traversome(object):
             go_sp += 1
             internal_len = self.graph.get_path_internal_length(this_sub_path)
             external_len_without_overlap = self.graph.get_path_len_without_terminal_overlaps(this_sub_path)
-            left_id, right_id = get_id_range_in_increasing_values(
-                min_num=internal_len + 2, max_num=external_len_without_overlap,
-                increasing_numbers=self.align_len_at_path_sorted)
+            try:
+                left_id, right_id = get_id_range_in_increasing_values(
+                    min_num=internal_len + 2, max_num=external_len_without_overlap,
+                    increasing_numbers=self.align_len_at_path_sorted)
+            except AssertionError as e:
+                logger.error(this_sub_path)
+                logger.error("internal_len:{}, external_len:{}, lengths:{}...{}".format(
+                        internal_len, external_len_without_overlap,
+                        self.align_len_at_path_sorted[:3], self.align_len_at_path_sorted[-3:]))
+                raise e
             if int((left_id + right_id) / 2) == (left_id + right_id) / 2.:
                 median_len = self.align_len_at_path_sorted[int((left_id + right_id) / 2)]
             else:
-                median_len = (self.align_len_at_path_sorted[int((left_id + right_id) / 2)] +
-                              self.align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
+                # try:
+                    median_len = (self.align_len_at_path_sorted[int((left_id + right_id) / 2)] +
+                                  self.align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
+
+                # one-time debug
+                # except IndexError:
+                #     logger.error("subpath:{}".format(this_sub_path))
+                #     logger.error("internal_len:{}, external_len:{}, lengths:{}...{}".format(
+                #         internal_len, external_len_without_overlap,
+                #         self.align_len_at_path_sorted[:3], self.align_len_at_path_sorted[-3:]))
+                #     logger.error("left_id:{}, right_id:{}, total:{}".format(
+                #         left_id, right_id, len(self.align_len_at_path_sorted)))
+                #     raise IndexError
             num_possible_X = self.graph.get_num_of_possible_alignment_start_points(
                 read_len=median_len, align_to_path=this_sub_path, path_internal_len=internal_len)
             if num_possible_X < 1:
@@ -297,6 +360,7 @@ class Traversome(object):
                                   (n__num_reads_in_range - x__num_matched_reads) * log_func(1 - this_prob)
             if go_sp % logger_step == 0:
                 logger.debug("Summarized subpaths: %i/%i" % (go_sp, total_sp_num))
+        logger.debug("Summarized subpaths: %i/%i" % (total_sp_num, total_sp_num))
         return loglike_expression
 
     def fit_model_using_maximum_likelihood(self):
@@ -310,7 +374,9 @@ class Traversome(object):
     def output_seqs(self):
         logger.info("Output seqs: ")
         with open(os.path.join(self.outdir, "isomers.fasta"), "w") as output_handler:
-            for go_isomer, this_prob in enumerate(self.component_probs):
+            sorted_rank = sorted(list(range(len(self.component_probs))), key=lambda x: -self.component_probs[x])
+            for go_isomer in sorted_rank:
+                this_prob = self.component_probs[go_isomer]
                 if this_prob > self.out_prob_threshold:
                     this_seq = self.graph.export_path(self.component_paths[go_isomer])
                     output_handler.write(">" + this_seq.label + " prop=%.4f" % this_prob + "\n" +

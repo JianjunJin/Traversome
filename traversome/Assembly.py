@@ -923,18 +923,23 @@ class Assembly(AssemblySimple):
             path_len += self.vertex_info[seg_name].len - overlap
         return path_len
 
-    def export_path(self, in_path):
-        overlap = self.__overlap if self.__overlap else 0
+    def repr_path(self, in_path):
+        # Bandage style
         seq_names = []
-        seq_segments = []
         for this_vertex, this_end in in_path:
-            seq_segments.append(self.vertex_info[this_vertex].seq[this_end][overlap:])
             seq_names.append(this_vertex + ("-", "+")[this_end])
         if self.is_circular_path(in_path):
             seq_names[-1] += "(circular)"
-        else:
+        return ",".join(seq_names)
+
+    def export_path(self, in_path):
+        overlap = self.__overlap if self.__overlap else 0
+        seq_segments = []
+        for this_vertex, this_end in in_path:
+            seq_segments.append(self.vertex_info[this_vertex].seq[this_end][overlap:])
+        if not self.is_circular_path(in_path):
             seq_segments[0] = self.vertex_info[in_path[0][0]].seq[in_path[0][1]][:overlap] + seq_segments[0]
-        return Sequence(",".join(seq_names), "".join(seq_segments))
+        return Sequence(self.repr_path(in_path), "".join(seq_segments))
 
     def reverse_path(self, raw_path):
         tuple_path = tuple(raw_path)

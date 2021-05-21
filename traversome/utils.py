@@ -704,6 +704,10 @@ def get_orf_lengths(sequence_string, threshold=200, which_frame=None,
 
 def get_id_range_in_increasing_values(min_num, max_num, increasing_numbers):
     assert max_num >= min_num
+    assert min_num <= increasing_numbers[-1], \
+        "minimum value {} out of range {}..{}".format(min_num, increasing_numbers[0], increasing_numbers[-1])
+    assert max_num >= increasing_numbers[0], \
+        "maximum value {} out of range {}..{}".format(max_num, increasing_numbers[0], increasing_numbers[-1])
     len_list = len(increasing_numbers)
     left_id = 0
     while left_id < len_list and increasing_numbers[left_id] < min_num:

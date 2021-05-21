@@ -28,11 +28,15 @@ class ModelFitBayesian(object):
             # pm.Mixture(name="likelihood", w=np.ones(len(components)), comp_dists=components, observed=data)
             # pm.Binomial("path_last", n=n__num_reads_in_range, p=this_prob, observed=x__num_matched_reads)
             # sample from the distribution
+
+            # uses the BFGS optimization algorithm to find the maximum of the log-posterior
+            logger.info("Searching the maximum of the log-posterior ..")
             start = pm.find_MAP(model=isomer_model)
             # trace = pm.sample_smc(n_generations, parallel=False)
 
             # In an upcoming release,
             # pm.sample will return an `arviz.InferenceData` object instead of a `MultiTrace` by default
+            logger.info("Using NUTS sampler ..")
             self.trace = pm.sample(
                 n_generations,
                 tune=n_burn,
@@ -41,6 +45,8 @@ class ModelFitBayesian(object):
                 init='adapt_diag',
                 start=start,
                 return_inferencedata=True)
+
+            logger.info("Summarizing the MCMC traces ..")
             summary = az.summary(self.trace)
             logger.info("\n{}".format(summary))
         return summary["mean"]
