@@ -167,13 +167,12 @@ class PathGeneratorGraphAlignment(object):
     #                     self.single_copy_vertices_prob[v_name] #
     #     else:
 
-
     def get_heuristic_paths(self, force_circular):
         count_search = 0
         count_valid = 0
         while count_valid < self.num_search:
             count_search += 1
-            new_path = self.graph.get_standardized_path(self.__heuristic_extend_path([]))
+            new_path = self.graph.get_standardized_circular_path(self.graph.roll_path(self.__heuristic_extend_path([])))
             if force_circular and not self.graph.is_circular_path(self.graph.roll_path(new_path)):
                 continue
             count_valid += 1

@@ -66,9 +66,9 @@ def ml(
     output_dir: str = typer.Option(None, "-o", "--output", help="Output directory. "),
     path_generator: str = typer.Option("H", "-P", help="Path generator: H (Heuristic)/U (User-provided)."),
     linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
-    out_seq_threshold: float = typer.Option(0.001, "-S", help="Output sequences with proportion >= %(default)s"),
-    keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. Default: %(default)s"),
-    log_level: LogLevel = typer.Option(LogLevel.INFO, help="Logging level. Use DEBUG for more, ERROR for less."),
+    out_seq_threshold: float = typer.Option(0.001, "-S", help="Output sequences over threshold. "),
+    keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
+    log_level: LogLevel = typer.Option(LogLevel.INFO, "--log-level", help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
     """
     Conduct Maximum Likelihood analysis for solving assembly graph
@@ -83,21 +83,18 @@ def ml(
         os.mkdir(output_dir)
     assert path_generator in ("H", "U")
     assert 0 <= out_seq_threshold <= 1
-    try:
-        traverser = Traversome(
-            graph=graph_file,
-            alignment=alignment_file,
-            outdir=output_dir,
-            out_prob_threshold=out_seq_threshold,
-            keep_temp=keep_temp,
-            loglevel=log_level
-        )
-        traverser.run(
-            path_generator=path_generator,
-            multi_chromosomes=True,  # opts.is_multi_chromosomes,
-            force_circular=not linear_chr)
-    except:
-        typer.Exit()
+    traverser = Traversome(
+        graph=graph_file,
+        alignment=alignment_file,
+        outdir=output_dir,
+        out_prob_threshold=out_seq_threshold,
+        keep_temp=keep_temp,
+        loglevel=log_level
+    )
+    traverser.run(
+        path_generator=path_generator,
+        multi_chromosomes=True,  # opts.is_multi_chromosomes,
+        force_circular=not linear_chr)
 
 
 @app.command()
@@ -111,7 +108,7 @@ def mc(
     n_generations: int = typer.Option(10000, "--mcmc", help="Number of MCMC generations. "),
     n_burn: int = typer.Option(1000, "--burn", help="Number of MCMC Burn-in. "),
     keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
-    log_level: LogLevel = typer.Option(LogLevel.INFO, help="Logging level. Use DEBUG for more, ERROR for less."),
+    log_level: LogLevel = typer.Option(LogLevel.INFO, "--log-level", help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
     """
     Conduct Bayesian MCMC analysis for solving assembly graph
@@ -126,21 +123,20 @@ def mc(
         os.mkdir(output_dir)
     assert path_generator in ("H", "U")
     assert 0 <= out_seq_threshold <= 1
-    try:
-        traverser = Traversome(
-            graph=graph_file,
-            alignment=alignment_file,
-            outdir=output_dir,
-            out_prob_threshold=out_seq_threshold,
-            do_bayesian=True,
-            n_generations=n_generations,
-            n_burn=n_burn,
-            keep_temp=keep_temp,
-            loglevel=log_level
-        )
-        traverser.run(
-            path_generator=path_generator,
-            multi_chromosomes=True,  # opts.is_multi_chromosomes,
-            force_circular=not linear_chr)
-    except:
-        typer.Exit()
+    traverser = Traversome(
+        graph=graph_file,
+        alignment=alignment_file,
+        outdir=output_dir,
+        out_prob_threshold=out_seq_threshold,
+        do_bayesian=True,
+        n_generations=n_generations,
+        n_burn=n_burn,
+        keep_temp=keep_temp,
+        loglevel=log_level
+    )
+    traverser.run(
+        path_generator=path_generator,
+        multi_chromosomes=True,  # opts.is_multi_chromosomes,
+        force_circular=not linear_chr)
+
+

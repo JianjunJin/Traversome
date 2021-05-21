@@ -40,7 +40,7 @@ class Traversome(object):
         self.graph_gfa = graph
         self.alignment_gaf = alignment
         self.outdir = outdir
-        self.do_bayesian = do_bayesian,
+        self.do_bayesian = do_bayesian
         self.out_prob_threshold = out_prob_threshold
         self.keep_temp = keep_temp
         self.kwargs = kwargs
@@ -55,7 +55,8 @@ class Traversome(object):
         self.alignment = None
         self.align_len_at_path_sorted = None
         self.max_alignment_length = None
-        self.component_paths = []  # each element is a tuple(path, path_label)
+        self.component_paths = []  # each element is a tuple(path)
+        self.component_probs = []
         self.isomer_sizes = None
         self.num_of_isomers = None
         self.isomer_subpath_counters = []  # each element is a dict(sub_path->sub_path_counts)
@@ -92,13 +93,16 @@ class Traversome(object):
             multi_chromosomes=multi_chromosomes,
             force_circular=force_circular
         )
-        logger.debug("Fitting candidate isomer paths model...")
+
         if self.do_bayesian:
-            probs = self.fit_model_using_bayesian_mcmc()
+            logger.debug("Fitting candidate isomer paths model using MCMC ...")
+            self.component_probs = self.fit_model_using_bayesian_mcmc()
         else:
-            probs = self.fit_model_using_maximum_likelihood()
-        logger.info(probs)
-        # logger.exception("end of devel.")
+            logger.debug("Fitting candidate isomer paths model using Maximum Likelihood...")
+            self.component_probs = self.fit_model_using_maximum_likelihood()
+        logger.debug(self.component_probs)
+
+        self.output_seqs()
 
     def generate_read_paths(self):
         for go_record, record in enumerate(self.alignment.records):
@@ -127,16 +131,16 @@ class Traversome(object):
         logger.debug("Summarizing alignment length distribution")
 
         # get sorted alignment lengths
-        align_len_at_path_sorted = sorted([rec.p_align_len for rec in self.alignment])
+        self.align_len_at_path_sorted = sorted([rec.p_align_len for rec in self.alignment])
 
         # optionally save temp files
         if self.keep_temp:
             opath = os.path.join(self.outdir, "align_len_at_path_sorted.txt")
             with open(opath, "w") as out:
-                out.write("\n".join(map(str, align_len_at_path_sorted)))
+                out.write("\n".join(map(str, self.align_len_at_path_sorted)))
 
         # store max value 
-        self.max_alignment_length = align_len_at_path_sorted[-1]
+        self.max_alignment_length = self.align_len_at_path_sorted[-1]
 
         # report result
         logger.info(
@@ -174,6 +178,9 @@ class Traversome(object):
         self.isomer_sizes = [self.graph.get_path_length(isomer_p)
                              for isomer_p in self.component_paths]
         self.num_of_isomers = len(self.component_paths)
+
+        for go_p, path in enumerate(self.component_paths):
+            logger.debug("PATH{}: {}".format(go_p + 1, path))
 
         # generate subpaths: the binomial sets
         if self.num_of_isomers > 1:
@@ -300,11 +307,11 @@ class Traversome(object):
         self.bayesian_fit = ModelFitBayesian(self)
         return self.bayesian_fit.run_mcmc(self.kwargs["n_generations"], self.kwargs["n_burn"])
 
-    def output_seqs(self, probs, threshold=0.001):
+    def output_seqs(self):
         logger.info("Output seqs: ")
         with open(os.path.join(self.outdir, "isomers.fasta"), "w") as output_handler:
-            for go_isomer, this_prob in enumerate(probs):
-                if this_prob > threshold:
+            for go_isomer, this_prob in enumerate(self.component_probs):
+                if this_prob > self.out_prob_threshold:
                     this_seq = self.graph.export_path(self.component_paths[go_isomer])
                     output_handler.write(">" + this_seq.label + " prop=%.4f" % this_prob + "\n" +
                                          this_seq.seq + "\n")

@@ -17,14 +17,10 @@ pip install -e . --no-deps
 
 ### Command line interface (CLI)
 
-Temporary usage:
 ```bash
-python traversome/estimate_isomer_frequencies.py -g graph.gfa -a align.gaf -o .
-```
+traversome ml -g graph.gfa -a align.gaf -o outdir
 
-future: 
-```bash
-traversome -g graph.gfa -a align.gaf -o .
+traversome mc -g graph.gfa -a align.gaf -o outdir (pymc3 crashes when the graph becomes complicated)
 ```
 
 ### Interpreting results

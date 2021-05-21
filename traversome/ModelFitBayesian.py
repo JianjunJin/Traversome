@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 
 from loguru import logger
-import matplotlib.pyplot as plt
 import pymc3 as pm
 import theano.tensor as tt
 import numpy as np
+import arviz as az
 
 
 class ModelFitBayesian(object):
@@ -12,6 +12,7 @@ class ModelFitBayesian(object):
     """
     def __init__(self, traversome_obj):
         self.traversome = traversome_obj
+        self.trace = None
         # self.graph = traversome_obj.graph
         pass
 
@@ -29,7 +30,17 @@ class ModelFitBayesian(object):
             # sample from the distribution
             start = pm.find_MAP(model=isomer_model)
             # trace = pm.sample_smc(n_generations, parallel=False)
-            trace = pm.sample(
-                n_generations, tune=n_burn, discard_tuned_samples=True, cores=1, init='adapt_diag', start=start)
-            logger.info(pm.summary(trace))
-        return trace
+
+            # In an upcoming release,
+            # pm.sample will return an `arviz.InferenceData` object instead of a `MultiTrace` by default
+            self.trace = pm.sample(
+                n_generations,
+                tune=n_burn,
+                discard_tuned_samples=True,
+                cores=1,
+                init='adapt_diag',
+                start=start,
+                return_inferencedata=True)
+            summary = az.summary(self.trace)
+            logger.info("\n{}".format(summary))
+        return summary["mean"]

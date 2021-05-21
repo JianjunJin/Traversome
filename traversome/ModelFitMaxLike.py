@@ -28,7 +28,7 @@ class ModelFitMaxLike(object):
     def run(self):
         self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
         logger.info("Generating the likelihood function .. ")
-        self.get_neg_likelihood_of_iso_freq()
+        self.neg_loglike_function = self.get_neg_likelihood_of_iso_freq()
         logger.info("Maximizing the likelihood function .. ")
         success_runs = self.minimize_neg_likelihood(verbose=self.traversome.loglevel in ("DEBUG", "TRACE", "ALL"))
         if success_runs:
