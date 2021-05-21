@@ -11,7 +11,7 @@ conda install typer numpy pandas scipy pymc3 sympy matplotlib -c conda-forge
 
 ### Install devel version of traversome
 ```bash
-git clone -b modular https://github.com/Kinggerm/Traversome
+git clone --depth=1 https://github.com/Kinggerm/Traversome
 pip install -e . --no-deps
 ```
 
@@ -19,7 +19,6 @@ pip install -e . --no-deps
 
 ```bash
 traversome ml -g graph.gfa -a align.gaf -o outdir
-
 traversome mc -g graph.gfa -a align.gaf -o outdir (pymc3 crashes when the graph becomes complicated)
 ```
 
