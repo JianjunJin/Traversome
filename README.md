@@ -12,7 +12,7 @@ conda install typer numpy pandas scipy pymc3 sympy -c conda-forge
 ### Install devel version of traversome
 ```bash
 git clone --depth=1 https://github.com/Kinggerm/Traversome
-pip install -e . --no-deps
+pip install -e ./Traversome --no-deps
 ```
 
 ### Command line interface (CLI)
