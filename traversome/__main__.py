@@ -16,6 +16,7 @@ CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
 
 class LogLevel(str, Enum):
     """categorical options for loglevel to CLI"""
+    TRACE = "TRACE"
     DEBUG = "DEBUG"
     INFO = "INFO"
     WARNING = "WARNING"

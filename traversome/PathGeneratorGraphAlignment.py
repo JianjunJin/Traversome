@@ -64,9 +64,9 @@ class PathGeneratorGraphAlignment(object):
         self.__middle_subpath_to_readpaths = {}
         self.__read_paths_counter_indexed = False
         self.contig_coverages = OrderedDict()
-        self.single_copy_vertices_prob = \
-            OrderedDict([(_v, 1.) for _v in single_copy_vertices]) if single_copy_vertices \
-                else OrderedDict()
+        # self.single_copy_vertices_prob = \
+        #     OrderedDict([(_v, 1.) for _v in single_copy_vertices]) if single_copy_vertices \
+        #         else OrderedDict()
 
         self.components = list()
         self.components_counts = dict()
@@ -75,8 +75,10 @@ class PathGeneratorGraphAlignment(object):
         logger.info("generating heuristic components .. ")
         if not self.__read_paths_counter_indexed:
             self.index_readpaths_subpaths()
+        logger.debug("estimating contig coverages from read paths ..")
         self.estimate_contig_coverages_from_read_paths()
         # self.estimate_single_copy_vertices()
+        logger.debug("start traversing ..")
         self.get_heuristic_paths(force_circular=force_circular)
 
     # def generate_heuristic_circular_isomers(self):
@@ -173,6 +175,9 @@ class PathGeneratorGraphAlignment(object):
         while count_valid < self.num_search:
             count_search += 1
             new_path = self.graph.get_standardized_circular_path(self.graph.roll_path(self.__heuristic_extend_path([])))
+            logger.debug("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
+            # logger.trace("  {} unique paths in {}/{} legal paths, {} traversals".format(
+            #     len(self.components), count_valid, self.num_search, count_search))
             if force_circular and not self.graph.is_circular_path(self.graph.roll_path(new_path)):
                 continue
             count_valid += 1
@@ -185,6 +190,8 @@ class PathGeneratorGraphAlignment(object):
                 self.components.append(new_path)
                 logger.info("  {} unique paths in {}/{} legal paths, {} traversals".format(
                     len(self.components), count_valid, self.num_search, count_search))
+        logger.info("  {} unique paths in {}/{} legal paths, {} traversals".format(
+            len(self.components), count_valid, self.num_search, count_search))
 
     def __heuristic_extend_path(
             self, path, initial_mean=None, initial_std=None, not_do_reverse=False):
@@ -200,8 +207,9 @@ class PathGeneratorGraphAlignment(object):
         """
         if not path:
             # randomly choose the read path and the direction
-            read_path = self.__random.choice(self.read_paths)
-            # change the weight (-~ depth) to flatten the search later
+            # change the weight (-~ depth) to flatten the search
+            read_p_freq_reciprocal = [1./ self.__read_paths_counter[r_p] for r_p in self.read_paths]
+            read_path = self.__random.choices(self.read_paths, weights=read_p_freq_reciprocal)[0]
             if self.__random.random() > 0.5:
                 read_path = self.graph.reverse_path(read_path)
             path = list(read_path)
@@ -217,6 +225,7 @@ class PathGeneratorGraphAlignment(object):
             repeating_unit = self.graph.roll_path(path)
             if len(path) > len(repeating_unit) and \
                     self.graph.get_path_internal_length(path) >= self.local_max_alignment_len:
+                logger.trace("      traversal ended within a circle unit.")
                 return deepcopy(repeating_unit)
             #
             current_ave_coverage = self.__get_cov_mean(path)
@@ -270,16 +279,18 @@ class PathGeneratorGraphAlignment(object):
                         next_name, next_end = self.__random.choices(candidates_rev, weights=weights)[0]
                     else:
                         next_name, next_end = self.__random.choice(candidates_rev)
-                    return self.__heuristic_check_extending_multiplicity(
+                    return self.__heuristic_check_multiplicity(
                         initial_mean=initial_mean,
                         initial_std=initial_std,
                         path=path,
-                        extend_path=[(next_name, not next_end)],
+                        proposed_extension=[(next_name, not next_end)],
                         not_do_reverse=not_do_reverse)
                 else:
                     if not_do_reverse:
+                        logger.trace("      traversal ended without next vertex.")
                         return path
                     else:
+                        logger.trace("      traversal reversed without next vertex.")
                         return self.__heuristic_extend_path(
                             self.graph.reverse_path(path),
                             not_do_reverse=True,
@@ -319,68 +330,96 @@ class PathGeneratorGraphAlignment(object):
                 # logger.debug("closed_from_start: " + str(closed_from_start))
                 # logger.debug("    candidate path: {} .. {} .. {}".format(path[:3], len(path), path[-3:]))
                 # logger.debug("    extend path   : {}".format(new_extend))
-                return self.__heuristic_check_extending_multiplicity(
+                return self.__heuristic_check_multiplicity(
                     initial_mean=initial_mean,
                     initial_std=initial_std,
                     path=path,
-                    extend_path=new_extend,
+                    proposed_extension=new_extend,
                     not_do_reverse=not_do_reverse)
 
-    def __heuristic_check_extending_multiplicity(
-            self, initial_mean, initial_std, path, extend_path, not_do_reverse):
+    def __heuristic_check_multiplicity(
+            self, initial_mean, initial_std, path, proposed_extension, not_do_reverse):
         """
+        heuristically check the multiplicity and call a stop according to the vertex coverage and current counts
         normal distribution
         :param initial_cov:
         :param path:
-        :param extend_path:
+        :param proposed_extension:
         :return:
         """
+        assert len(proposed_extension)
         current_names = [v_n for v_n, v_e in path]
         current_names = {v_n: current_names.count(v_n) for v_n in set(current_names)}
         # extend_names = [v_n for v_n, v_e in path]
         # extend_names = {v_n: extend_names.count(v_n) for v_n in set(extend_names)}
         new_path = list(deepcopy(path))
-        for v_name, v_end in extend_path:
-            if v_name in current_names:
-                old_cov_mean, old_cov_std = self.__get_cov_mean(new_path, return_std=True)
-                new_cov_mean, new_cov_std = self.__get_cov_mean(new_path + [(v_name, v_end)], return_std=True)
-                old_like = norm.pdf(self.contig_coverages[v_name],
-                                    loc=current_names[v_name] * old_cov_mean,
-                                    scale=old_cov_std)
-                new_like = norm.pdf(self.contig_coverages[v_name],
-                                    loc=(current_names[v_name] + 1) * new_cov_mean,
-                                    scale=new_cov_std)
-                old_like *= norm.pdf(self.contig_coverages[v_name] / float(current_names[v_name]),
-                                     loc=initial_mean,
-                                     scale=initial_std)
-                new_like *= norm.pdf(self.contig_coverages[v_name] / float(current_names[v_name] + 1),
-                                     loc=initial_mean,
-                                     scale=initial_std)
-                like_ratio = new_like / old_like
-                if like_ratio > 1:
-                    new_path.append((v_name, v_end))
-                # elif force_circular and not self.graph.is_circular_path(self.graph.roll_path(new_path)):
-                #     # infinite loop
-                #     new_path.append((v_name, v_end))
-                else:
-                    if self.__random.random() < like_ratio:
-                        new_path.append((v_name, v_end))
-                    else:
-                        if not_do_reverse:
-                            return new_path
-                        else:
-                            return self.__heuristic_extend_path(
-                                self.graph.reverse_path(new_path),
-                                not_do_reverse=True,
-                                initial_mean=initial_mean,
-                                initial_std=initial_std)
+        # if there is a vertex of proposed_extension that was not used in current path, accept the proposed_extension
+        for v_name, v_end in proposed_extension:
+            if v_name not in current_names:
+                return self.__heuristic_extend_path(
+                    new_path + list(proposed_extension),
+                    not_do_reverse=not_do_reverse,
+                    initial_mean=initial_mean,
+                    initial_std=initial_std)
+        # check the multiplicity of every vertices
+        # check the likelihood of making longest extension first, than shorten the extension
+        log_like_ratio_list = []
+        log_like_ratio = 0.
+        proposed_lengths = {_v_: self.graph.vertex_info[_v_].len for _v_, _e_ in proposed_extension}
+        old_cov_mean, old_cov_std = self.__get_cov_mean(new_path, return_std=True)
+        logger.trace("    old_path: {}".format(self.graph.repr_path(path)))
+        logger.trace("    checking proposed_extension: {}".format(self.graph.repr_path(proposed_extension)))
+        for v_name, v_end in proposed_extension:
+            old_like = norm.logpdf(self.contig_coverages[v_name],
+                                   loc=current_names[v_name] * old_cov_mean,
+                                   scale=old_cov_std)
+            # old_like += norm.logpdf(self.contig_coverages[v_name] / float(current_names[v_name]),
+            #                         loc=initial_mean,
+            #                         scale=initial_std)
+            new_cov_mean, new_cov_std = self.__get_cov_mean(new_path + [(v_name, v_end)], return_std=True)
+            new_like = norm.logpdf(self.contig_coverages[v_name],
+                                   loc=(current_names[v_name] + 1) * new_cov_mean,
+                                   scale=new_cov_std)
+            # new_like += norm.logpdf(self.contig_coverages[v_name] / float(current_names[v_name] + 1),
+            #                         loc=initial_mean,
+            #                         scale=initial_std)
+            old_cov_mean, old_cov_std = new_cov_mean, new_cov_std
+            log_like_ratio += (new_like - old_like) * proposed_lengths[v_name]  # weighted by length
+            log_like_ratio_list.append(log_like_ratio)
+            logger.trace("      initial_mean: %.4f, old_mean: %.4f (%.4f), proposed_mean: %.4f (%.4f)" % (
+                initial_mean, old_cov_mean, old_cov_std, new_cov_mean, new_cov_std))
+            logger.trace("      old_like: {},     proposed_like: {}".format(old_like, new_like))
+            new_path.append((v_name, v_end))
+        # de-weight the log likes
+        longest_ex_len = len(proposed_extension)
+        v_lengths = [proposed_lengths[_v_] for _v_, _e_ in proposed_extension]
+        accumulated_v_lengths = []
+        for rev_go in range(len(log_like_ratio_list)):
+            accumulated_v_lengths.insert(0, sum(v_lengths[:longest_ex_len - rev_go]))
+        log_like_ratio_list = [_llr / accumulated_v_lengths[_go] for _go, _llr in enumerate(log_like_ratio_list)]
+        # step-by-step shorten the extension
+        for rev_go, log_like_ratio in enumerate(log_like_ratio_list[::-1]):
+            proposed_end = longest_ex_len - rev_go
+            # de-weight by accumulated length
+            if log_like_ratio > log(self.__random.random()):
+                return self.__heuristic_extend_path(
+                    list(deepcopy(path)) + list(proposed_extension[:proposed_end]),
+                    not_do_reverse=not_do_reverse,
+                    initial_mean=initial_mean,
+                    initial_std=initial_std)
+        else:
+            if not_do_reverse:
+                logger.trace("    traversal ended to fit {}'s coverage.".format(proposed_extension[0][0]))
+                # logger.trace("    checked likes: {}".format(like_ratio_list))
+                return list(deepcopy(path))
             else:
-                new_path.append((v_name, v_end))
-        return self.__heuristic_extend_path(
-            new_path,
-            not_do_reverse=not_do_reverse,
-            initial_mean=initial_mean,
-            initial_std=initial_std)
+                logger.trace("    traversal reversed to fit {}'s coverage.".format(proposed_extension[0][0]))
+                # logger.trace("    checked likes: {}".format(like_ratio_list))
+                return self.__heuristic_extend_path(
+                    self.graph.reverse_path(list(deepcopy(path))),
+                    not_do_reverse=True,
+                    initial_mean=initial_mean,
+                    initial_std=initial_std)
 
     def __index_start_subpath(self, subpath, read_id, strand):
         """
@@ -429,6 +468,9 @@ class PathGeneratorGraphAlignment(object):
             else:
                 v_covers.append(self.contig_coverages[v_name] / float(v_names[v_name]))
                 v_lengths.append(self.graph.vertex_info[v_name].len * v_names[v_name])
+        # logger.trace("        > cal path: {}".format(self.graph.repr_path(path)))
+        # logger.trace("        > cover values: {}".format(v_covers))
+        # logger.trace("        > cover weights: {}".format(v_lengths))
         mean = np.average(v_covers, weights=v_lengths)
         if return_std:
             std = np.average((np.array(v_covers) - mean) ** 2, weights=v_lengths) ** 0.5
