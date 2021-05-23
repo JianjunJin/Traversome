@@ -2,9 +2,10 @@ from loguru import logger
 from traversome.utils import WeightedGMMWithEM, harmony_weights
 from copy import deepcopy
 from scipy.stats import norm
-from math import log, exp
+# from math import log, exp
 from collections import OrderedDict
 import numpy as np
+from numpy import log, exp
 import time
 
 
@@ -204,9 +205,7 @@ class PathGeneratorGraphAlignment(object):
     def __heuristic_extend_path(
             self, path, initial_mean=None, initial_std=None, not_do_reverse=False):
         """
-
         improvement needed
-
         :param path: empty path like [] or starting path like [("v1", True), ("v2", False)]
         :param initial_mean:
         :param initial_std:
