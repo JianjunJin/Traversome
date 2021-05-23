@@ -23,7 +23,7 @@ class PathGeneratorGraphAlignment(object):
                  differ_f=1.,
                  decay_f=20.,
                  cov_inert=1.,
-                 single_copy_vertices=None):
+                 use_alignment_cov=False):
         """
         :param assembly_graph:
         :param graph_alignment:
@@ -43,6 +43,7 @@ class PathGeneratorGraphAlignment(object):
             weight *= exp(-abs(log(extending_coverage/current_path_coverage)))^cov_inert
             Designed for the mixture of multiple-sourced genomes, e.g. plastome and mitogenome.
             Set to zero if the graph is a single-sourced graph.
+        :param use_alignment_cov: use the coverage from assembly graph if False.
         """
         assert 0 <= differ_f
         assert 0 <= decay_f
@@ -54,6 +55,7 @@ class PathGeneratorGraphAlignment(object):
         self.__decay_f = decay_f
         self.__cov_inert = cov_inert
         self.__random = random_obj
+        self.__use_alignment_cov = use_alignment_cov
 
         # to be generated
         self.local_max_alignment_len = None
@@ -67,7 +69,6 @@ class PathGeneratorGraphAlignment(object):
         # self.single_copy_vertices_prob = \
         #     OrderedDict([(_v, 1.) for _v in single_copy_vertices]) if single_copy_vertices \
         #         else OrderedDict()
-
         self.components = list()
         self.components_counts = dict()
 
@@ -75,8 +76,11 @@ class PathGeneratorGraphAlignment(object):
         logger.info("generating heuristic components .. ")
         if not self.__read_paths_counter_indexed:
             self.index_readpaths_subpaths()
-        logger.debug("estimating contig coverages from read paths ..")
-        self.estimate_contig_coverages_from_read_paths()
+        if self.__use_alignment_cov:
+            logger.debug("estimating contig coverages from read paths ..")
+            self.estimate_contig_coverages_from_read_paths()
+        else:
+            self.use_contig_coverage_from_assembly_graph()
         # self.estimate_single_copy_vertices()
         logger.debug("start traversing ..")
         self.get_heuristic_paths(force_circular=force_circular)
@@ -149,6 +153,10 @@ class PathGeneratorGraphAlignment(object):
             for v_name, v_end in read_path:
                 if v_name in self.contig_coverages:
                     self.contig_coverages[v_name] += 1
+
+    def use_contig_coverage_from_assembly_graph(self):
+        self.contig_coverages = \
+            OrderedDict([(v_name, self.graph.vertex_info[v_name].cov) for v_name in self.graph.vertex_info])
 
     # def estimate_single_copy_vertices(self):
     #     np.random.seed(self.__random.randint(1, 10000))
