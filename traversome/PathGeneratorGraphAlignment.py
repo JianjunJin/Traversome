@@ -264,7 +264,7 @@ class PathGeneratorGraphAlignment(object):
                     weights = harmony_weights(weights, diff=self.__differ_f)
                     if self.__cov_inert:
                         cdd_cov = [self.__get_cov_mean(rev_p, exclude_path=path) for rev_p in candidates]
-                        weights = [weights[go_c] * exp(-abs(log(cov/current_ave_coverage)))
+                        weights = [exp(log(weights[go_c])-abs(log(cov/current_ave_coverage)))
                                    for go_c, cov in enumerate(cdd_cov)]
                     read_id, strand = self.__random.choices(candidates, weights=weights)[0]
                     if strand:
@@ -317,14 +317,16 @@ class PathGeneratorGraphAlignment(object):
                     same_ov_w = [self.__read_paths_counter[self.read_paths[read_id]]
                                  for read_id, strand in same_ov_cdd]
                     same_ov_w = harmony_weights(same_ov_w, diff=self.__differ_f)
-                    same_ov_w *= exp(log(self.__decay_f) * ovl_c_num)
+                    # RuntimeWarning: overflow encountered in exp of numpy, or math range error in exp of math
+                    # change to dtype=np.float128?
+                    same_ov_w = exp(np.array(log(same_ov_w) + log(self.__decay_f) * ovl_c_num, dtype=np.float128))
                     weights.extend(same_ov_w)
                 if self.__cov_inert:
                     # logger.debug(candidates)
                     # logger.debug(candidates_ovl_n)
                     cdd_cov = [self.__get_cov_mean(self.read_paths[r_id][candidates_ovl_n[go_c]:])
                                for go_c, (r_id, r_strand) in enumerate(candidates)]
-                    weights = [weights[go_c] * exp(-abs(log(cov / current_ave_coverage)))
+                    weights = [exp(log(weights[go_c])-abs(log(cov / current_ave_coverage)))
                                for go_c, cov in enumerate(cdd_cov)]
                 chosen_cdd_id = self.__random.choices(range(len(candidates)), weights=weights)[0]
                 read_id, strand = candidates[chosen_cdd_id]

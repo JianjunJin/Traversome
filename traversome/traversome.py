@@ -381,7 +381,7 @@ class Traversome(object):
                 {
                     "sink": sys.stdout, 
                     "format": (
-                        "{time:YYYY-MM-DD-hh:mm:ss.SS} | "
+                        "{time:YYYY-MM-DD-HH:mm:ss.SS} | "
                         "<magenta>{file: >30} | </magenta>"
                         "<cyan>{function: <30} | </cyan>"
                         "<level>{message}</level>"
@@ -390,7 +390,7 @@ class Traversome(object):
                     },
                 {
                     "sink": self.logfile,                   
-                    "format": "{time:YYYY-MM-DD-hh:mm:ss.SS} | "
+                    "format": "{time:YYYY-MM-DD-HH:mm:ss.SS} | "
                               "<magenta>{file: >30} | </magenta>"
                               "<cyan>{function: <30} | </cyan>"
                               "<level>{message}</level>",
