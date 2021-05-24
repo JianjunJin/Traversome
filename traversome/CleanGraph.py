@@ -311,7 +311,7 @@ class CleanGraph(object):
                         max_count = float(max(group_counts))
                         go_g = 0
                         while go_g < len(group_counts):
-                            if abs(log(group_counts[go_g] / max_count)) < abs(log(ignore_ratio)):
+                            if ignore_ratio == 0. or abs(log(group_counts[go_g] / max_count)) < abs(log(ignore_ratio)):
                                 go_g += 1
                             else:
                                 del group_counts[go_g]

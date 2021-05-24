@@ -553,7 +553,7 @@ class PathGeneratorGraphAlignment(object):
         palindromic_repeat_vertices,
         ):
         """
-        recursively exhaust all circular paths
+        recursively exhaust all circular paths, deprecated for now
         :param ongoing_path:
         :param next_connections:
         :param vertices_left:
