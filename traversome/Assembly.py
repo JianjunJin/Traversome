@@ -4,19 +4,24 @@
 Assembly class object and associated class objects
 """
 
+import os
+import sys
+from copy import deepcopy
+from collections import OrderedDict
 from loguru import logger
-from traversome.AssemblySimple import AssemblySimple, VertexMergingHistory, VertexEditHistory
+from traversome.AssemblySimple import AssemblySimple #, VertexMergingHistory, VertexEditHistory
 from traversome.PathGeneratorGraphOnly import PathGeneratorGraphOnly
 from traversome.PathGeneratorGraphAlignment import PathGeneratorGraphAlignment
 from traversome.EstMultiplicityFromCov import EstMultiplicityFromCov
 from traversome.EstMultiplicityPrecise import EstMultiplicityPrecise
-from traversome.utils import \
-    Sequence, SequenceList, ProcessingGraphFailed, INF, get_orf_lengths, generate_clusters_from_connections
-    #, smart_trans_for_sort
-from copy import deepcopy
-from collections import OrderedDict
-import os
-import sys
+from traversome.utils import (
+    Sequence, SequenceList, 
+    ProcessingGraphFailed, 
+    INF, 
+    get_orf_lengths, 
+    generate_clusters_from_connections,
+    # smart_trans_for_sort,
+)
 
 
 class Assembly(AssemblySimple):
@@ -36,8 +41,10 @@ class Assembly(AssemblySimple):
         :param max_cov:
         """
         # inherit values from base class
-        super(Assembly, self).__init__(graph_file=graph_file, min_cov=min_cov, max_cov=max_cov, overlap=overlap)
-        self.__overlap = super(Assembly, self).overlap()
+        super().__init__(graph_file, min_cov, max_cov, overlap)
+        self.__overlap = self.overlap()
+        # super(Assembly, self).__init__(graph_file=graph_file, min_cov=min_cov, max_cov=max_cov, overlap=overlap)
+        # self.__overlap = super(Assembly, self).overlap()
 
         # get an initial set of clusters of connected vertices
         self.vertex_clusters = []
@@ -596,7 +603,7 @@ class Assembly(AssemblySimple):
 
     def estimate_multiplicity_precisely(
             self,
-            ave_depth,
+            # ave_depth,
             maximum_copy_num=8,
             broken_graph_allowed=False,
             return_new_graphs=False,
@@ -894,7 +901,8 @@ class Assembly(AssemblySimple):
         :param mode:
         :return: sorted_paths
         """
-        generator = PathGeneratorGraphOnly(graph=self, mode=mode).find_all_isomers()
+        generator = PathGeneratorGraphOnly(graph=self, mode=mode)
+        generator.find_all_isomers()
         return generator.components
 
     def is_circular_path(self, input_path):
@@ -907,7 +915,7 @@ class Assembly(AssemblySimple):
         return circular_len + overlap * int(self.is_circular_path(input_path))
 
     def get_path_internal_length(self, input_path):
-        assert len(input_path) > 1
+        assert len(input_path) > 1, f"input path len cannot be <= 1, this path is {input_path}"
         overlap = self.__overlap if self.__overlap else 0
         # internal_len is allowed to be negative when this_overlap > 0 and len(the_repeat_path) == 2
         internal_len = -overlap

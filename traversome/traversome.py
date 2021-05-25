@@ -157,7 +157,10 @@ class Traversome(object):
             #     logger.error("Simultaneously using 'all' generator and 'multi-chromosome' mode is not implemented!")
             #     raise Exception
             self.graph.estimate_multiplicity_by_cov(mode="all")
-            self.graph.estimate_multiplicity_precisely(maximum_copy_num=8, debug=self.loglevel in ("DEBUG", "TRACE", "ALL"))
+            self.graph.estimate_multiplicity_precisely(
+                maximum_copy_num=8, 
+                debug=self.loglevel in ("DEBUG", "TRACE", "ALL"),
+            )
             if self.force_circular:
                 try:
                     self.component_paths = self.graph.find_all_circular_isomers(mode="all")

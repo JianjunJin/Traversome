@@ -5,9 +5,10 @@ Command-line Interface to traversome
 """
 
 import os
-import typer
+from pathlib import Path
 from enum import Enum
-from .traversome import Traversome
+import typer
+from traversome.traversome import Traversome
 from traversome import __version__
 
 # add the -h option for showing help
@@ -102,41 +103,52 @@ def ml(
         )
 
 
+class PathGen(str, Enum):
+    Heuristic = "H"
+    Provided = "U"
+
+
 @app.command()
 def mc(
-    graph_file: str = typer.Option(None, "-g", "--graph", help="GFA/FASTG format Graph file. "),
-    alignment_file: str = typer.Option(None, "-a", "--alignment", help="GAF format alignment file. "),
-    output_dir: str = typer.Option(None, "-o", "--output", help="Output directory. "),
-    path_generator: str = typer.Option("H", "-P", help="Path generator: H (Heuristic)/U (User-provided)."),
-    random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed. "),
-    linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
-    out_seq_threshold: float = typer.Option(0.001, "-S", help="Output sequences over threshold. "),
-    n_generations: int = typer.Option(10000, "--mcmc", help="Number of MCMC generations. "),
-    n_burn: int = typer.Option(1000, "--burn", help="Number of MCMC Burn-in. "),
-    keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
-        log_level: LogLevel = typer.Option(LogLevel.INFO, "--loglevel", "--log-level",
-                                           help="Logging level. Use DEBUG for more, ERROR for less."),
+    graph_file: Path = typer.Option(
+        ..., "-g", "--graph", 
+        help="GFA/FASTG format Graph file", 
+        exists=True, resolve_path=True),
+    alignment_file: Path = typer.Option(
+        ..., "-a", "--alignment", 
+        help="GAF format alignment file",
+        exists=True, resolve_path=True,
+        ),
+    output_dir: Path = typer.Option(
+        './', "-o", "--output", 
+        help="Output directory",
+        exists=False, resolve_path=True),
+    path_generator: PathGen = typer.Option(PathGen.Heuristic, "-P", help="Path generator: H (Heuristic)/U (User-provided)"),
+    random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed"),
+    circular: bool = typer.Option(False, help="Chromosome topology forced to be circular"),
+    out_seq_threshold: float = typer.Option(
+        0.001, "-S", 
+        help="Threshold for sequence output",
+        min=0, max=1),
+    n_generations: int = typer.Option(10000, "--mcmc", help="MCMC generations"),
+    n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
+    keep_temp: bool = typer.Option(False, help="Keep temporary files"),
+    log_level: LogLevel = typer.Option(
+        LogLevel.INFO, "--loglevel", help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
     """
     Conduct Bayesian MCMC analysis for solving assembly graph
     Examples:
     traversome mc -g graph.gfa -a align.gaf -o .
     """
-    if not os.path.isfile(graph_file):
-        raise IOError(graph_file + " not found/valid!")
-    if not os.path.isfile(alignment_file):
-        raise IOError(alignment_file + " not found/valid!")
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
-    assert path_generator in ("H", "U")
-    assert 0 <= out_seq_threshold <= 1
+    os.makedirs(output_dir, exist_ok=True)
     traverser = Traversome(
-        graph=graph_file,
-        alignment=alignment_file,
+        graph=str(graph_file),
+        alignment=str(alignment_file),
         outdir=output_dir,
         out_prob_threshold=out_seq_threshold,
         do_bayesian=True,
-        force_circular=not linear_chr,
+        force_circular=circular,
         n_generations=n_generations,
         n_burn=n_burn,
         random_seed=random_seed,
@@ -146,6 +158,4 @@ def mc(
     traverser.run(
         path_generator=path_generator,
         multi_chromosomes=True  # opts.is_multi_chromosomes,
-        )
-
-
+    )

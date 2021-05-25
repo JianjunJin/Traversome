@@ -1,5 +1,13 @@
 #!/usr/bin/env python
 
+"""
+Install the traversome package.
+
+Local install for developers:
+    conda install numpy pandas scipy pymc3 sympy matplotlib typer loguru -c conda-forge
+    pip install . -e --no-deps
+"""
+
 import os
 import re
 from setuptools import setup
@@ -26,6 +34,7 @@ else:
         "sympy",
         "matplotlib",
         "typer",
+        "loguru",
     ]
 
 
