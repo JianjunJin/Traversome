@@ -214,7 +214,8 @@ class Traversome(object):
                         this_longest_sub_path.append(next_segment)
                         this_internal_path_len += self.graph.vertex_info[next_segment[0]].len - this_overlap
                         go_next = (go_next + 1) % num_seg
-                    if self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_length:
+                    if len(this_longest_sub_path) < 2 \
+                            or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_length:
                         continue
 
                     # record shorter sub_paths starting from start_segment
@@ -250,7 +251,8 @@ class Traversome(object):
                         this_longest_sub_path.append(next_segment)
                         this_internal_path_len += self.graph.vertex_info[next_segment[0]].len - this_overlap
                         go_next += 1
-                    if self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_length:
+                    if len(this_longest_sub_path) < 2 \
+                            or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_length:
                         continue
                     # record shorter sub_paths starting from start_segment
                     len_this_sub_p = len(this_longest_sub_path)
