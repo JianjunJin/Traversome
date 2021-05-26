@@ -1,5 +1,5 @@
 from loguru import logger
-from traversome.utils import WeightedGMMWithEM, harmony_weights
+from traversome.utils import find_greatest_common_divisor, harmony_weights  # WeightedGMMWithEM
 from copy import deepcopy
 from scipy.stats import norm
 # from math import log, exp
@@ -181,26 +181,82 @@ class PathGeneratorGraphAlignment(object):
     def get_heuristic_paths(self, force_circular):
         count_search = 0
         count_valid = 0
+        v_len = len(self.graph.vertex_info)
         while count_valid < self.num_search:
             count_search += 1
             new_path = self.graph.get_standardized_circular_path(self.graph.roll_path(self.__heuristic_extend_path([])))
             logger.debug("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
             # logger.trace("  {} unique paths in {}/{} legal paths, {} traversals".format(
             #     len(self.components), count_valid, self.num_search, count_search))
-            if force_circular and not self.graph.is_circular_path(self.graph.roll_path(new_path)):
+            if force_circular and not self.graph.is_circular_path(new_path):
                 continue
-            count_valid += 1
-            if new_path in self.components_counts:
-                self.components_counts[new_path] += 1
-                logger.debug("  {} unique paths in {}/{} legal paths, {} traversals".format(
-                    len(self.components), count_valid, self.num_search, count_search))
+            count_search -= 1
+            if len(new_path) >= v_len * 2:
+                new_path_list = self.__decompose_hetero_units(new_path)
             else:
-                self.components_counts[new_path] = 1
-                self.components.append(new_path)
-                logger.info("  {} unique paths in {}/{} legal paths, {} traversals".format(
-                    len(self.components), count_valid, self.num_search, count_search))
+                new_path_list = [new_path]
+            for new_path in new_path_list:
+                count_search += 1
+                count_valid += 1
+                if new_path in self.components_counts:
+                    self.components_counts[new_path] += 1
+                    logger.debug("  {} unique paths in {}/{} legal paths, {} traversals".format(
+                        len(self.components), count_valid, self.num_search, count_search))
+                else:
+                    self.components_counts[new_path] = 1
+                    self.components.append(new_path)
+                    logger.info("  {} unique paths in {}/{} legal paths, {} traversals".format(
+                        len(self.components), count_valid, self.num_search, count_search))
         logger.info("  {} unique paths in {}/{} legal paths, {} traversals".format(
             len(self.components), count_valid, self.num_search, count_search))
+
+    def __decompose_hetero_units(self, circular_path):
+        """
+
+        """
+        def get_v_counts(_path): return [_path.count(_v_name) for _v_name in self.graph.vertex_info]
+        v_list = [v_name for v_name, v_end in circular_path]
+        v_counts = get_v_counts(v_list)
+        gcd = find_greatest_common_divisor(v_counts)
+        logger.trace("  checking gcd {} from {}".format(gcd, circular_path))
+        if gcd == 1:
+            return [circular_path]
+        else:
+            logger.debug("  decompose {}".format(circular_path))
+            v_to_id = {v_name: go_id for go_id, v_name in enumerate(self.graph.vertex_info)}
+            unit_counts = [int(v_count/gcd) for v_count in v_counts]
+            unit_len = int(len(v_list) / gcd)
+            reseed_at = self.__random.randint(0, unit_len - 1)
+            v_list_shuffled = v_list[len(v_list) - reseed_at:] + v_list + v_list[:unit_len]
+            counts_check = get_v_counts(v_list_shuffled[:unit_len])
+            find_start = False
+            try_start = 0
+            for try_start in range(unit_len):
+                # if each unit has the same composition
+                if counts_check == unit_counts and \
+                        set([get_v_counts(v_list_shuffled[try_start+unit_len*go_u:try_start + unit_len*(go_u + 1)])
+                             == unit_counts
+                             for go_u in range(1, gcd)]) \
+                        == {True}:
+                    find_start = True
+                    break
+                else:
+                    counts_check[v_to_id[v_list_shuffled[try_start]]] -= 1
+                    counts_check[v_to_id[v_list_shuffled[try_start + unit_len]]] += 1
+            if find_start:
+                path_shuffled = circular_path[len(v_list) - reseed_at:] + circular_path + circular_path[:unit_len]
+                unit_seq_len = self.graph.get_path_length(path_shuffled[try_start: try_start + unit_len])
+                unit_copy_num = min(max(int((self.local_max_alignment_len - 2) / unit_seq_len), 1), gcd)
+                return_list = []
+                for go_unit in range(int(gcd/unit_copy_num)):
+                    go_from__ = try_start + unit_len * unit_copy_num * go_unit
+                    go_to__ = try_start + unit_len * unit_copy_num * (go_unit + 1)
+                    this_path = path_shuffled[go_from__: go_to__]
+                    if self.graph.is_circular_path(this_path):
+                        return_list.append(self.graph.get_standardized_circular_path(this_path))
+                return return_list
+            else:
+                return [circular_path]
 
     def __heuristic_extend_path(
             self, path, initial_mean=None, initial_std=None, not_do_reverse=False):

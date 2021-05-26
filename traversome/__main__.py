@@ -61,36 +61,49 @@ def main(
     )
 
 
+class PathGen(str, Enum):
+    Heuristic = "H"
+    Provided = "U"
+
+
 @app.command()
 def ml(
-    graph_file: str = typer.Option(None, "-g", "--graph", help="GFA/FASTG format Graph file. "),
-    alignment_file: str = typer.Option(None, "-a", "--alignment", help="GAF format alignment file. "),
-    output_dir: str = typer.Option(None, "-o", "--output", help="Output directory. "),
-    path_generator: str = typer.Option("H", "-P", help="Path generator: H (Heuristic)/U (User-provided)."),
+    graph_file: Path = typer.Option(
+        ..., "-g", "--graph",
+        help="GFA/FASTG format Graph file",
+        exists=True, resolve_path=True),
+    alignment_file: Path = typer.Option(
+        ..., "-a", "--alignment",
+        help="GAF format alignment file",
+        exists=True, resolve_path=True,
+    ),
+    output_dir: Path = typer.Option(
+        './', "-o", "--output",
+        help="Output directory",
+        exists=False, resolve_path=True),
+    path_generator: PathGen = typer.Option(
+        PathGen.Heuristic, "-P",
+        help="Path generator: H (Heuristic)/U (User-provided)"),
     random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed. "),
     linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
-    out_seq_threshold: float = typer.Option(0.001, "-S", help="Output sequences over threshold. "),
+        out_seq_threshold: float = typer.Option(
+            0.001, "-S",
+            help="Threshold for sequence output",
+            min=0, max=1),
     keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
-    log_level: LogLevel = typer.Option(LogLevel.INFO, "--loglevel", "--log-level",
-                                       help="Logging level. Use DEBUG for more, ERROR for less."),
+    log_level: LogLevel = typer.Option(
+        LogLevel.INFO, "--loglevel", "--log-level", help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
     """
     Conduct Maximum Likelihood analysis for solving assembly graph
     Examples:
     traversome ml -g graph.gfa -a align.gaf -o .
     """
-    if not os.path.isfile(graph_file):
-        raise IOError(graph_file + " not found/valid!")
-    if not os.path.isfile(alignment_file):
-        raise IOError(alignment_file + " not found/valid!")
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
-    assert path_generator in ("H", "U")
-    assert 0 <= out_seq_threshold <= 1
+    os.makedirs(str(output_dir), exist_ok=True)
     traverser = Traversome(
-        graph=graph_file,
-        alignment=alignment_file,
-        outdir=output_dir,
+        graph=str(graph_file),
+        alignment=str(alignment_file),
+        outdir=str(output_dir),
         out_prob_threshold=out_seq_threshold,
         force_circular=not linear_chr,
         random_seed=random_seed,
@@ -103,31 +116,28 @@ def ml(
         )
 
 
-class PathGen(str, Enum):
-    Heuristic = "H"
-    Provided = "U"
-
-
 @app.command()
 def mc(
     graph_file: Path = typer.Option(
-        ..., "-g", "--graph", 
-        help="GFA/FASTG format Graph file", 
+        ..., "-g", "--graph",
+        help="GFA/FASTG format Graph file",
         exists=True, resolve_path=True),
     alignment_file: Path = typer.Option(
-        ..., "-a", "--alignment", 
+        ..., "-a", "--alignment",
         help="GAF format alignment file",
         exists=True, resolve_path=True,
         ),
     output_dir: Path = typer.Option(
-        './', "-o", "--output", 
+        './', "-o", "--output",
         help="Output directory",
         exists=False, resolve_path=True),
-    path_generator: PathGen = typer.Option(PathGen.Heuristic, "-P", help="Path generator: H (Heuristic)/U (User-provided)"),
+    path_generator: PathGen = typer.Option(
+        PathGen.Heuristic, "-P",
+        help="Path generator: H (Heuristic)/U (User-provided)"),
     random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed"),
-    circular: bool = typer.Option(False, help="Chromosome topology forced to be circular"),
+    linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
     out_seq_threshold: float = typer.Option(
-        0.001, "-S", 
+        0.001, "-S",
         help="Threshold for sequence output",
         min=0, max=1),
     n_generations: int = typer.Option(10000, "--mcmc", help="MCMC generations"),
@@ -141,14 +151,14 @@ def mc(
     Examples:
     traversome mc -g graph.gfa -a align.gaf -o .
     """
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(str(output_dir), exist_ok=True)
     traverser = Traversome(
         graph=str(graph_file),
         alignment=str(alignment_file),
-        outdir=output_dir,
+        outdir=str(output_dir),
         out_prob_threshold=out_seq_threshold,
         do_bayesian=True,
-        force_circular=circular,
+        force_circular=not linear_chr,
         n_generations=n_generations,
         n_burn=n_burn,
         random_seed=random_seed,
