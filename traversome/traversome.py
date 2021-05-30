@@ -39,7 +39,8 @@ class Traversome(object):
             **kwargs):
         # store input files and params
         self.graph_gfa = graph
-        self.alignment_gaf = alignment
+        self.alignment_file = alignment
+        self.alignment_format = self.parse_alignment_format_from_postfix()
         self.outdir = outdir
         self.do_bayesian = do_bayesian
         self.force_circular = force_circular
@@ -80,7 +81,8 @@ class Traversome(object):
         self.graph = Assembly(self.graph_gfa)
 
         self.alignment = GraphAlignRecords(
-            self.alignment_gaf,
+            self.alignment_file,
+            alignment_format=self.alignment_format,
             min_aligned_path_len=100, 
             min_identity=0.8,
             trim_overlap_with_graph=True,
@@ -104,6 +106,15 @@ class Traversome(object):
             self.component_probs = self.fit_model_using_maximum_likelihood()
 
         self.output_seqs()
+
+    def parse_alignment_format_from_postfix(self):
+        if self.alignment_file.lower().endswith(".gaf"):
+            alignment_format = "GAF"
+        elif self.alignment_file.lower().endswith(".tsv"):
+            alignment_format = "SPA-TSV"
+        else:
+            raise Exception("Please denote the alignment format using adequate postfix (.gaf/.tsv)")
+        return alignment_format
 
     def generate_read_paths(self):
         for go_record, record in enumerate(self.alignment.records):
