@@ -9,6 +9,7 @@ from copy import deepcopy
 from math import log, inf
 from scipy import stats
 from loguru import logger
+from enum import Enum
 import numpy as np
 import random
 
@@ -153,6 +154,34 @@ class SequenceList(object):
         for seq in self:
             fasta_file_handler.write(seq.fasta_str(this_interleaved))
         fasta_file_handler.close()
+
+
+class SubPathInfo(object):
+    def __init__(self):
+        self.from_isomers = {}
+        self.mapped_records = []
+        self.num_possible_X = -1  # The X in binomial: theoretical num of matched chances
+        self.num_in_range = -1  # The n in binomial: observed num of reads in range
+        self.num_matched = -1  # The x in binomial: observed num of matched reads = len(self.mapped_records)
+
+
+class LogLikeFormulaInfo(object):
+    def __init__(self, loglike_expression=0, variable_size=0, sample_size=0):
+        self.loglike_expression = loglike_expression
+        self.variable_size = variable_size
+        self.sample_size = sample_size
+
+
+class LogLikeFuncInfo(object):
+    def __init__(self, loglike_func=0, variable_size=0, sample_size=0):
+        self.loglike_func = loglike_func
+        self.variable_size = variable_size
+        self.sample_size = sample_size
+
+
+class Criteria(str, Enum):
+    AIC = "AIC"
+    BIC = "BIC"
 
 
 class WeightedGMMWithEM:
@@ -427,7 +456,6 @@ def reduce_list_with_gcd(number_list):
     else:
         gcd_num = find_greatest_common_divisor(number_list)
         return [int(raw_number / gcd_num) for raw_number in number_list]
-
 
 
 def bic(loglike, len_param, len_data):

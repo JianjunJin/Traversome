@@ -21,7 +21,8 @@ class ModelFitBayesian(object):
         isomer_num = self.traversome.num_of_isomers
         with pm.Model() as isomer_model:
             isomer_percents = pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,))
-            loglike_expression = self.traversome.get_likelihood_formula(isomer_percents=isomer_percents, log_func=tt.log)
+            loglike_expression = self.traversome.get_likelihood_binormial_formula(
+                isomer_percents=isomer_percents, log_func=tt.log).loglike_expression
             pm.Potential("likelihood", loglike_expression)
             # pm.Deterministic("likelihood", likes)
             # pm.DensityDist?

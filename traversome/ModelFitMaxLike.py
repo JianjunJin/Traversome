@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 from loguru import logger
-from traversome.utils import get_id_range_in_increasing_values
+# from traversome.utils import get_id_range_in_increasing_values
 from scipy import optimize
+from collections import OrderedDict
+from traversome.utils import LogLikeFuncInfo, Criteria, aic, bic
 import numpy as np
 import sympy
+from math import inf
 np.seterr(divide="ignore", invalid="ignore")
-
 
 
 class ModelFitMaxLike(object):
@@ -22,55 +24,133 @@ class ModelFitMaxLike(object):
 
         # to be generated
         self.isomer_percents = None
-        self.neg_loglike_function = None
-        self.best_proportions = []
 
-    def run(self):
+        # res without model selection
+        self.overall_neg_loglike_function = None
+        self.overall_best_proportions = []
+
+    def point_estimate(self):
         self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
         logger.info("Generating the likelihood function .. ")
-        self.neg_loglike_function = self.get_neg_likelihood_of_iso_freq()
+        self.overall_neg_loglike_function = self.get_neg_likelihood_of_iso_freq().loglike_func
         logger.info("Maximizing the likelihood function .. ")
-        success_runs = self.minimize_neg_likelihood(verbose=self.traversome.loglevel in ("DEBUG", "TRACE", "ALL"))
+        success_runs = self.minimize_neg_likelihood(
+            neg_loglike_func=self.overall_neg_loglike_function,
+            num_variables=self.num_of_isomers,
+            verbose=self.traversome.loglevel in ("TRACE", "ALL"))
         if success_runs:
             # for run_res in sorted(success_runs, key=lambda x: x.fun):
             #     logger.info(str(run_res.fun) + str([round(m, 8) for m in run_res.x]))
             logger.info("Proportion: %s " % (list(success_runs[0].x)))
             logger.info("Log-likelihood: %s" % (-success_runs[0].fun))
-            self.best_proportions = success_runs[0].x
-            return self.best_proportions
+            self.overall_best_proportions = success_runs[0].x
+            return self.overall_best_proportions
+        else:
+            raise Exception("Likelihood maximization failed.")
 
-    def get_neg_likelihood_of_iso_freq(self, scipy_style=True):
-        loglike_expression = self.traversome.get_likelihood_formula(self.isomer_percents, log_func=sympy.log)
-        # print(maximum_loglike_expression)
+    def forward_model_selection(self, criteria=Criteria.AIC):
+        # TODO be aware of unidentifiable situations
+        self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
+        go_component = 0
+        chosen_ids = OrderedDict()
+        previous_aic = inf
+        previous_like = -inf
+        previous_prop = []
+        while go_component < self.num_of_isomers:
+            logger.info("Picking the {} component ..".format(go_component + 1))
+            go_component += 1
+            test_id_res = OrderedDict()
+            # maybe do this latter, accept both if two models are unidentifiable
+            # chosen_this_round = set()
+            for go_iso, iso_freq in enumerate(self.isomer_percents):
+                if go_iso not in chosen_ids:
+                    testing_ids = set(chosen_ids) | {go_iso}
+                    logger.debug("Test components {} + {}".format(sorted(chosen_ids), go_iso))
+                    logger.debug("Generating the likelihood function .. ")
+                    neg_loglike_func_obj = self.get_neg_likelihood_of_iso_freq(
+                        within_isomer_ids=testing_ids)
+                    logger.debug("Maximizing the likelihood function .. ")
+                    success_runs = self.minimize_neg_likelihood(
+                        neg_loglike_func=neg_loglike_func_obj.loglike_func,
+                        num_variables=len(testing_ids),
+                        verbose=self.traversome.loglevel in ("TRACE", "ALL"))
+                    if success_runs:
+                        test_id_res[go_iso] = {}
+                        test_id_res[go_iso]["prop"] = list(success_runs[0].x)
+                        test_id_res[go_iso]["loglike"] = -success_runs[0].fun
+                        logger.debug("Proportion: %s " % (test_id_res[go_iso]["prop"]))
+                        logger.debug("Log-likelihood: %s" % (test_id_res[go_iso]["loglike"]))
+                        if criteria == "AIC":
+                            test_id_res[go_iso][criteria] = aic(
+                                loglike=-success_runs[0].fun,
+                                len_param=neg_loglike_func_obj.variable_size)
+                            logger.debug("%s: %s" % (criteria, test_id_res[go_iso][criteria]))
+                        elif criteria == "BIC":
+                            test_id_res[go_iso][criteria] = bic(
+                                loglike=-success_runs[0].fun,
+                                len_param=neg_loglike_func_obj.variable_size,
+                                len_data=neg_loglike_func_obj.sample_size)
+                            logger.debug("%s: %s" % (criteria, test_id_res[go_iso][criteria]))
+                    else:
+                        raise Exception("Likelihood maximization failed.")
+            best_id, best_val = sorted([[_go_iso_, test_id_res[_go_iso_][criteria]] for _go_iso_ in test_id_res],
+                                       key=lambda x: x[1])[0]
+            if best_val < previous_aic:
+                previous_aic = best_val
+                previous_like = test_id_res[best_id]["loglike"]
+                previous_prop = test_id_res[best_id]["prop"]
+                chosen_ids[best_id] = True
+            else:
+                logger.info("Proportion: %s " % previous_prop)
+                logger.info("Log-likelihood: %s" % previous_like)
+                return previous_prop
+        logger.info("Proportion: %s " % previous_prop)
+        logger.info("Log-likelihood: %s" % previous_like)
+        return previous_prop
+
+    def get_neg_likelihood_of_iso_freq(self, within_isomer_ids=None, scipy_style=True):
+        log_like_formula = self.traversome.get_likelihood_binormial_formula(
+            self.isomer_percents,
+            log_func=sympy.log,
+            within_isomer_ids=within_isomer_ids)
+        if within_isomer_ids is None:
+            within_isomer_ids = set(range(self.num_of_isomers))
         neg_likelihood_of_iso_freq = sympy.lambdify(
-            args=[self.isomer_percents[isomer_id] for isomer_id in
-                  range(len(self.isomer_percents))],
-            expr=-loglike_expression)
+            args=[self.isomer_percents[isomer_id]
+                  for isomer_id in range(self.num_of_isomers) if isomer_id in within_isomer_ids],
+            expr=-log_like_formula.loglike_expression)
+        logger.trace("Formula: {}".format(-log_like_formula.loglike_expression))
         if scipy_style:
             # for compatibility between scipy and sympy
             # positional arguments -> single tuple argument
             def neg_likelihood_of_iso_freq_single_arg(x):
                 return neg_likelihood_of_iso_freq(*tuple(x))
 
-            return neg_likelihood_of_iso_freq_single_arg
+            return LogLikeFuncInfo(
+                loglike_func=neg_likelihood_of_iso_freq_single_arg,
+                variable_size=log_like_formula.variable_size,
+                sample_size=log_like_formula.sample_size)
         else:
-            return neg_likelihood_of_iso_freq
+            return LogLikeFuncInfo(
+                loglike_func=neg_likelihood_of_iso_freq,
+                variable_size=log_like_formula.variable_size,
+                sample_size=log_like_formula.sample_size)
 
-    def minimize_neg_likelihood(self, verbose):
+    def minimize_neg_likelihood(self, neg_loglike_func, num_variables, verbose):
         # all proportions should be in range [0, 1] and sum up to 1.
-        constraints = ({"type": "eq", "fun": lambda x: sum(x) - 1})
+        constraints = ({"type": "eq", "fun": lambda x: sum(x) - 1})  # what if we relax this?
         other_optimization_options = {"disp": verbose, "maxiter": 1000, "ftol": 1.0e-6, "eps": 1.0e-10}
         count_run = 0
         success_runs = []
         while count_run < 100:
-            initials = np.random.random(self.num_of_isomers)
+            initials = np.random.random(num_variables)
             initials /= sum(initials)
-            # print("initials", initials)
+            # logger.debug("initials", initials)
             # np.full(shape=num_of_isomers, fill_value=float(1. / num_of_isomers), dtype=np.float)
             result = optimize.minimize(
-                fun=self.neg_loglike_function,
+                fun=neg_loglike_func,
                 x0=initials,
-                jac=False, method='SLSQP', constraints=constraints, bounds=[(0., 1.0)] * self.num_of_isomers,
+                jac=False, method='SLSQP', bounds=[(0., 1.0)] * num_variables, constraints=constraints,
                 options=other_optimization_options)
             # bounds=[(-1.0e-9, 1.0)] * num_isomers will violate bound constraints and cause ValueError
             if result.success:
