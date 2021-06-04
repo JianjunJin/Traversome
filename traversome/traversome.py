@@ -104,8 +104,8 @@ class Traversome(object):
             self.component_probs = self.fit_model_using_bayesian_mcmc()
         else:
             logger.debug("Fitting candidate isomer paths model using Maximum Likelihood...")
-            # self.component_probs = self.fit_model_using_point_maximum_likelihood()
-            self.component_probs = self.fit_model_using_forward_model_selection()
+            self.component_probs = self.fit_model_using_point_maximum_likelihood()
+            # self.component_probs = self.fit_model_using_forward_model_selection()
 
         self.output_seqs()
 
