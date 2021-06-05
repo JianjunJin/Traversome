@@ -337,7 +337,7 @@ class PathGeneratorGraphAlignment(object):
                     candidates_rev = sorted(next_connections)
                     if self.__cov_inert:
                         # coverage inertia, more likely to extend to contigs with similar depths
-                        cdd_cov = [self.__get_cov_mean(rev_p) for rev_p in candidates_rev]
+                        cdd_cov = [self.contig_coverages[_n_] for _n_, _e_ in candidates_rev]
                         weights = [exp(-abs(log(cov/current_ave_coverage))) for cov in cdd_cov]
                         next_name, next_end = self.__random.choices(candidates_rev, weights=weights)[0]
                     else:
@@ -513,7 +513,11 @@ class PathGeneratorGraphAlignment(object):
 
     def __get_cov_mean(self, path, exclude_path=None, return_std=False):
         assert len(path)
-        v_names = [v_n for v_n, v_e in path]
+        try:
+            v_names = [v_n for v_n, v_e in path]
+        except Exception as e:
+            print(path)
+            raise e
         v_names = {v_n: v_names.count(v_n) for v_n in set(v_names)}
         if exclude_path:
             del_names = [v_n for v_n, v_e in exclude_path]
