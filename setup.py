@@ -31,6 +31,7 @@ else:
         "pandas",
         "scipy",
     	"pymc3",
+        "symengine",
         "sympy",
         "matplotlib",
         "typer",

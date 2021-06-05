@@ -5,8 +5,9 @@ from scipy import optimize
 from collections import OrderedDict
 from traversome.utils import LogLikeFuncInfo, Criteria, aic, bic
 import numpy as np
-import sympy
-from math import inf
+# import sympy
+import symengine
+# from math import inf
 np.seterr(divide="ignore", invalid="ignore")
 
 
@@ -30,7 +31,8 @@ class ModelFitMaxLike(object):
         self.overall_best_proportions = []
 
     def point_estimate(self):
-        self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
+        # self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
+        self.isomer_percents = [symengine.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
         logger.info("Generating the likelihood function .. ")
         self.overall_neg_loglike_function = self.get_neg_likelihood_of_iso_freq().loglike_func
         logger.info("Maximizing the likelihood function .. ")
@@ -48,58 +50,46 @@ class ModelFitMaxLike(object):
         else:
             raise Exception("Likelihood maximization failed.")
 
-    def forward_model_selection(self, criteria=Criteria.AIC):
+    def reverse_model_selection(self, criteria=Criteria.AIC):
         # TODO be aware of unidentifiable situations
-        self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
+        # self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
+        self.isomer_percents = [symengine.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
         go_component = 0
-        chosen_ids = OrderedDict()
-        previous_aic = inf
-        previous_like = -inf
-        previous_prop = []
-        while go_component < self.num_of_isomers:
-            logger.info("Picking the {} component ..".format(go_component + 1))
+        chosen_ids = OrderedDict([(isomer_id, True) for isomer_id in range(self.num_of_isomers)])
+        logger.debug("Test components {}".format(list(chosen_ids)))
+        previous_prop, previous_like, previous_criteria = \
+            self.__compute_like_and_criteria(chosen_id_set=set(chosen_ids), criteria=criteria)
+        while go_component < self.num_of_isomers - 1:
+            logger.info("Trying dropping {} component(s) ..".format(go_component + 1))
             go_component += 1
             test_id_res = OrderedDict()
             # maybe do this latter, accept both if two models are unidentifiable
             # chosen_this_round = set()
-            for go_iso, iso_freq in enumerate(self.isomer_percents):
-                if go_iso not in chosen_ids:
-                    testing_ids = set(chosen_ids) | {go_iso}
-                    logger.debug("Test components {} + {}".format(sorted(chosen_ids), go_iso))
-                    logger.debug("Generating the likelihood function .. ")
-                    neg_loglike_func_obj = self.get_neg_likelihood_of_iso_freq(
-                        within_isomer_ids=testing_ids)
-                    logger.debug("Maximizing the likelihood function .. ")
-                    success_runs = self.minimize_neg_likelihood(
-                        neg_loglike_func=neg_loglike_func_obj.loglike_func,
-                        num_variables=len(testing_ids),
-                        verbose=self.traversome.loglevel in ("TRACE", "ALL"))
-                    if success_runs:
-                        test_id_res[go_iso] = {}
-                        test_id_res[go_iso]["prop"] = list(success_runs[0].x)
-                        test_id_res[go_iso]["loglike"] = -success_runs[0].fun
-                        logger.debug("Proportion: %s " % (test_id_res[go_iso]["prop"]))
-                        logger.debug("Log-likelihood: %s" % (test_id_res[go_iso]["loglike"]))
-                        if criteria == "AIC":
-                            test_id_res[go_iso][criteria] = aic(
-                                loglike=-success_runs[0].fun,
-                                len_param=neg_loglike_func_obj.variable_size)
-                            logger.debug("%s: %s" % (criteria, test_id_res[go_iso][criteria]))
-                        elif criteria == "BIC":
-                            test_id_res[go_iso][criteria] = bic(
-                                loglike=-success_runs[0].fun,
-                                len_param=neg_loglike_func_obj.variable_size,
-                                len_data=neg_loglike_func_obj.sample_size)
-                            logger.debug("%s: %s" % (criteria, test_id_res[go_iso][criteria]))
-                    else:
-                        raise Exception("Likelihood maximization failed.")
-            best_id, best_val = sorted([[_go_iso_, test_id_res[_go_iso_][criteria]] for _go_iso_ in test_id_res],
-                                       key=lambda x: x[1])[0]
-            if best_val < previous_aic:
-                previous_aic = best_val
-                previous_like = test_id_res[best_id]["loglike"]
-                previous_prop = test_id_res[best_id]["prop"]
-                chosen_ids[best_id] = True
+            for iso_id in chosen_ids:
+                testing_ids = set(chosen_ids) - {iso_id}
+                if self.traversome.cover_all_observed_sp(testing_ids):
+                    logger.debug("Test components {} - {}".format(list(chosen_ids), iso_id))
+                    res_list = self.__compute_like_and_criteria(chosen_id_set=testing_ids, criteria=criteria)
+                    test_id_res[iso_id] = {"prop": res_list[0], "loglike": res_list[1], criteria: res_list[2]}
+                else:
+                    logger.debug("Test components {} - {}: skipped for necessary subpath(s)"
+                                 .format(list(chosen_ids), iso_id))
+            if test_id_res:
+                best_drop_id, best_val = sorted([[_go_iso_, test_id_res[_go_iso_][criteria]]
+                                                 for _go_iso_ in test_id_res],
+                                                key=lambda x: x[1])[0]
+                if best_val < previous_criteria:
+                    previous_criteria = best_val
+                    previous_like = test_id_res[best_drop_id]["loglike"]
+                    previous_prop = test_id_res[best_drop_id]["prop"]
+                    del chosen_ids[best_drop_id]
+                    logger.info("Drop {}".format(best_drop_id))
+                    logger.info("Proportion: %s " % previous_prop)
+                    logger.info("Log-likelihood: %s" % previous_like)
+                else:
+                    logger.info("Proportion: %s " % previous_prop)
+                    logger.info("Log-likelihood: %s" % previous_like)
+                    return previous_prop
             else:
                 logger.info("Proportion: %s " % previous_prop)
                 logger.info("Log-likelihood: %s" % previous_like)
@@ -108,17 +98,89 @@ class ModelFitMaxLike(object):
         logger.info("Log-likelihood: %s" % previous_like)
         return previous_prop
 
+    # def forward_model_selection(self, criteria=Criteria.AIC):
+    #     self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
+    #     go_component = 0
+    #     chosen_ids = OrderedDict()
+    #     previous_criteria = inf
+    #     previous_like = -inf
+    #     previous_prop = []
+    #     while go_component < self.num_of_isomers:
+    #         logger.info("Picking the {} component ..".format(go_component + 1))
+    #         go_component += 1
+    #         test_id_res = OrderedDict()
+    #         # maybe do this latter, accept both if two models are unidentifiable
+    #         # chosen_this_round = set()
+    #         for go_iso in range(self.num_of_isomers):
+    #             if go_iso not in chosen_ids:
+    #                 testing_ids = set(chosen_ids) | {go_iso}
+    #                 logger.debug("Test components {} + {}".format(sorted(chosen_ids), go_iso))
+    #                 res_list = self.__compute_like_and_criteria(testing_ids, criteria)
+    #                 test_id_res[go_iso] = {"prop": res_list[0], "loglike": res_list[1], criteria: res_list[2]}
+    #         best_add_id, best_val = sorted([[_go_iso_, test_id_res[_go_iso_][criteria]] for _go_iso_ in test_id_res],
+    #                                        key=lambda x: x[1])[0]
+    #         if best_val < previous_criteria:
+    #             previous_criteria = best_val
+    #             previous_like = test_id_res[best_add_id]["loglike"]
+    #             previous_prop = test_id_res[best_add_id]["prop"]
+    #             chosen_ids[best_add_id] = True
+    #         else:
+    #             logger.info("Proportion: %s " % previous_prop)
+    #             logger.info("Log-likelihood: %s" % previous_like)
+    #             return previous_prop
+    #     logger.info("Proportion: %s " % previous_prop)
+    #     logger.info("Log-likelihood: %s" % previous_like)
+    #     return previous_prop
+
+    def __compute_like_and_criteria(self, chosen_id_set, criteria):
+        logger.debug("Generating the likelihood function .. ")
+        neg_loglike_func_obj = self.get_neg_likelihood_of_iso_freq(
+            within_isomer_ids=chosen_id_set)
+        logger.debug("Maximizing the likelihood function .. ")
+        success_runs = self.minimize_neg_likelihood(
+            neg_loglike_func=neg_loglike_func_obj.loglike_func,
+            num_variables=len(chosen_id_set),
+            verbose=self.traversome.loglevel in ("TRACE", "ALL"))
+        if success_runs:
+            this_prop = list(success_runs[0].x)
+            this_like = -success_runs[0].fun
+            logger.debug("Proportion: %s " % this_prop)
+            logger.debug("Log-likelihood: %s" % this_like)
+            if criteria == "AIC":
+                this_criteria = aic(
+                    loglike=this_like,
+                    len_param=neg_loglike_func_obj.variable_size)
+                logger.debug("%s: %s" % (criteria, this_criteria))
+            elif criteria == "BIC":
+                this_criteria = bic(
+                    loglike=this_like,
+                    len_param=neg_loglike_func_obj.variable_size,
+                    len_data=neg_loglike_func_obj.sample_size)
+                logger.debug("%s: %s" % (criteria, this_criteria))
+            else:
+                raise Exception("Invalid criteria {}".format(criteria))
+            return this_prop, this_like, this_criteria
+        else:
+            raise Exception("Likelihood maximization failed.")
+
     def get_neg_likelihood_of_iso_freq(self, within_isomer_ids=None, scipy_style=True):
-        log_like_formula = self.traversome.get_likelihood_binormial_formula(
+        # log_like_formula = self.traversome.get_likelihood_binomial_formula(
+        #     self.isomer_percents,
+        #     log_func=sympy.log,
+        #     within_isomer_ids=within_isomer_ids)
+        log_like_formula = self.traversome.get_likelihood_multinomial_formula(
             self.isomer_percents,
-            log_func=sympy.log,
+            # log_func=sympy.log,
+            log_func=symengine.log,
             within_isomer_ids=within_isomer_ids)
         if within_isomer_ids is None:
             within_isomer_ids = set(range(self.num_of_isomers))
-        neg_likelihood_of_iso_freq = sympy.lambdify(
+        # neg_likelihood_of_iso_freq = sympy.lambdify(
+        neg_likelihood_of_iso_freq = symengine.lambdify(
             args=[self.isomer_percents[isomer_id]
                   for isomer_id in range(self.num_of_isomers) if isomer_id in within_isomer_ids],
-            expr=-log_like_formula.loglike_expression)
+            # expr=-log_like_formula.loglike_expression)
+            exprs=[-log_like_formula.loglike_expression])
         logger.trace("Formula: {}".format(-log_like_formula.loglike_expression))
         if scipy_style:
             # for compatibility between scipy and sympy
@@ -155,7 +217,7 @@ class ModelFitMaxLike(object):
             # bounds=[(-1.0e-9, 1.0)] * num_isomers will violate bound constraints and cause ValueError
             if result.success:
                 success_runs.append(result)
-                if len(success_runs) > 10:
+                if len(success_runs) > 5:
                     break
             count_run += 1
             # sys.stdout.write(str(count_run) + "\b" * len(str(count_run)))

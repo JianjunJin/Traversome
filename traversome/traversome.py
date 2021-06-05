@@ -7,6 +7,7 @@ Top-level class for running the CLI
 import os
 import sys
 import random
+
 from loguru import logger
 from copy import deepcopy
 from collections import OrderedDict
@@ -17,6 +18,7 @@ from traversome.utils import \
 from traversome.ModelFitMaxLike import ModelFitMaxLike
 from traversome.ModelFitBayesian import ModelFitBayesian
 from traversome.CleanGraph import CleanGraph
+# import time
 
 
 class Traversome(object):
@@ -68,6 +70,10 @@ class Traversome(object):
         self.read_paths = OrderedDict()
         self.max_read_path_size = None
         self.all_sub_paths = OrderedDict()
+        self.sp_to_sp_id = {}
+        self.observed_sp_id_set = set()
+        # self.pal_len_sbp_Xs = OrderedDict()
+        # self.sbp_Xs = []
 
         #
         self.max_like_fit = None
@@ -100,12 +106,12 @@ class Traversome(object):
         )
 
         if self.do_bayesian:
-            logger.debug("Fitting candidate isomer paths model using MCMC ...")
+            logger.debug("Estimating candidate isomer frequencies using Bayesian MCMC ...")
             self.component_probs = self.fit_model_using_bayesian_mcmc()
         else:
-            logger.debug("Fitting candidate isomer paths model using Maximum Likelihood...")
+            logger.debug("Estimating candidate isomer frequencies using Maximum Likelihood...")
             self.component_probs = self.fit_model_using_point_maximum_likelihood()
-            # self.component_probs = self.fit_model_using_forward_model_selection()
+            # self.component_probs = self.fit_model_using_reverse_model_selection()
 
         self.output_seqs()
 
@@ -202,7 +208,6 @@ class Traversome(object):
         if self.num_of_isomers > 1:
             logger.info("Generating sub-paths ..")
             self.generate_isomer_sub_paths()
-            self.generate_sub_path_stats()
         else:
             logger.warning("Only one genomic configuration found for the input assembly graph.")
 
@@ -278,12 +283,12 @@ class Traversome(object):
                 self.all_sub_paths[this_sub_path].from_isomers[go_isomer] = this_sub_freq
 
         # to simplify downstream calculation, remove shared sub-paths shared by all isomers
-        deleted = []
+        # deleted = []
         for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
             if len(this_sub_path_info.from_isomers) == self.num_of_isomers and \
                     len(set(this_sub_path_info.from_isomers.values())) == 1:
                 for sub_paths_group in self.isomer_subpath_counters:
-                    deleted.append(this_sub_path)
+                    # deleted.append(this_sub_path)
                     del sub_paths_group[this_sub_path]
                 del self.all_sub_paths[this_sub_path]
         if not self.all_sub_paths:
@@ -294,33 +299,184 @@ class Traversome(object):
         for read_path, record_ids in self.read_paths.items():
             if read_path in self.all_sub_paths:
                 self.all_sub_paths[read_path].mapped_records = record_ids
-        # for go_record, record in enumerate(self.alignment.records):
-        #     this_sub_path = self.graph.get_standardized_path(record.path, dc=False)
-        #     if this_sub_path in self.all_sub_paths:
-        #         self.all_sub_paths[this_sub_path]["mapped_records"].append(go_record)
 
-    def generate_sub_path_stats(self):
+        self.generate_sub_path_stats()
+        # build an index
+        self.update_sp_to_sp_id_dict()
+        logger.info("Generated {} valid sub-paths".format(len(self.all_sub_paths)))
+
+    def update_sp_to_sp_id_dict(self):
+        self.sp_to_sp_id = {}
+        for go_sp, this_sub_path in enumerate(self.all_sub_paths):
+            self.sp_to_sp_id[this_sub_path] = go_sp
+
+    def generate_sub_path_stats(self, use_median=False):
+        """
+        :param for_binomial: for binomial model
+        :param for_multinomial: for multinomial model
+        """
         logger.debug("Generating sub-path statistics ..")
-        for this_sub_path, this_sub_path_info in self.all_sub_paths.items():
+        for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
             internal_len = self.graph.get_path_internal_length(this_sub_path)
             external_len_without_overlap = self.graph.get_path_len_without_terminal_overlaps(this_sub_path)
             left_id, right_id = get_id_range_in_increasing_values(
                 min_num=internal_len + 2, max_num=external_len_without_overlap,
                 increasing_numbers=self.align_len_at_path_sorted)
-            if int((left_id + right_id) / 2) == (left_id + right_id) / 2.:
-                median_len = self.align_len_at_path_sorted[int((left_id + right_id) / 2)]
-            else:
-                median_len = (self.align_len_at_path_sorted[int((left_id + right_id) / 2)] +
-                              self.align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
-            this_sub_path_info.num_possible_X = self.graph.get_num_of_possible_alignment_start_points(
-                read_len=median_len, align_to_path=this_sub_path, path_internal_len=internal_len)
-            if this_sub_path_info.num_possible_X < 1:
+            if left_id > right_id:
+                # no read found within this scope
+                del self.all_sub_paths[this_sub_path]
                 continue
+            if use_median:
+                if int((left_id + right_id) / 2) == (left_id + right_id) / 2.:
+                    median_len = self.align_len_at_path_sorted[int((left_id + right_id) / 2)]
+                else:
+                    median_len = (self.align_len_at_path_sorted[int((left_id + right_id) / 2)] +
+                                  self.align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
+                this_sub_path_info.num_possible_X = self.graph.get_num_of_possible_alignment_start_points(
+                    read_len=median_len, align_to_path=this_sub_path, path_internal_len=internal_len)
+            else:
+                num_possible_Xs = {}
+                for align_len_id in range(left_id, right_id + 1):
+                    this_len = self.align_len_at_path_sorted[align_len_id]
+                    this_x = self.graph.get_num_of_possible_alignment_start_points(
+                        read_len=this_len, align_to_path=this_sub_path, path_internal_len=internal_len)
+                    if this_len not in num_possible_Xs:
+                        num_possible_Xs[this_len] = 0
+                    num_possible_Xs[this_len] += this_x
+                this_sub_path_info.num_possible_X = sum(num_possible_Xs.values()) / (right_id - left_id + 1)
             this_sub_path_info.num_in_range = right_id + 1 - left_id
             this_sub_path_info.num_matched = len(this_sub_path_info.mapped_records)
-        logger.info("Generated {} sub-paths".format(len(self.all_sub_paths)))
+        # if for_multinomial:
+        #     # generate path alignment length occurrences at sub paths
+        #     # could largely be simplified
+        #     logger.debug("Counting path-alignment-length occurrences at sub paths ..")
+        #     self.sbp_Xs = []
+        #     self.pal_len_sbp_Xs = OrderedDict([(pa_len, {}) for pa_len in sorted(set(self.align_len_at_path_sorted))])
+        #     for go_sp, (this_sub_path, this_sub_path_info) in enumerate(self.all_sub_paths.items()):
+        #         # may be useless
+        #         # for this_len, this_x in this_sub_path_info.num_possible_Xs.items():
+        #         #     self.pal_len_sbp_Xs[this_len][go_sp] = this_x
+        #         # try this
+        #         self.sbp_Xs.append(sum(this_sub_path_info.num_possible_Xs.values()))
 
-    def get_likelihood_binormial_formula(self, isomer_percents, log_func, within_isomer_ids=None):
+    def update_observed_sp_ids(self):
+        self.observed_sp_id_set = set()
+        for go_sp, (this_sub_path, this_sub_path_info) in enumerate(self.all_sub_paths.items()):
+            if this_sub_path_info.mapped_records:
+                self.observed_sp_id_set.add(go_sp)
+            else:
+                logger.trace("Drop subpath without observation: {}: {}".format(go_sp, this_sub_path))
+
+    def cover_all_observed_sp(self, isomer_ids):
+        if not self.observed_sp_id_set:
+            self.update_observed_sp_ids()
+        model_sp_ids = set()
+        for go_iso in isomer_ids:
+            for sub_path in self.isomer_subpath_counters[go_iso]:
+                model_sp_ids.add(self.sp_to_sp_id[sub_path])
+        if self.observed_sp_id_set.issubset(model_sp_ids):
+            return True
+        else:
+            return False
+
+    def get_likelihood_multinomial_formula(self, isomer_percents, log_func, within_isomer_ids=None):
+        """
+        use a combination of multiple multinomial distributions
+        :param isomer_percents:
+             input sympy.Symbols for maximum likelihood analysis (scipy),
+                 e.g. [Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)].
+             input pm.Dirichlet for bayesian analysis (pymc3),
+                 e.g. pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,)).
+        :param log_func:
+             input sympy.log for maximum likelihood analysis using scipy,
+             inut tt.log for bayesian analysis using pymc3
+        :param within_isomer_ids:
+             constrain the isomer testing scope. Test all isomers by default.
+                 e.g. set([0, 2])
+        :return: LogLikeFormulaInfo object
+        """
+        # time0 = time.time()
+        if not within_isomer_ids and within_isomer_ids == set(range(self.num_of_isomers)):
+            within_isomer_ids = None
+        # total length (all possible matches, ignoring margin effect if not circular)
+        total_length = 0
+        if within_isomer_ids:
+            for go_isomer, go_length in enumerate(self.isomer_sizes):
+                if go_isomer in within_isomer_ids:
+                    total_length += isomer_percents[go_isomer] * float(go_length)
+        else:
+            for go_isomer, go_length in enumerate(self.isomer_sizes):
+                total_length += isomer_percents[go_isomer] * float(go_length)
+
+        # time1 = time.time()
+        # print(time1 - time0)
+        # prepare subset of all_sub_paths in a list
+        these_sp_info = OrderedDict()
+        if within_isomer_ids:
+            for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
+                if set(this_sp_info.from_isomers) & within_isomer_ids:
+                    these_sp_info[go_sp] = this_sp_info
+        else:
+            for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
+                these_sp_info[go_sp] = this_sp_info
+        # clean zero expectations to avoid nan formula
+        for check_sp in list(these_sp_info):
+            if these_sp_info[check_sp].num_possible_X < 1:
+                del these_sp_info[check_sp]
+                continue
+            if within_isomer_ids and not (set(these_sp_info[check_sp].from_isomers) & within_isomer_ids):
+                del these_sp_info[check_sp]
+
+        # time2 = time.time()
+        # print(time2 - time1)
+        # calculate the observations
+        # observations = OrderedDict([(pa_len, OrderedDict([(_go_sp_, 0) for _go_sp_ in range(len(these_sp_info))]))
+        #                             for pa_len in sorted(set(self.align_len_at_path_sorted))])
+        # for go_sp, this_sp_info in these_sp_info.items():
+        #     for record_id in this_sp_info.mapped_records:
+        #         this_len = self.alignment.records[record_id].p_align_len
+        #         observations[this_len][go_sp] += 1
+        observations = [len(this_sp_info.mapped_records) for this_sp_info in these_sp_info.values()]
+
+        # sub path possible matches
+        logger.info("  Formulating the subpath probabilities ..")
+        this_sbp_Xs = [these_sp_info[_go_sp_].num_possible_X for _go_sp_ in these_sp_info]
+        for go_valid_sp, this_sp_info in enumerate(these_sp_info.values()):
+            isomer_weight = 0
+            if within_isomer_ids:
+                sub_from_iso = {_go_iso_: _sp_freq_
+                                for _go_iso_, _sp_freq_ in this_sp_info.from_isomers.items()
+                                if _go_iso_ in within_isomer_ids}
+                for go_isomer, sp_freq in sub_from_iso.items():
+                    isomer_weight += isomer_percents[go_isomer] * sp_freq
+            else:
+                for go_isomer, sp_freq in this_sp_info.from_isomers.items():
+                    isomer_weight += isomer_percents[go_isomer] * sp_freq
+            this_sbp_Xs[go_valid_sp] *= isomer_weight
+        this_sbp_prob = [_sbp_X / total_length for _sbp_X in this_sbp_Xs]
+        for go_valid_sp, go_sp in enumerate(these_sp_info):
+            logger.trace("  Subpath {} observation: {}".format(go_sp, observations[go_valid_sp]))
+            logger.trace("  Subpath {} probability: {}".format(go_sp, this_sbp_prob[go_valid_sp]))
+        # for go_sp, this_sp_info in these_sp_info.items():
+        #     for record_id in this_sp_info.mapped_records:
+        #         this_len_sp_xs = self.pal_len_sbp_Xs[self.alignment.records[record_id].p_align_len]
+        #         ...
+
+        # time3 = time.time()
+        # print(time3 - time2)
+        # likelihood
+        logger.info("  Summing up subpath likelihood function ..")
+        loglike_expression = 0
+        for go_sp, obs in enumerate(observations):
+            loglike_expression += log_func(this_sbp_prob[go_sp]) * obs
+        variable_size = len(within_isomer_ids) if within_isomer_ids else self.num_of_isomers
+        sample_size = sum(observations)
+
+        # time4 = time.time()
+        # print(time4 - time3)
+        return LogLikeFormulaInfo(loglike_expression, variable_size, sample_size)
+
+    def get_likelihood_binomial_formula(self, isomer_percents, log_func, within_isomer_ids=None):
         """
         use a combination of multiple binormial distributions
         :param isomer_percents:
@@ -342,38 +498,37 @@ class Traversome(object):
             logger_step = min(int(total_sp_num**0.5), 100)
         else:
             logger_step = 1
-
+        # total length
+        total_length = 0
+        if within_isomer_ids:
+            for go_isomer, go_length in enumerate(self.isomer_sizes):
+                if go_isomer in within_isomer_ids:
+                    total_length += isomer_percents[go_isomer] * float(go_length)
+        else:
+            for go_isomer, go_length in enumerate(self.isomer_sizes):
+                total_length += isomer_percents[go_isomer] * float(go_length)
+        # accumulate likelihood by sub path
         loglike_expression = 0
         variable_size = 0
         sample_size = 0
-        # Separate this part
         for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
             if this_sp_info.num_possible_X < 1:
                 continue
             total_starting_points = 0
-            total_length = 0
             if within_isomer_ids:
+                # remove irrelevant isomers
                 sub_from_iso = {_go_iso_: _sp_freq_
                                 for _go_iso_, _sp_freq_ in this_sp_info.from_isomers.items()
                                 if _go_iso_ in within_isomer_ids}
-                # if set(sub_from_iso) == within_isomer_ids and len(sub_from_iso.values()) == 1:
-                #     # skip those sub-paths appear in the same frequency among all tested isomers
-                #     continue
-                # else:
                 if not sub_from_iso:
+                    # drop unsupported sub paths
                     continue
                 else:
                     for go_isomer, sp_freq in sub_from_iso.items():
                         total_starting_points += isomer_percents[go_isomer] * sp_freq * this_sp_info.num_possible_X
-
-                    for go_isomer, go_length in enumerate(self.isomer_sizes):
-                        if go_isomer in within_isomer_ids:
-                            total_length += isomer_percents[go_isomer] * float(go_length)
             else:
                 for go_isomer, sp_freq in this_sp_info.from_isomers.items():
                     total_starting_points += isomer_percents[go_isomer] * sp_freq * this_sp_info.num_possible_X
-                for go_isomer, go_length in enumerate(self.isomer_sizes):
-                    total_length += isomer_percents[go_isomer] * float(go_length)
             this_prob = total_starting_points / total_length
             loglike_expression += this_sp_info.num_matched * log_func(this_prob) + \
                                   (this_sp_info.num_in_range - this_sp_info.num_matched) * log_func(1 - this_prob)
@@ -390,9 +545,9 @@ class Traversome(object):
         self.max_like_fit = ModelFitMaxLike(self)
         return self.max_like_fit.point_estimate()
 
-    def fit_model_using_forward_model_selection(self, criteria=Criteria.AIC):
+    def fit_model_using_reverse_model_selection(self, criteria=Criteria.AIC):
         self.max_like_fit = ModelFitMaxLike(self)
-        return self.max_like_fit.forward_model_selection(criteria=criteria)
+        return self.max_like_fit.reverse_model_selection(criteria=criteria)
 
     def fit_model_using_bayesian_mcmc(self):
         self.bayesian_fit = ModelFitBayesian(self)

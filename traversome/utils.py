@@ -10,6 +10,7 @@ from math import log, inf
 from scipy import stats
 from loguru import logger
 from enum import Enum
+from collections import OrderedDict
 import numpy as np
 import random
 
@@ -161,6 +162,7 @@ class SubPathInfo(object):
         self.from_isomers = {}
         self.mapped_records = []
         self.num_possible_X = -1  # The X in binomial: theoretical num of matched chances
+        self.num_possible_Xs = OrderedDict()  # For generating Xs in multinomial: theoretical num of matched chances
         self.num_in_range = -1  # The n in binomial: observed num of reads in range
         self.num_matched = -1  # The x in binomial: observed num of matched reads = len(self.mapped_records)
 
