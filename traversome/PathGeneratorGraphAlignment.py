@@ -6,7 +6,7 @@ from scipy.stats import norm
 from collections import OrderedDict
 import numpy as np
 from numpy import log, exp
-import time
+
 
 
 class PathGeneratorGraphAlignment(object):
@@ -185,8 +185,8 @@ class PathGeneratorGraphAlignment(object):
         while count_valid < self.num_search:
             count_search += 1
             new_path = self.graph.get_standardized_circular_path(self.graph.roll_path(self.__heuristic_extend_path([])))
-            logger.debug("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
-            # logger.trace("  {} unique paths in {}/{} legal paths, {} traversals".format(
+            logger.trace("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
+            # logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
             #     len(self.components), count_valid, self.num_search, count_search))
             if force_circular and not self.graph.is_circular_path(new_path):
                 continue
@@ -200,14 +200,14 @@ class PathGeneratorGraphAlignment(object):
                 count_valid += 1
                 if new_path in self.components_counts:
                     self.components_counts[new_path] += 1
-                    logger.debug("  {} unique paths in {}/{} legal paths, {} traversals".format(
+                    logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
                         len(self.components), count_valid, self.num_search, count_search))
                 else:
                     self.components_counts[new_path] = 1
                     self.components.append(new_path)
-                    logger.info("  {} unique paths in {}/{} legal paths, {} traversals".format(
+                    logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
                         len(self.components), count_valid, self.num_search, count_search))
-        logger.info("  {} unique paths in {}/{} legal paths, {} traversals".format(
+        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
             len(self.components), count_valid, self.num_search, count_search))
 
     def __decompose_hetero_units(self, circular_path):
@@ -337,7 +337,7 @@ class PathGeneratorGraphAlignment(object):
                     candidates_rev = sorted(next_connections)
                     if self.__cov_inert:
                         # coverage inertia, more likely to extend to contigs with similar depths
-                        cdd_cov = [self.__get_cov_mean(rev_p) for rev_p in candidates_rev]
+                        cdd_cov = [self.contig_coverages[_n_] for _n_, _e_ in candidates_rev]
                         weights = [exp(-abs(log(cov/current_ave_coverage))) for cov in cdd_cov]
                         next_name, next_end = self.__random.choices(candidates_rev, weights=weights)[0]
                     else:
@@ -432,8 +432,8 @@ class PathGeneratorGraphAlignment(object):
         log_like_ratio = 0.
         proposed_lengths = {_v_: self.graph.vertex_info[_v_].len for _v_, _e_ in proposed_extension}
         old_cov_mean, old_cov_std = self.__get_cov_mean(new_path, return_std=True)
-        logger.trace("    old_path: {}".format(self.graph.repr_path(path)))
-        logger.trace("    checking proposed_extension: {}".format(self.graph.repr_path(proposed_extension)))
+        # logger.trace("    old_path: {}".format(self.graph.repr_path(path)))
+        # logger.trace("    checking proposed_extension: {}".format(self.graph.repr_path(proposed_extension)))
         for v_name, v_end in proposed_extension:
             old_like = norm.logpdf(self.contig_coverages[v_name],
                                    loc=current_names[v_name] * old_cov_mean,
@@ -451,9 +451,9 @@ class PathGeneratorGraphAlignment(object):
             old_cov_mean, old_cov_std = new_cov_mean, new_cov_std
             log_like_ratio += (new_like - old_like) * proposed_lengths[v_name]  # weighted by length
             log_like_ratio_list.append(log_like_ratio)
-            logger.trace("      initial_mean: %.4f, old_mean: %.4f (%.4f), proposed_mean: %.4f (%.4f)" % (
-                initial_mean, old_cov_mean, old_cov_std, new_cov_mean, new_cov_std))
-            logger.trace("      old_like: {},     proposed_like: {}".format(old_like, new_like))
+            # logger.trace("      initial_mean: %.4f, old_mean: %.4f (%.4f), proposed_mean: %.4f (%.4f)" % (
+            #     initial_mean, old_cov_mean, old_cov_std, new_cov_mean, new_cov_std))
+            # logger.trace("      old_like: {},     proposed_like: {}".format(old_like, new_like))
             new_path.append((v_name, v_end))
         # de-weight the log likes
         longest_ex_len = len(proposed_extension)
@@ -474,11 +474,11 @@ class PathGeneratorGraphAlignment(object):
                     initial_std=initial_std)
         else:
             if not_do_reverse:
-                logger.trace("    traversal ended to fit {}'s coverage.".format(proposed_extension[0][0]))
+                # logger.trace("    traversal ended to fit {}'s coverage.".format(proposed_extension[0][0]))
                 # logger.trace("    checked likes: {}".format(like_ratio_list))
                 return list(deepcopy(path))
             else:
-                logger.trace("    traversal reversed to fit {}'s coverage.".format(proposed_extension[0][0]))
+                # logger.trace("    traversal reversed to fit {}'s coverage.".format(proposed_extension[0][0]))
                 # logger.trace("    checked likes: {}".format(like_ratio_list))
                 return self.__heuristic_extend_path(
                     self.graph.reverse_path(list(deepcopy(path))),
@@ -513,7 +513,11 @@ class PathGeneratorGraphAlignment(object):
 
     def __get_cov_mean(self, path, exclude_path=None, return_std=False):
         assert len(path)
-        v_names = [v_n for v_n, v_e in path]
+        try:
+            v_names = [v_n for v_n, v_e in path]
+        except Exception as e:
+            print(path)
+            raise e
         v_names = {v_n: v_names.count(v_n) for v_n in set(v_names)}
         if exclude_path:
             del_names = [v_n for v_n, v_e in exclude_path]

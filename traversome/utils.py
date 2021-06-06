@@ -9,6 +9,8 @@ from copy import deepcopy
 from math import log, inf
 from scipy import stats
 from loguru import logger
+from enum import Enum
+from collections import OrderedDict
 import numpy as np
 import random
 
@@ -153,6 +155,35 @@ class SequenceList(object):
         for seq in self:
             fasta_file_handler.write(seq.fasta_str(this_interleaved))
         fasta_file_handler.close()
+
+
+class SubPathInfo(object):
+    def __init__(self):
+        self.from_isomers = {}
+        self.mapped_records = []
+        self.num_possible_X = -1  # The X in binomial: theoretical num of matched chances
+        self.num_possible_Xs = OrderedDict()  # For generating Xs in multinomial: theoretical num of matched chances
+        self.num_in_range = -1  # The n in binomial: observed num of reads in range
+        self.num_matched = -1  # The x in binomial: observed num of matched reads = len(self.mapped_records)
+
+
+class LogLikeFormulaInfo(object):
+    def __init__(self, loglike_expression=0, variable_size=0, sample_size=0):
+        self.loglike_expression = loglike_expression
+        self.variable_size = variable_size
+        self.sample_size = sample_size
+
+
+class LogLikeFuncInfo(object):
+    def __init__(self, loglike_func=0, variable_size=0, sample_size=0):
+        self.loglike_func = loglike_func
+        self.variable_size = variable_size
+        self.sample_size = sample_size
+
+
+class Criteria(str, Enum):
+    AIC = "AIC"
+    BIC = "BIC"
 
 
 class WeightedGMMWithEM:
@@ -427,7 +458,6 @@ def reduce_list_with_gcd(number_list):
     else:
         gcd_num = find_greatest_common_divisor(number_list)
         return [int(raw_number / gcd_num) for raw_number in number_list]
-
 
 
 def bic(loglike, len_param, len_data):
@@ -716,6 +746,36 @@ def get_id_range_in_increasing_values(min_num, max_num, increasing_numbers):
     while right_id > -1 and increasing_numbers[right_id] > max_num:
         right_id -= 1
     return left_id, right_id
+
+
+def generate_align_len_lookup_table(align_len_at_path_sorted):
+    min_alignment_length = min(align_len_at_path_sorted)
+    max_alignment_length = max(align_len_at_path_sorted)
+    its_left_id = 0
+    its_right_id = 0
+    max_id = len(align_len_at_path_sorted) - 1
+    align_len_lookup_table = \
+        {potential_len:
+             {"its_left_id": None, "its_right_id": None, "as_left_lim_id": None, "as_right_lim_id": None}
+         for potential_len in range(min_alignment_length, max_alignment_length + 1)}
+    for potential_len in range(min_alignment_length, max_alignment_length + 1):
+        if potential_len == align_len_at_path_sorted[its_right_id]:
+            align_len_lookup_table[potential_len]["as_left_lim_id"] = \
+                align_len_lookup_table[potential_len]["its_left_id"] = its_left_id = its_right_id
+            while potential_len == align_len_at_path_sorted[its_right_id]:
+                align_len_lookup_table[potential_len]["its_right_id"] = its_right_id
+                align_len_lookup_table[potential_len]["as_right_lim_id"] = its_right_id
+                if its_right_id == max_id:
+                    break
+                else:
+                    its_left_id = its_right_id
+                    its_right_id += 1
+        else:
+            align_len_lookup_table[potential_len]["its_right_id"] = its_right_id
+            align_len_lookup_table[potential_len]["as_left_lim_id"] = its_right_id
+            align_len_lookup_table[potential_len]["its_left_id"] = its_left_id
+            align_len_lookup_table[potential_len]["as_right_lim_id"] = its_left_id
+    return align_len_lookup_table
 
 
 def harmony_weights(raw_weights, diff):

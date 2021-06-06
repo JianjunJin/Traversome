@@ -7,6 +7,7 @@ Genomic isomer frequency estimation from genome assembly graphs and long reads.
 ### Install dependencies
 ```bash
 conda install typer numpy pandas scipy pymc3 sympy loguru -c conda-forge
+conda install python-symengine -c symengine -c conda-forge
 ```
 
 ### Install devel version of traversome
