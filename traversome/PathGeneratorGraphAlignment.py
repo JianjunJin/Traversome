@@ -186,7 +186,7 @@ class PathGeneratorGraphAlignment(object):
             count_search += 1
             new_path = self.graph.get_standardized_circular_path(self.graph.roll_path(self.__heuristic_extend_path([])))
             logger.trace("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
-            # logger.trace("  {} unique paths in {}/{} legal paths, {} traversals".format(
+            # logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
             #     len(self.components), count_valid, self.num_search, count_search))
             if force_circular and not self.graph.is_circular_path(new_path):
                 continue
@@ -200,14 +200,14 @@ class PathGeneratorGraphAlignment(object):
                 count_valid += 1
                 if new_path in self.components_counts:
                     self.components_counts[new_path] += 1
-                    logger.trace("  {} unique paths in {}/{} legal paths, {} traversals".format(
+                    logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
                         len(self.components), count_valid, self.num_search, count_search))
                 else:
                     self.components_counts[new_path] = 1
                     self.components.append(new_path)
-                    logger.info("  {} unique paths in {}/{} legal paths, {} traversals".format(
+                    logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
                         len(self.components), count_valid, self.num_search, count_search))
-        logger.info("  {} unique paths in {}/{} legal paths, {} traversals".format(
+        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
             len(self.components), count_valid, self.num_search, count_search))
 
     def __decompose_hetero_units(self, circular_path):

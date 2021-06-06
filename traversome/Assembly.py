@@ -869,7 +869,7 @@ class Assembly(AssemblySimple):
             rm_contigs = {candidate_v for candidate_v in self.vertex_info if candidate_v not in accepted}
             self.remove_vertex(rm_contigs, update_cluster=True)
 
-    def generate_heuristic_components(self, graph_alignment, random_obj, force_circular=True):
+    def generate_heuristic_components(self, graph_alignment, random_obj, num_search, force_circular=True):
         """
         :param graph_alignment:
         :param random_obj: random
@@ -879,6 +879,7 @@ class Assembly(AssemblySimple):
         generator = PathGeneratorGraphAlignment(
             assembly_graph=self,
             graph_alignment=graph_alignment,
+            num_search=num_search,
             random_obj=random_obj)
         generator.generate_heuristic_components(force_circular=force_circular)
         return generator.components

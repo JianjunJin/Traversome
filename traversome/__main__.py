@@ -3,8 +3,9 @@
 """
 Command-line Interface to traversome
 """
-
-import os
+import time
+time_zero = time.time()
+import os, sys, platform
 from pathlib import Path
 from enum import Enum
 import typer
@@ -55,9 +56,13 @@ def main(
     (e.g., traversome ml -h)
     """
     typer.secho(
-        f"traversome (v.{__version__}): genomic isomer frequency estimator",
+        f"\ntraversome (v.{__version__}): genomic isomer frequency estimator",
         fg=typer.colors.MAGENTA, bold=True,
     )
+    typer.secho("\nPython " + str(sys.version).replace("\n", " "))
+    typer.secho("PLATFORM: " + " ".join(platform.uname()))
+    typer.secho("WORKING DIR: " + os.getcwd())
+    typer.secho(" ".join(["\"" + arg + "\"" if " " in arg else arg for arg in sys.argv]) + "\n")
 
 
 class PathGen(str, Enum):
@@ -83,10 +88,11 @@ def ml(
     path_generator: PathGen = typer.Option(
         PathGen.Heuristic, "-P",
         help="Path generator: H (Heuristic)/U (User-provided)"),
+    num_search: int = typer.Option(1000, "-N", "--num-search", help="Num of valid traversals for heuristic searching."),
     random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed. "),
     linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
         out_seq_threshold: float = typer.Option(
-            0.001, "-S",
+            0.0, "-S",
             help="Threshold for sequence output",
             min=0, max=1),
     keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
@@ -99,6 +105,7 @@ def ml(
     traversome ml -g graph.gfa -a align.gaf -o .
     """
     from traversome.traversome import Traversome
+    from loguru import logger
     os.makedirs(str(output_dir), exist_ok=True)
     traverser = Traversome(
         graph=str(graph_file),
@@ -106,6 +113,7 @@ def ml(
         outdir=str(output_dir),
         out_prob_threshold=out_seq_threshold,
         force_circular=not linear_chr,
+        num_search=num_search,
         random_seed=random_seed,
         keep_temp=keep_temp,
         loglevel=log_level
@@ -114,6 +122,8 @@ def ml(
         path_generator=path_generator,
         multi_chromosomes=True  # opts.is_multi_chromosomes,
         )
+    logger.info("Total cost %.4f" % (time.time() - time_zero))
+
 
 
 @app.command()
@@ -134,10 +144,11 @@ def mc(
     path_generator: PathGen = typer.Option(
         PathGen.Heuristic, "-P",
         help="Path generator: H (Heuristic)/U (User-provided)"),
+    num_search: int = typer.Option(1000, "-N", "--num-search", help="Num of valid traversals for heuristic searching."),
     random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed"),
     linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
     out_seq_threshold: float = typer.Option(
-        0.001, "-S",
+        0.0, "-S",
         help="Threshold for sequence output",
         min=0, max=1),
     n_generations: int = typer.Option(10000, "--mcmc", help="MCMC generations"),
@@ -152,12 +163,14 @@ def mc(
     traversome mc -g graph.gfa -a align.gaf -o .
     """
     from traversome.traversome import Traversome
+    from loguru import logger
     os.makedirs(str(output_dir), exist_ok=True)
     traverser = Traversome(
         graph=str(graph_file),
         alignment=str(alignment_file),
         outdir=str(output_dir),
         out_prob_threshold=out_seq_threshold,
+        num_search=num_search,
         do_bayesian=True,
         force_circular=not linear_chr,
         n_generations=n_generations,
@@ -170,3 +183,5 @@ def mc(
         path_generator=path_generator,
         multi_chromosomes=True  # opts.is_multi_chromosomes,
     )
+    logger.info("Total cost %.4f" % (time.time() - time_zero))
+

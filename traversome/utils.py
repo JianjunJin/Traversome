@@ -748,6 +748,36 @@ def get_id_range_in_increasing_values(min_num, max_num, increasing_numbers):
     return left_id, right_id
 
 
+def generate_align_len_lookup_table(align_len_at_path_sorted):
+    min_alignment_length = min(align_len_at_path_sorted)
+    max_alignment_length = max(align_len_at_path_sorted)
+    its_left_id = 0
+    its_right_id = 0
+    max_id = len(align_len_at_path_sorted) - 1
+    align_len_lookup_table = \
+        {potential_len:
+             {"its_left_id": None, "its_right_id": None, "as_left_lim_id": None, "as_right_lim_id": None}
+         for potential_len in range(min_alignment_length, max_alignment_length + 1)}
+    for potential_len in range(min_alignment_length, max_alignment_length + 1):
+        if potential_len == align_len_at_path_sorted[its_right_id]:
+            align_len_lookup_table[potential_len]["as_left_lim_id"] = \
+                align_len_lookup_table[potential_len]["its_left_id"] = its_left_id = its_right_id
+            while potential_len == align_len_at_path_sorted[its_right_id]:
+                align_len_lookup_table[potential_len]["its_right_id"] = its_right_id
+                align_len_lookup_table[potential_len]["as_right_lim_id"] = its_right_id
+                if its_right_id == max_id:
+                    break
+                else:
+                    its_left_id = its_right_id
+                    its_right_id += 1
+        else:
+            align_len_lookup_table[potential_len]["its_right_id"] = its_right_id
+            align_len_lookup_table[potential_len]["as_left_lim_id"] = its_right_id
+            align_len_lookup_table[potential_len]["its_left_id"] = its_left_id
+            align_len_lookup_table[potential_len]["as_right_lim_id"] = its_left_id
+    return align_len_lookup_table
+
+
 def harmony_weights(raw_weights, diff):
     weights = np.array(raw_weights)
     weights_trans = weights**diff

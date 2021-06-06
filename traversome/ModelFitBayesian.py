@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from loguru import logger
+from collections import OrderedDict
 import pymc3 as pm
 import theano.tensor as tt
 import numpy as np
@@ -21,7 +22,7 @@ class ModelFitBayesian(object):
         isomer_num = self.traversome.num_of_isomers
         with pm.Model() as isomer_model:
             isomer_percents = pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,))
-            loglike_expression = self.traversome.get_likelihood_binomial_formula(
+            loglike_expression = self.traversome.get_multinomial_like_formula(
                 isomer_percents=isomer_percents, log_func=tt.log).loglike_expression
             pm.Potential("likelihood", loglike_expression)
             # pm.Deterministic("likelihood", likes)
@@ -50,4 +51,4 @@ class ModelFitBayesian(object):
             logger.info("Summarizing the MCMC traces ..")
             summary = az.summary(self.trace)
             logger.info("\n{}".format(summary))
-        return summary["mean"]
+        return OrderedDict([(_go, _prop) for _go, _prop in enumerate(summary["mean"])])
