@@ -182,8 +182,8 @@ class LogLikeFuncInfo(object):
 
 
 class Criteria(str, Enum):
-    AIC = "AIC"
-    BIC = "BIC"
+    AIC = "aic"
+    BIC = "bic"  # BIC is actually unnecessary in this framework because observations will be always the same.
 
 
 class WeightedGMMWithEM:

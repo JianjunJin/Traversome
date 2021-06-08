@@ -160,12 +160,12 @@ class ModelFitMaxLike(object):
             this_like = -success_run.fun
             logger.debug("Proportions: %s " % this_prop)
             logger.debug("Log-likelihood: %s" % this_like)
-            if criteria == "AIC":
+            if criteria == "aic":
                 this_criteria = aic(
                     loglike=this_like,
                     len_param=neg_loglike_func_obj.variable_size)
                 logger.debug("%s: %s" % (criteria, this_criteria))
-            elif criteria == "BIC":
+            elif criteria == "bic":
                 this_criteria = bic(
                     loglike=this_like,
                     len_param=neg_loglike_func_obj.variable_size,
@@ -218,7 +218,7 @@ class ModelFitMaxLike(object):
         other_optimization_options = {"disp": verbose, "maxiter": 1000, "ftol": 1.0e-6, "eps": 1.0e-10}
         count_run = 0
         success_runs = []
-        while count_run < 100:
+        while count_run < 10000:
             initials = np.random.random(num_variables)
             initials /= sum(initials)
             # logger.debug("initials", initials)

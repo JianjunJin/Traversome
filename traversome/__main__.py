@@ -13,6 +13,14 @@ from traversome import __version__
 
 # add the -h option for showing help
 CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
+RUNNING_HEAD = f"traversome (v.{__version__}): genomic isomer frequency estimator"
+RUNNING_ENV_INFO = \
+    "\n" \
+    "Python " + str(sys.version).replace("\n", " ") + "\n" + \
+    "PLATFORM:  " + " ".join(platform.uname()) + "\n" + \
+    "WORKDIR:   " + os.getcwd() + "\n" + \
+    "COMMAND:   " + " ".join(["\"" + arg + "\"" if " " in arg else arg for arg in sys.argv]) + \
+    "\n"
 
 
 class LogLevel(str, Enum):
@@ -49,25 +57,24 @@ def main(
                                      help="print version and exit."),
         docs: bool = typer.Option(None, "--docs", callback=docs_callback, is_eager=True,
                                   help="Open documentation in browser."),
-):
+    ):
     """
     Call traversome commands to access tools in the traversome toolkit,
     and traversome COMMAND -h to see help options for each tool
     (e.g., traversome ml -h)
     """
-    typer.secho(
-        f"\ntraversome (v.{__version__}): genomic isomer frequency estimator",
-        fg=typer.colors.MAGENTA, bold=True,
-    )
-    typer.secho("\nPython " + str(sys.version).replace("\n", " "))
-    typer.secho("PLATFORM: " + " ".join(platform.uname()))
-    typer.secho("WORKING DIR: " + os.getcwd())
-    typer.secho(" ".join(["\"" + arg + "\"" if " " in arg else arg for arg in sys.argv]) + "\n")
+    typer.secho(RUNNING_HEAD, fg=typer.colors.MAGENTA, bold=True)
 
 
 class PathGen(str, Enum):
     Heuristic = "H"
     Provided = "U"
+
+
+class MLFunChoice(str, Enum):
+    AIC = "aic"
+    BIC = "bic"
+    Single = "single"
 
 
 @app.command()
@@ -88,13 +95,24 @@ def ml(
     path_generator: PathGen = typer.Option(
         PathGen.Heuristic, "-P",
         help="Path generator: H (Heuristic)/U (User-provided)"),
-    num_search: int = typer.Option(1000, "-N", "--num-search", help="Num of valid traversals for heuristic searching."),
-    random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed. "),
-    linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
-        out_seq_threshold: float = typer.Option(
-            0.0, "-S",
-            help="Threshold for sequence output",
-            min=0, max=1),
+    num_search: int = typer.Option(
+        1000, "-N", "--num-search",
+        help="Num of valid traversals for heuristic searching."),
+    function: MLFunChoice = typer.Option(
+        MLFunChoice.AIC, "-F", "--func",
+        help="Function: aic (reverse model selection using stepwise AIC)\n"
+             "bic (reverse model selection using stepwise BIC)\n"
+             "single (conduct maximum likelihood estimation on the component-richest model without model selection)"),
+    random_seed: int = typer.Option(
+        12345, "--rs", "--random-seed", help="Random seed. "),
+    linear_chr: bool = typer.Option(
+        False, "-L",
+        help="Chromosome topology NOT forced to be circular. "),
+    out_seq_threshold: float = typer.Option(
+        0.0, "-S",
+        help="Threshold for sequence output",
+        min=0, max=1),
+    overwrite: bool = typer.Option(False, help="Remove previous result if exists."),
     keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
     log_level: LogLevel = typer.Option(
         LogLevel.INFO, "--loglevel", "--log-level", help="Logging level. Use DEBUG for more, ERROR for less."),
@@ -104,26 +122,33 @@ def ml(
     Examples:
     traversome ml -g graph.gfa -a align.gaf -o .
     """
-    from traversome.traversome import Traversome
     from loguru import logger
-    os.makedirs(str(output_dir), exist_ok=True)
-    traverser = Traversome(
-        graph=str(graph_file),
-        alignment=str(alignment_file),
-        outdir=str(output_dir),
-        out_prob_threshold=out_seq_threshold,
-        force_circular=not linear_chr,
-        num_search=num_search,
-        random_seed=random_seed,
-        keep_temp=keep_temp,
-        loglevel=log_level
-    )
-    traverser.run(
-        path_generator=path_generator,
-        multi_chromosomes=True  # opts.is_multi_chromosomes,
+    initialize(
+        output_dir=output_dir,
+        loglevel=log_level,
+        overwrite=overwrite)
+    try:
+        assert path_generator != "U", "User-provided is under developing, please use heuristic instead!"
+        from traversome.traversome import Traversome
+        traverser = Traversome(
+            graph=str(graph_file),
+            alignment=str(alignment_file),
+            outdir=str(output_dir),
+            function=function,
+            out_prob_threshold=out_seq_threshold,
+            force_circular=not linear_chr,
+            num_search=num_search,
+            random_seed=random_seed,
+            keep_temp=keep_temp,
+            loglevel=log_level
         )
+        traverser.run(
+            path_generator=path_generator,
+            multi_chromosomes=True  # opts.is_multi_chromosomes,
+            )
+    except:
+        logger.exception("")
     logger.info("Total cost %.4f" % (time.time() - time_zero))
-
 
 
 @app.command()
@@ -153,6 +178,7 @@ def mc(
         min=0, max=1),
     n_generations: int = typer.Option(10000, "--mcmc", help="MCMC generations"),
     n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
+    overwrite: bool = typer.Option(False, help="Remove previous result if exists."),
     keep_temp: bool = typer.Option(False, help="Keep temporary files"),
     log_level: LogLevel = typer.Option(
         LogLevel.INFO, "--loglevel", help="Logging level. Use DEBUG for more, ERROR for less."),
@@ -162,26 +188,69 @@ def mc(
     Examples:
     traversome mc -g graph.gfa -a align.gaf -o .
     """
-    from traversome.traversome import Traversome
     from loguru import logger
-    os.makedirs(str(output_dir), exist_ok=True)
-    traverser = Traversome(
-        graph=str(graph_file),
-        alignment=str(alignment_file),
-        outdir=str(output_dir),
-        out_prob_threshold=out_seq_threshold,
-        num_search=num_search,
-        do_bayesian=True,
-        force_circular=not linear_chr,
-        n_generations=n_generations,
-        n_burn=n_burn,
-        random_seed=random_seed,
-        keep_temp=keep_temp,
-        loglevel=log_level
-    )
-    traverser.run(
-        path_generator=path_generator,
-        multi_chromosomes=True  # opts.is_multi_chromosomes,
-    )
+    initialize(
+        output_dir=output_dir,
+        loglevel=log_level,
+        overwrite=overwrite)
+    try:
+        assert path_generator != "U", "User-provided is under developing, please use heuristic instead!"
+        from traversome.traversome import Traversome
+        traverser = Traversome(
+            graph=str(graph_file),
+            alignment=str(alignment_file),
+            outdir=str(output_dir),
+            out_prob_threshold=out_seq_threshold,
+            num_search=num_search,
+            do_bayesian=True,
+            force_circular=not linear_chr,
+            n_generations=n_generations,
+            n_burn=n_burn,
+            random_seed=random_seed,
+            keep_temp=keep_temp,
+            loglevel=log_level
+        )
+        traverser.run(
+            path_generator=path_generator,
+            multi_chromosomes=True  # opts.is_multi_chromosomes,
+        )
+    except:
+        logger.exception("")
     logger.info("Total cost %.4f" % (time.time() - time_zero))
 
+
+def initialize(output_dir, loglevel, overwrite):
+    """
+    clear files if overwrite
+    log head and running environment
+    """
+    os.makedirs(str(output_dir), exist_ok=overwrite)
+    if overwrite and os.path.isdir(output_dir):
+        for exist_f in output_dir.glob("*.*"):
+            os.remove(exist_f)
+    logfile = os.path.join(output_dir, "traversome.log.txt")
+    from loguru import logger
+    setup_simple_logger(sink_list=[logfile], loglevel=loglevel)
+    logger.info(RUNNING_HEAD)
+    setup_simple_logger(sink_list=[logfile, sys.stdout], loglevel=loglevel)
+    logger.info(RUNNING_ENV_INFO)
+
+
+def setup_simple_logger(sink_list, loglevel="INFO"):
+    """
+    Configure Loguru to log to stdout and logfile.
+    param: sink_list e.g. [sys.stdout, logfile]
+    """
+    # add stdout logger
+    from loguru import logger
+    simple_config = {
+        "handlers": [
+            {
+                "sink": sink_obj,
+                "format": "<level>{message}</level>",
+                "level": loglevel,
+                }
+            for sink_obj in sink_list]
+    }
+    logger.configure(**simple_config)
+    logger.enable("traversome")

@@ -52,9 +52,9 @@ class Traversome(object):
         self.kwargs = kwargs
 
         # init logger
-        self.logfile = os.path.join(self.outdir, "logfile.txt")
+        self.logfile = os.path.join(self.outdir, "traversome.log.txt")
         self.loglevel = loglevel.upper()
-        self.setup_logger(loglevel.upper())
+        self.setup_timed_logger(loglevel.upper())
 
         # values to be generated
         self.graph = None
@@ -112,8 +112,10 @@ class Traversome(object):
             self.component_probs = self.fit_model_using_bayesian_mcmc()
         else:
             logger.debug("Estimating candidate isomer frequencies using Maximum Likelihood...")
-            # self.component_probs = self.fit_model_using_point_maximum_likelihood()
-            self.component_probs = self.fit_model_using_reverse_model_selection()
+            if self.kwargs["function"] == "single":
+                self.component_probs = self.fit_model_using_point_maximum_likelihood()
+            else:
+                self.component_probs = self.fit_model_using_reverse_model_selection(criteria=self.kwargs["function"])
 
         self.output_seqs()
 
@@ -641,7 +643,7 @@ class Traversome(object):
                 with open(seq_file_name, "w") as output_handler:
                     this_seq = self.graph.export_path(self.component_paths[go_isomer])
                     seq_label = ">" + this_seq.label + " freq=%.4f" % this_prob + " len={}bp".format(len(this_seq.seq))
-                    output_handler.write(seq_label + this_seq.seq + "\n")
+                    output_handler.write(seq_label + "\n" + this_seq.seq + "\n")
                     logger.info("freq=%.4f" % this_prob + ", len={}bp".format(len(this_seq.seq)))
                     logger.debug("path=" + this_seq.label)
 
@@ -650,12 +652,12 @@ class Traversome(object):
         self.random.shuffle(sorted_list)
         return sorted_list
 
-    def setup_logger(self, loglevel="INFO"):
+    def setup_timed_logger(self, loglevel="INFO"):
         """
         Configure Loguru to log to stdout and logfile.
         """
         # add stdout logger
-        config = {
+        timed_config = {
             "handlers": [
                 {
                     "sink": sys.stdout, 
@@ -677,11 +679,11 @@ class Traversome(object):
                     }
             ]
         }
-        logger.configure(**config)
+        logger.configure(**timed_config)
         logger.enable("traversome")
 
-        # if logfile exists then reset it.
-        if os.path.exists(self.logfile):
-            logger.debug('Clearing previous log file.')
-            open(self.logfile, 'w').close()
+        # # if logfile exists then reset it.
+        # if os.path.exists(self.logfile):
+        #     logger.debug('Clearing previous log file.')
+        #     open(self.logfile, 'w').close()
 
