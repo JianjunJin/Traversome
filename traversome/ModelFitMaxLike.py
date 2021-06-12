@@ -27,26 +27,28 @@ class ModelFitMaxLike(object):
         self.isomer_percents = None
 
         # res without model selection
-        self.overall_neg_loglike_function = None
-        self.overall_best_proportions = None
+        self.pe_neg_loglike_function = None
+        self.pe_best_proportions = None
 
     def point_estimate(self):
         # self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
         self.isomer_percents = [symengine.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
         logger.info("Generating the likelihood function .. ")
-        self.overall_neg_loglike_function = self.get_neg_likelihood_of_iso_freq().loglike_func
+        self.pe_neg_loglike_function = self.get_neg_likelihood_of_iso_freq(
+            within_isomer_ids=set(self.traversome.represent_for_isomers))\
+            .loglike_func
         logger.info("Maximizing the likelihood function .. ")
         success_run = self.minimize_neg_likelihood(
-            neg_loglike_func=self.overall_neg_loglike_function,
+            neg_loglike_func=self.pe_neg_loglike_function,
             num_variables=self.num_of_isomers,
             verbose=self.traversome.loglevel in ("TRACE", "ALL"))
         if success_run:
             # for run_res in sorted(success_runs, key=lambda x: x.fun):
             #     logger.info(str(run_res.fun) + str([round(m, 8) for m in run_res.x]))
-            self.overall_best_proportions = OrderedDict([(_go, _prop) for _go, _prop in enumerate(success_run.x)])
-            logger.info("Proportions: %s " % dict(self.overall_best_proportions))
+            self.pe_best_proportions, echo_prop = self.__summarize_run_prop(success_run)
+            logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in echo_prop.items()]))
             logger.info("Log-likelihood: %s" % (-success_run.fun))
-            return self.overall_best_proportions
+            return self.pe_best_proportions
         else:
             raise Exception("Likelihood maximization failed.")
 
@@ -55,17 +57,14 @@ class ModelFitMaxLike(object):
         diff_tolerance = 1e-9
         # self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
         self.isomer_percents = [symengine.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
-        chosen_ids = OrderedDict([(isomer_id, True) for isomer_id in range(self.num_of_isomers)])
+        chosen_ids = OrderedDict([(isomer_id, True) for isomer_id in self.traversome.represent_for_isomers])
         logger.debug("Test components {}".format(list(chosen_ids)))
-        previous_prop, previous_like, previous_criteria = \
+        previous_prop, previous_echo, previous_like, previous_criteria = \
             self.__compute_like_and_criteria(chosen_id_set=set(chosen_ids), criteria=criteria)
-        logger.info("Proportions: %s " % {_iid: previous_prop[_gid] for _gid, _iid in enumerate(chosen_ids)})
-        logger.info("Log-likelihood: %s" % previous_like)
+        # logger.info("Proportions: %s " % {_iid: previous_prop[_gid] for _gid, _iid in enumerate(chosen_ids)})
+        # logger.info("Log-likelihood: %s" % previous_like)
         # drop zero prob component
-        for go_i, iso_id in enumerate(list(chosen_ids)):
-            if abs(previous_prop[go_i] - 0.) < diff_tolerance:
-                del chosen_ids[iso_id]
-                logger.info("Drop {}".format(iso_id))
+        self.__drop_zero_components(chosen_ids, previous_prop, previous_echo, diff_tolerance)
         # stepwise
         while len(chosen_ids) > 1:
             logger.info("Trying dropping {} component(s) ..".format(self.num_of_isomers - len(chosen_ids) + 1))
@@ -75,12 +74,16 @@ class ModelFitMaxLike(object):
             for iso_id in chosen_ids:
                 testing_ids = set(chosen_ids) - {iso_id}
                 if self.traversome.cover_all_observed_sp(testing_ids):
-                    logger.debug("Test components {} - {}".format(list(chosen_ids), iso_id))
+                    logger.debug(
+                        "Test components [{}] - {}".
+                        format(", ".join([self.__str_rep_id(_c_i) for _c_i in chosen_ids]), self.__str_rep_id(iso_id)))
                     res_list = self.__compute_like_and_criteria(chosen_id_set=testing_ids, criteria=criteria)
-                    test_id_res[iso_id] = {"prop": res_list[0], "loglike": res_list[1], criteria: res_list[2]}
+                    test_id_res[iso_id] = \
+                        {"prop": res_list[0], "echo": res_list[1], "loglike": res_list[2], criteria: res_list[3]}
                 else:
-                    logger.debug("Test components {} - {}: skipped for necessary subpath(s)"
-                                 .format(list(chosen_ids), iso_id))
+                    logger.debug(
+                        "Test components [{}] - {}: skipped for necessary subpath(s)"
+                        .format(", ".join([self.__str_rep_id(_c_i) for _c_i in chosen_ids]), self.__str_rep_id(iso_id)))
             if test_id_res:
                 best_drop_id, best_val = sorted([[_go_iso_, test_id_res[_go_iso_][criteria]]
                                                  for _go_iso_ in test_id_res],
@@ -89,62 +92,39 @@ class ModelFitMaxLike(object):
                     previous_criteria = best_val
                     previous_like = test_id_res[best_drop_id]["loglike"]
                     previous_prop = test_id_res[best_drop_id]["prop"]
+                    previous_echo = test_id_res[best_drop_id]["echo"]
                     del chosen_ids[best_drop_id]
-                    logger.info("Drop {}".format(best_drop_id))
-                    logger.info("Proportions: %s " % {_iid: previous_prop[_gid] for _gid, _iid in enumerate(chosen_ids)})
+                    logger.info("Drop {}".format(self.__str_rep_id(best_drop_id)))
+                    logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
                     logger.info("Log-likelihood: %s" % previous_like)
-                    for go_i, iso_id in enumerate(list(chosen_ids)):
-                        if abs(previous_prop[go_i] - 0.) < diff_tolerance:
-                            del chosen_ids[iso_id]
-                            logger.info("Drop {}".format(iso_id))
+                    self.__drop_zero_components(chosen_ids, previous_prop, previous_echo, diff_tolerance)
+                    # for iso_id in list(chosen_ids):
+                    #     if abs(previous_prop[iso_id] - 0.) < diff_tolerance:
+                    #         del chosen_ids[iso_id]
+                    #         for uid_iso_id in self.traversome.represent_for_isomers[iso_id]:
+                    #             del previous_prop[uid_iso_id]
+                    #         del previous_echo[self.__str_rep_id(iso_id)]
+                    #         logger.info("Drop {}".format(self.__str_rep_id(iso_id)))
                 else:
-                    return_prop = OrderedDict([(_iid, previous_prop[_gid]) for _gid, _iid in enumerate(chosen_ids)])
-                    logger.info("Proportions: %s " % dict(return_prop))
+                    logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
                     logger.info("Log-likelihood: %s" % previous_like)
-                    return return_prop
+                    return previous_prop
             else:
-                return_prop = OrderedDict([(_iid, previous_prop[_gid]) for _gid, _iid in enumerate(chosen_ids)])
-                logger.info("Proportions: %s " % dict(return_prop))
+                logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
                 logger.info("Log-likelihood: %s" % previous_like)
-                return return_prop
-        return_prop = OrderedDict([(_iid, previous_prop[_gid]) for _gid, _iid in enumerate(chosen_ids)])
-        logger.info("Proportions: %s " % dict(return_prop))
+                return previous_prop
+        logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
         logger.info("Log-likelihood: %s" % previous_like)
-        return return_prop
+        return previous_prop
 
-    # def forward_model_selection(self, criteria=Criteria.AIC):
-    #     self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
-    #     go_component = 0
-    #     chosen_ids = OrderedDict()
-    #     previous_criteria = inf
-    #     previous_like = -inf
-    #     previous_prop = []
-    #     while go_component < self.num_of_isomers:
-    #         logger.info("Picking the {} component ..".format(go_component + 1))
-    #         go_component += 1
-    #         test_id_res = OrderedDict()
-    #         # maybe do this latter, accept both if two models are unidentifiable
-    #         # chosen_this_round = set()
-    #         for go_iso in range(self.num_of_isomers):
-    #             if go_iso not in chosen_ids:
-    #                 testing_ids = set(chosen_ids) | {go_iso}
-    #                 logger.debug("Test components {} + {}".format(sorted(chosen_ids), go_iso))
-    #                 res_list = self.__compute_like_and_criteria(testing_ids, criteria)
-    #                 test_id_res[go_iso] = {"prop": res_list[0], "loglike": res_list[1], criteria: res_list[2]}
-    #         best_add_id, best_val = sorted([[_go_iso_, test_id_res[_go_iso_][criteria]] for _go_iso_ in test_id_res],
-    #                                        key=lambda x: x[1])[0]
-    #         if best_val < previous_criteria:
-    #             previous_criteria = best_val
-    #             previous_like = test_id_res[best_add_id]["loglike"]
-    #             previous_prop = test_id_res[best_add_id]["prop"]
-    #             chosen_ids[best_add_id] = True
-    #         else:
-    #             logger.info("Proportions: %s " % previous_prop)
-    #             logger.info("Log-likelihood: %s" % previous_like)
-    #             return previous_prop
-    #     logger.info("Proportions: %s " % previous_prop)
-    #     logger.info("Log-likelihood: %s" % previous_like)
-    #     return previous_prop
+    def __drop_zero_components(self, chosen_ids, representative_props, echo_props, diff_tolerance):
+        for iso_id in list(chosen_ids):
+            if abs(representative_props[iso_id] - 0.) < diff_tolerance:
+                del chosen_ids[iso_id]
+                for uid_iso_id in self.traversome.represent_for_isomers[iso_id]:
+                    del representative_props[uid_iso_id]
+                del echo_props[self.__str_rep_id(iso_id)]
+                logger.info("Drop {}".format(self.__str_rep_id(iso_id)))
 
     def __compute_like_and_criteria(self, chosen_id_set, criteria):
         logger.debug("Generating the likelihood function .. ")
@@ -156,9 +136,10 @@ class ModelFitMaxLike(object):
             num_variables=len(chosen_id_set),
             verbose=self.traversome.loglevel in ("TRACE", "ALL"))
         if success_run:
-            this_prop = list(success_run.x)
+            # this_prop = list(success_run.x)
             this_like = -success_run.fun
-            logger.debug("Proportions: %s " % this_prop)
+            use_prop, echo_prop = self.__summarize_run_prop(success_run, chosen_id_set)
+            logger.debug("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in echo_prop.items()]))
             logger.debug("Log-likelihood: %s" % this_like)
             if criteria == "aic":
                 this_criteria = aic(
@@ -173,9 +154,28 @@ class ModelFitMaxLike(object):
                 logger.debug("%s: %s" % (criteria, this_criteria))
             else:
                 raise Exception("Invalid criteria {}".format(criteria))
-            return this_prop, this_like, this_criteria
+            return use_prop, echo_prop, this_like, this_criteria
         else:
             raise Exception("Likelihood maximization failed.")
+
+    def __summarize_run_prop(self, success_run, within_iso_ids=None):
+        prop_dict = {}
+        if within_iso_ids:
+            representatives = [rep_id for rep_id in self.traversome.represent_for_isomers if rep_id in within_iso_ids]
+        else:
+            representatives = list(self.traversome.represent_for_isomers)
+        echo_prop = OrderedDict()
+        for go, this_prop in enumerate(success_run.x):
+            echo_prop[self.__str_rep_id(representatives[go])] = this_prop
+            unidentifiable_iso_ids = self.traversome.represent_for_isomers[representatives[go]]
+            this_prop /= len(unidentifiable_iso_ids)
+            for uid_iso_id in unidentifiable_iso_ids:
+                prop_dict[uid_iso_id] = this_prop
+        use_prop = OrderedDict([(_id, prop_dict[_id]) for _id in sorted(prop_dict)])
+        return use_prop, echo_prop
+
+    def __str_rep_id(self, rep_id):
+        return "+".join([str(_uid_iso_id) for _uid_iso_id in self.traversome.represent_for_isomers[rep_id]])
 
     def get_neg_likelihood_of_iso_freq(self, within_isomer_ids=None, scipy_style=True):
         # log_like_formula = self.traversome.get_likelihood_binomial_formula(
