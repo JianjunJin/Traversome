@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import os.path
 
 from loguru import logger
 from collections import OrderedDict
@@ -51,4 +52,7 @@ class ModelFitBayesian(object):
             logger.info("Summarizing the MCMC traces ..")
             summary = az.summary(self.trace)
             logger.info("\n{}".format(summary))
+            axes = az.plot_trace(self.trace)
+            fig = axes.ravel()[0].figure
+            fig.savefig(os.path.join(self.traversome.outdir, "mcmc.trace_plot.pdf"))
         return OrderedDict([(_go, _prop) for _go, _prop in enumerate(summary["mean"])])

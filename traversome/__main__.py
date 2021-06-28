@@ -77,6 +77,16 @@ class MLFunChoice(str, Enum):
     Single = "single"
 
 
+class ChTopology(str, Enum):
+    circular = "c"
+    unconstrained = "u"
+
+
+class ChComposition(str, Enum):
+    single = "s"
+    unconstrained = "u"
+
+
 @app.command()
 def ml(
     graph_file: Path = typer.Option(
@@ -105,9 +115,14 @@ def ml(
              "single (conduct maximum likelihood estimation on the component-richest model without model selection)"),
     random_seed: int = typer.Option(
         12345, "--rs", "--random-seed", help="Random seed. "),
-    linear_chr: bool = typer.Option(
-        False, "-L",
-        help="Chromosome topology NOT forced to be circular. "),
+    topology: ChTopology = typer.Option(
+        ChTopology.circular, "--topology",
+        help="Chromosomes topology: c (constrained to be circular)/ u (unconstrained). "),
+    composition: ChComposition = typer.Option(
+        ChComposition.unconstrained, "--composition",
+        help="Chromosomes composition: "
+             "s (single, each single form covers all compositions) / "
+             "u (single or multi-chromosomes)"),
     out_seq_threshold: float = typer.Option(
         0.0, "-S",
         help="Threshold for sequence output",
@@ -136,7 +151,7 @@ def ml(
             outdir=str(output_dir),
             function=function,
             out_prob_threshold=out_seq_threshold,
-            force_circular=not linear_chr,
+            force_circular=topology == "c",
             num_search=num_search,
             random_seed=random_seed,
             keep_temp=keep_temp,
@@ -144,7 +159,7 @@ def ml(
         )
         traverser.run(
             path_generator=path_generator,
-            multi_chromosomes=True  # opts.is_multi_chromosomes,
+            hetero_chromosomes=composition == "u"  # opts.is_multi_chromosomes,
             )
     except:
         logger.exception("")
@@ -171,7 +186,14 @@ def mc(
         help="Path generator: H (Heuristic)/U (User-provided)"),
     num_search: int = typer.Option(1000, "-N", "--num-search", help="Num of valid traversals for heuristic searching."),
     random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed"),
-    linear_chr: bool = typer.Option(False, "-L", help="Chromosome topology NOT forced to be circular. "),
+    topology: ChTopology = typer.Option(
+        ChTopology.circular, "--topology",
+        help="Chromosomes topology: c (constrained to be circular)/ u (unconstrained). "),
+    composition: ChComposition = typer.Option(
+        ChComposition.unconstrained, "--composition",
+        help="Chromosomes composition: "
+             "s (single, each single form covers all compositions) / "
+             "u (single or multi-chromosomes)"),
     out_seq_threshold: float = typer.Option(
         0.0, "-S",
         help="Threshold for sequence output",
@@ -203,7 +225,7 @@ def mc(
             out_prob_threshold=out_seq_threshold,
             num_search=num_search,
             do_bayesian=True,
-            force_circular=not linear_chr,
+            force_circular=topology == "c",
             n_generations=n_generations,
             n_burn=n_burn,
             random_seed=random_seed,
@@ -212,7 +234,7 @@ def mc(
         )
         traverser.run(
             path_generator=path_generator,
-            multi_chromosomes=True  # opts.is_multi_chromosomes,
+            hetero_chromosomes=composition == "u"
         )
     except:
         logger.exception("")

@@ -869,19 +869,23 @@ class Assembly(AssemblySimple):
             rm_contigs = {candidate_v for candidate_v in self.vertex_info if candidate_v not in accepted}
             self.remove_vertex(rm_contigs, update_cluster=True)
 
-    def generate_heuristic_components(self, graph_alignment, random_obj, num_search, force_circular=True):
+    def generate_heuristic_components(
+            self, graph_alignment, random_obj, num_search, force_circular=True, hetero_chromosome=True):
         """
         :param graph_alignment:
         :param random_obj: random
             passed from traversome.random [or from import random]
         :param force_circular
+        :param hetero_chromosome
         """
         generator = PathGeneratorGraphAlignment(
             assembly_graph=self,
             graph_alignment=graph_alignment,
             num_search=num_search,
+            force_circular=force_circular,
+            hetero_chromosome=hetero_chromosome,
             random_obj=random_obj)
-        generator.generate_heuristic_components(force_circular=force_circular)
+        generator.generate_heuristic_components()
         return generator.components
 
     def find_all_circular_isomers(self, mode="embplant_pt", re_estimate_multiplicity=False):
@@ -909,6 +913,13 @@ class Assembly(AssemblySimple):
     def is_circular_path(self, input_path):
         return (input_path[0][0], not input_path[0][1]) in \
                self.vertex_info[input_path[-1][0]].connections[input_path[-1][1]]
+
+    def is_fully_covered_by(self, input_path):
+        graph_set = set(self.vertex_info)
+        path_set = set([_n_ for _n_, _e_ in input_path])
+        logger.trace("{}vs - {}vs = {}".format(
+            len(graph_set), len(path_set), sorted(set(self.vertex_info) - set([_n_ for _n_, _e_ in input_path]))))
+        return graph_set == path_set
 
     def get_path_length(self, input_path):
         overlap = self.__overlap if self.__overlap else 0

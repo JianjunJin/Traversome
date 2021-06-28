@@ -14,7 +14,7 @@ from collections import OrderedDict
 from traversome.Assembly import Assembly
 from traversome.GraphAlignRecords import GraphAlignRecords
 from traversome.utils import \
-    ProcessingGraphFailed, SubPathInfo, LogLikeFormulaInfo, Criteria
+    SubPathInfo, LogLikeFormulaInfo, Criteria  # ProcessingGraphFailed,
 from traversome.ModelFitMaxLike import ModelFitMaxLike
 from traversome.ModelFitBayesian import ModelFitBayesian
 from traversome.CleanGraph import CleanGraph
@@ -84,7 +84,7 @@ class Traversome(object):
         self.random = random
         self.random.seed(random_seed)
 
-    def run(self, path_generator="heuristic", multi_chromosomes=True):
+    def run(self, path_generator="H", hetero_chromosomes=True):
         """
         Parse the assembly graph files ...
         """
@@ -106,19 +106,22 @@ class Traversome(object):
         self.generate_candidate_paths(
             path_generator=path_generator,
             num_search=self.kwargs["num_search"],
-            multi_chromosomes=multi_chromosomes
+            hetero_chromosomes=hetero_chromosomes
         )
-
-        if self.do_bayesian:
-            logger.debug("Estimating candidate isomer frequencies using Bayesian MCMC ...")
-            self.component_probs = self.fit_model_using_bayesian_mcmc()
+        if self.num_of_isomers == 0:
+            exit()
+        elif self.num_of_isomers == 1:
+            self.component_probs = [1.]
         else:
-            logger.debug("Estimating candidate isomer frequencies using Maximum Likelihood...")
-            if self.kwargs["function"] == "single":
-                self.component_probs = self.fit_model_using_point_maximum_likelihood()
+            if self.do_bayesian:
+                logger.debug("Estimating candidate isomer frequencies using Bayesian MCMC ...")
+                self.component_probs = self.fit_model_using_bayesian_mcmc()
             else:
-                self.component_probs = self.fit_model_using_reverse_model_selection(criteria=self.kwargs["function"])
-
+                logger.debug("Estimating candidate isomer frequencies using Maximum Likelihood...")
+                if self.kwargs["function"] == "single":
+                    self.component_probs = self.fit_model_using_point_maximum_likelihood()
+                else:
+                    self.component_probs = self.fit_model_using_reverse_model_selection(criteria=self.kwargs["function"])
         self.output_seqs()
 
     def parse_alignment_format_from_postfix(self):
@@ -173,28 +176,32 @@ class Traversome(object):
         logger.info(
             "Alignment length range at path: [{}, {}]".format(self.min_alignment_length, self.max_alignment_length))
 
-    def generate_candidate_paths(self, path_generator="heuristic", num_search=1000, multi_chromosomes=True):
+    def generate_candidate_paths(
+            self,
+            path_generator="H",
+            num_search=1000,
+            hetero_chromosomes=True):
         """
         generate candidate isomer paths from the graph
         """
-        if path_generator == "all":
-            # if multi_chromosomes:
-            #     logger.error("Simultaneously using 'all' generator and 'multi-chromosome' mode is not implemented!")
-            #     raise Exception
-            self.graph.estimate_multiplicity_by_cov(mode="all")
-            self.graph.estimate_multiplicity_precisely(
-                maximum_copy_num=8, 
-                debug=self.loglevel in ("DEBUG", "TRACE", "ALL"),
-            )
-            if self.force_circular:
-                try:
-                    self.component_paths = self.graph.find_all_circular_isomers(mode="all")
-                except ProcessingGraphFailed as e:
-                    logger.info("Disentangling circular isomers failed: " + str(e).strip())
-            else:
-                self.component_paths = self.graph.find_all_isomers(mode="all")
-        else:
-            # if not multi_chromosomes:
+        if path_generator == "H":
+            # # if hetero_chromosomes:
+            # #     logger.error("Simultaneously using 'all' generator and 'multi-chromosome' mode is not implemented!")
+            # #     raise Exception
+            # self.graph.estimate_multiplicity_by_cov(mode="all")
+            # self.graph.estimate_multiplicity_precisely(
+            #     maximum_copy_num=8,
+            #     debug=self.loglevel in ("DEBUG", "TRACE", "ALL"),
+            # )
+            # if self.force_circular:
+            #     try:
+            #         self.component_paths = self.graph.find_all_circular_isomers(mode="all")
+            #     except ProcessingGraphFailed as e:
+            #         logger.info("Disentangling circular isomers failed: " + str(e).strip())
+            # else:
+            #     self.component_paths = self.graph.find_all_isomers(mode="all")
+        # else:
+            # if not hetero_chromosomes:
             #     logger.error(
             #         "Simultaneously using 'heuristic' generator and 'single-chromosome' mode is not implemented!")
             #     raise Exception
@@ -202,7 +209,8 @@ class Traversome(object):
                 graph_alignment=self.alignment,
                 random_obj=self.random,
                 num_search=num_search,
-                force_circular=True)
+                force_circular=self.force_circular,
+                hetero_chromosome=hetero_chromosomes)
 
         self.isomer_sizes = [self.graph.get_path_length(isomer_p)
                              for isomer_p in self.component_paths]
@@ -215,6 +223,8 @@ class Traversome(object):
         if self.num_of_isomers > 1:
             logger.info("Generating sub-paths ..")
             self.generate_isomer_sub_paths()
+        elif self.num_of_isomers == 0:
+            logger.warning("No valid configuration found for the input assembly graph.")
         else:
             logger.warning("Only one genomic configuration found for the input assembly graph.")
 
