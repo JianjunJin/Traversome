@@ -270,6 +270,7 @@ class PathGeneratorGraphAlignment(object):
     def __heuristic_extend_path(
             self, path, initial_mean=None, initial_std=None, not_do_reverse=False):
         """
+        TODO minimum requirement: make sure all read paths have been covered
         improvement needed
         :param path: empty path like [] or starting path like [("v1", True), ("v2", False)]
         :param initial_mean:

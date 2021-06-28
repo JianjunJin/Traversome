@@ -67,12 +67,14 @@ class Traversome(object):
         self.component_probs = OrderedDict()
         self.isomer_sizes = None
         self.num_of_isomers = None
-        self.isomer_subpath_counters = []  # each element is a dict(sub_path->sub_path_counts)
+        self.isomer_subpath_counters = OrderedDict() # each value is a dict(sub_path->sub_path_counts)
         self.read_paths = OrderedDict()
         self.max_read_path_size = None
         self.all_sub_paths = OrderedDict()
         self.sp_to_sp_id = {}
         self.observed_sp_id_set = set()
+        self.be_unidentifiable_to = {}
+        self.represent_for_isomers = {}
         # self.pal_len_sbp_Xs = OrderedDict()
         # self.sbp_Xs = []
 
@@ -215,7 +217,7 @@ class Traversome(object):
         self.num_of_isomers = len(self.component_paths)
 
         for go_p, path in enumerate(self.component_paths):
-            logger.debug("PATH{}: {}".format(go_p + 1, self.graph.repr_path(path)))
+            logger.debug("PATH{}: {}".format(go_p, self.graph.repr_path(path)))
 
         # generate subpaths: the binomial sets
         if self.num_of_isomers > 1:
@@ -232,7 +234,7 @@ class Traversome(object):
         """
         # count sub path occurrences for each candidate isomer and recorded in self.isomer_subpath_counters
         this_overlap = self.graph.overlap()
-        self.isomer_subpath_counters = []
+        self.isomer_subpath_counters = OrderedDict()
         for go_path, this_path in enumerate(self.component_paths):
             these_sub_paths = dict()
             num_seg = len(this_path)
@@ -257,6 +259,8 @@ class Traversome(object):
                     for skip_tail in range(len_this_sub_p - 1):
                         this_sub_path = \
                             self.graph.get_standardized_path(this_longest_sub_path[:len_this_sub_p - skip_tail])
+                        if this_sub_path not in self.read_paths:
+                            continue
                         if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_length:
                             break
                         if this_sub_path not in these_sub_paths:
@@ -282,28 +286,46 @@ class Traversome(object):
                     for skip_tail in range(len_this_sub_p - 1):
                         this_sub_path = \
                             self.graph.get_standardized_circular_path(this_longest_sub_path[:len_this_sub_p - skip_tail])
+                        if this_sub_path not in self.read_paths:
+                            continue
                         if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_length:
                             break
                         if this_sub_path not in these_sub_paths:
                             these_sub_paths[this_sub_path] = 0
                         these_sub_paths[this_sub_path] += 1
-            self.isomer_subpath_counters.append(these_sub_paths)
+            self.isomer_subpath_counters[go_path] = these_sub_paths
+
+        # create unidentifiable table
+        self.be_unidentifiable_to = OrderedDict()
+        for represent_iso_id in range(self.num_of_isomers):
+            for check_iso_id in range(represent_iso_id, self.num_of_isomers):
+                if check_iso_id not in self.be_unidentifiable_to:
+                    # not recorded
+                    if check_iso_id == represent_iso_id:
+                        self.be_unidentifiable_to[check_iso_id] = check_iso_id
+                    elif self.isomer_subpath_counters[check_iso_id] == self.isomer_subpath_counters[represent_iso_id]:
+                        self.be_unidentifiable_to[check_iso_id] = represent_iso_id
+        self.represent_for_isomers = \
+            OrderedDict([(rps_id, []) for rps_id in sorted(set(self.be_unidentifiable_to.values()))])
+        for check_iso_id, rps_iso_id in self.be_unidentifiable_to.items():
+            self.represent_for_isomers[rps_iso_id].append(check_iso_id)
+        for unidentifiable_ids in self.represent_for_isomers.values():
+            if len(unidentifiable_ids) > 1:
+                logger.warning("Mutually unidentifiable paths in current alignment: %s" % unidentifiable_ids)
 
         # transform self.isomer_subpath_counters to self.all_sub_paths
         self.all_sub_paths = OrderedDict()
-        for go_isomer, sub_paths_group in enumerate(self.isomer_subpath_counters):
+        for go_isomer, sub_paths_group in self.isomer_subpath_counters.items():
             for this_sub_path, this_sub_freq in sub_paths_group.items():
                 if this_sub_path not in self.all_sub_paths:
                     self.all_sub_paths[this_sub_path] = SubPathInfo()
                 self.all_sub_paths[this_sub_path].from_isomers[go_isomer] = this_sub_freq
 
-        # to simplify downstream calculation, remove shared sub-paths shared by all isomers? -- no
-        # do not remove those for a full multinomial assessment, so that we can remove sp with zero observations
-        # mark1, remove this if use code block under mark2
+        # to simplify downstream calculation, remove shared sub-paths shared by all isomers
         for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
             if len(this_sub_path_info.from_isomers) == self.num_of_isomers and \
                     len(set(this_sub_path_info.from_isomers.values())) == 1:
-                for sub_paths_group in self.isomer_subpath_counters:
+                for go_isomer, sub_paths_group in self.isomer_subpath_counters.items():
                     del sub_paths_group[this_sub_path]
                 del self.all_sub_paths[this_sub_path]
 
@@ -315,10 +337,10 @@ class Traversome(object):
         for read_path, record_ids in self.read_paths.items():
             if read_path in self.all_sub_paths:
                 self.all_sub_paths[read_path].mapped_records = record_ids
-        # remove sp with zero observations
-        for this_sub_path in list(self.all_sub_paths):
-            if not self.all_sub_paths[this_sub_path].mapped_records:
-                del self.all_sub_paths[this_sub_path]
+        # # remove sp with zero observations, commented because we have added constraits above
+        # for this_sub_path in list(self.all_sub_paths):
+        #     if not self.all_sub_paths[this_sub_path].mapped_records:
+        #         del self.all_sub_paths[this_sub_path]
 
         logger.info("Generated {} informative sub-paths".format(len(self.all_sub_paths)))
         self.generate_sub_path_stats()
@@ -488,13 +510,13 @@ class Traversome(object):
 
         # prepare subset of all_sub_paths in a list
         these_sp_info = OrderedDict()
-        if within_isomer_ids:
-            for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
-                if set(this_sp_info.from_isomers) & within_isomer_ids:
-                    these_sp_info[go_sp] = this_sp_info
-        else:
-            for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
-                these_sp_info[go_sp] = this_sp_info
+        # if within_isomer_ids:
+        #     for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
+        #         if set(this_sp_info.from_isomers) & within_isomer_ids:
+        #             these_sp_info[go_sp] = this_sp_info
+        # else:
+        for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
+            these_sp_info[go_sp] = this_sp_info
         # clean zero expectations to avoid nan formula
         for check_sp in list(these_sp_info):
             if these_sp_info[check_sp].num_possible_X < 1:
@@ -504,12 +526,6 @@ class Traversome(object):
                 del these_sp_info[check_sp]
 
         # calculate the observations
-        # observations = OrderedDict([(pa_len, OrderedDict([(_go_sp_, 0) for _go_sp_ in range(len(these_sp_info))]))
-        #                             for pa_len in sorted(set(self.align_len_at_path_sorted))])
-        # for go_sp, this_sp_info in these_sp_info.items():
-        #     for record_id in this_sp_info.mapped_records:
-        #         this_len = self.alignment.records[record_id].p_align_len
-        #         observations[this_len][go_sp] += 1
         observations = [len(this_sp_info.mapped_records) for this_sp_info in these_sp_info.values()]
 
         # sub path possible matches
