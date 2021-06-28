@@ -352,19 +352,19 @@ class PathGeneratorGraphAlignment(object):
                         next_name, next_end = self.__random.choices(candidates_rev, weights=weights)[0]
                     else:
                         next_name, next_end = self.__random.choice(candidates_rev)
-                    if self.hetero_chromosome or self.graph.is_fully_covered_by(path + [(next_name, not next_end)]):
-                        return self.__heuristic_check_multiplicity(
-                            initial_mean=initial_mean,
-                            initial_std=initial_std,
-                            path=path,
-                            proposed_extension=[(next_name, not next_end)],
-                            not_do_reverse=not_do_reverse)
-                    else:
-                        return self.__heuristic_extend_path(
-                            path + [(next_name, not next_end)],
-                            not_do_reverse=not_do_reverse,
-                            initial_mean=initial_mean,
-                            initial_std=initial_std)
+                    # if self.hetero_chromosome or self.graph.is_fully_covered_by(path + [(next_name, not next_end)]):
+                    return self.__heuristic_check_multiplicity(
+                        initial_mean=initial_mean,
+                        initial_std=initial_std,
+                        path=path,
+                        proposed_extension=[(next_name, not next_end)],
+                        not_do_reverse=not_do_reverse)
+                    # else:
+                    #     return self.__heuristic_extend_path(
+                    #         path + [(next_name, not next_end)],
+                    #         not_do_reverse=not_do_reverse,
+                    #         initial_mean=initial_mean,
+                    #         initial_std=initial_std)
                 else:
                     if not_do_reverse:
                         logger.trace("      traversal ended without next vertex.")
@@ -411,19 +411,20 @@ class PathGeneratorGraphAlignment(object):
                 # logger.debug("closed_from_start: " + str(closed_from_start))
                 # logger.debug("    candidate path: {} .. {} .. {}".format(path[:3], len(path), path[-3:]))
                 # logger.debug("    extend path   : {}".format(new_extend))
-                if self.hetero_chromosome or self.graph.is_fully_covered_by(path + new_extend):
-                    return self.__heuristic_check_multiplicity(
-                        initial_mean=initial_mean,
-                        initial_std=initial_std,
-                        path=path,
-                        proposed_extension=new_extend,
-                        not_do_reverse=not_do_reverse)
-                else:
-                    return self.__heuristic_extend_path(
-                        path + new_extend,
-                        not_do_reverse=not_do_reverse,
-                        initial_mean=initial_mean,
-                        initial_std=initial_std)
+
+                # if self.hetero_chromosome or self.graph.is_fully_covered_by(path + new_extend):
+                return self.__heuristic_check_multiplicity(
+                    initial_mean=initial_mean,
+                    initial_std=initial_std,
+                    path=path,
+                    proposed_extension=new_extend,
+                    not_do_reverse=not_do_reverse)
+                # else:
+                #     return self.__heuristic_extend_path(
+                #         path + new_extend,
+                #         not_do_reverse=not_do_reverse,
+                #         initial_mean=initial_mean,
+                #         initial_std=initial_std)
 
     def __heuristic_check_multiplicity(
             self, initial_mean, initial_std, path, proposed_extension, not_do_reverse):
