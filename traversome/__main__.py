@@ -193,7 +193,7 @@ def mc(
         ChComposition.unconstrained, "--composition",
         help="Chromosomes composition: "
              "s (single, each single form covers all compositions) / "
-             "u (single or multi-chromosomes)"),
+             "u (unconstrained, single or multi-chromosomes. recommended)"),
     out_seq_threshold: float = typer.Option(
         0.0, "-S",
         help="Threshold for sequence output",
