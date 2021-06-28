@@ -21,6 +21,8 @@ class PathGeneratorGraphAlignment(object):
                  graph_alignment,
                  random_obj,
                  num_search=1000,
+                 force_circular=True,
+                 hetero_chromosome=True,
                  differ_f=1.,
                  decay_f=20.,
                  cov_inert=1.,
@@ -31,6 +33,8 @@ class PathGeneratorGraphAlignment(object):
         :param random_obj: random
             passed from traversome.random [or from import random]
         :param num_search:
+        :param force_circular:
+        :param hetero_chromosome:
         :param differ_f: difference factor [0, INF)
             Weighted by which, reads with the same overlap with current path will be used according to their counts.
             new_weights = (count_weights^differ_f)/sum(count_weights^differ_f)
@@ -52,11 +56,14 @@ class PathGeneratorGraphAlignment(object):
         self.graph = assembly_graph
         self.alignment = graph_alignment
         self.num_search = num_search
+        self.force_circular = force_circular
+        self.hetero_chromosome = hetero_chromosome
         self.__differ_f = differ_f
         self.__decay_f = decay_f
         self.__cov_inert = cov_inert
         self.__random = random_obj
         self.__use_alignment_cov = use_alignment_cov
+
 
         # to be generated
         self.local_max_alignment_len = None
@@ -73,7 +80,7 @@ class PathGeneratorGraphAlignment(object):
         self.components = list()
         self.components_counts = dict()
 
-    def generate_heuristic_components(self, force_circular=True):
+    def generate_heuristic_components(self):
         logger.info("generating heuristic components .. ")
         if not self.__read_paths_counter_indexed:
             self.index_readpaths_subpaths()
@@ -84,7 +91,7 @@ class PathGeneratorGraphAlignment(object):
             self.use_contig_coverage_from_assembly_graph()
         # self.estimate_single_copy_vertices()
         logger.debug("start traversing ..")
-        self.get_heuristic_paths(force_circular=force_circular)
+        self.get_heuristic_paths()
 
     # def generate_heuristic_circular_isomers(self):
     #     # based on alignments
@@ -178,7 +185,7 @@ class PathGeneratorGraphAlignment(object):
     #                     self.single_copy_vertices_prob[v_name] #
     #     else:
 
-    def get_heuristic_paths(self, force_circular):
+    def get_heuristic_paths(self):
         count_search = 0
         count_valid = 0
         v_len = len(self.graph.vertex_info)
@@ -188,7 +195,9 @@ class PathGeneratorGraphAlignment(object):
             logger.trace("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
             # logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
             #     len(self.components), count_valid, self.num_search, count_search))
-            if force_circular and not self.graph.is_circular_path(new_path):
+            if self.force_circular and not self.graph.is_circular_path(new_path):
+                continue
+            if not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path):
                 continue
             count_search -= 1
             if len(new_path) >= v_len * 2:
@@ -342,12 +351,19 @@ class PathGeneratorGraphAlignment(object):
                         next_name, next_end = self.__random.choices(candidates_rev, weights=weights)[0]
                     else:
                         next_name, next_end = self.__random.choice(candidates_rev)
-                    return self.__heuristic_check_multiplicity(
-                        initial_mean=initial_mean,
-                        initial_std=initial_std,
-                        path=path,
-                        proposed_extension=[(next_name, not next_end)],
-                        not_do_reverse=not_do_reverse)
+                    if self.hetero_chromosome or self.graph.is_fully_covered_by(path + [(next_name, not next_end)]):
+                        return self.__heuristic_check_multiplicity(
+                            initial_mean=initial_mean,
+                            initial_std=initial_std,
+                            path=path,
+                            proposed_extension=[(next_name, not next_end)],
+                            not_do_reverse=not_do_reverse)
+                    else:
+                        return self.__heuristic_extend_path(
+                            path + [(next_name, not next_end)],
+                            not_do_reverse=not_do_reverse,
+                            initial_mean=initial_mean,
+                            initial_std=initial_std)
                 else:
                     if not_do_reverse:
                         logger.trace("      traversal ended without next vertex.")
@@ -355,7 +371,7 @@ class PathGeneratorGraphAlignment(object):
                     else:
                         logger.trace("      traversal reversed without next vertex.")
                         return self.__heuristic_extend_path(
-                            self.graph.reverse_path(path),
+                            list(self.graph.reverse_path(path)),
                             not_do_reverse=True,
                             initial_mean=initial_mean,
                             initial_std=initial_std)
@@ -386,28 +402,35 @@ class PathGeneratorGraphAlignment(object):
                                for go_c, cov in enumerate(cdd_cov)]
                 chosen_cdd_id = self.__random.choices(range(len(candidates)), weights=weights)[0]
                 read_id, strand = candidates[chosen_cdd_id]
-                if strand:
-                    new_extend = list(self.read_paths[read_id][candidates_ovl_n[chosen_cdd_id]:])
-                else:
-                    new_extend = self.graph.reverse_path(self.read_paths[read_id])[candidates_ovl_n[chosen_cdd_id]:]
+                new_extend = list(self.read_paths[read_id][candidates_ovl_n[chosen_cdd_id]:])
+                if not strand:
+                    new_extend = list(self.graph.reverse_path(new_extend))
                 # logger.debug("path: " + str(path))
                 # logger.debug("extend: " + str(new_extend))
                 # logger.debug("closed_from_start: " + str(closed_from_start))
                 # logger.debug("    candidate path: {} .. {} .. {}".format(path[:3], len(path), path[-3:]))
                 # logger.debug("    extend path   : {}".format(new_extend))
-                return self.__heuristic_check_multiplicity(
-                    initial_mean=initial_mean,
-                    initial_std=initial_std,
-                    path=path,
-                    proposed_extension=new_extend,
-                    not_do_reverse=not_do_reverse)
+                if self.hetero_chromosome or self.graph.is_fully_covered_by(path + new_extend):
+                    return self.__heuristic_check_multiplicity(
+                        initial_mean=initial_mean,
+                        initial_std=initial_std,
+                        path=path,
+                        proposed_extension=new_extend,
+                        not_do_reverse=not_do_reverse)
+                else:
+                    return self.__heuristic_extend_path(
+                        path + new_extend,
+                        not_do_reverse=not_do_reverse,
+                        initial_mean=initial_mean,
+                        initial_std=initial_std)
 
     def __heuristic_check_multiplicity(
             self, initial_mean, initial_std, path, proposed_extension, not_do_reverse):
         """
         heuristically check the multiplicity and call a stop according to the vertex coverage and current counts
         normal distribution
-        :param initial_cov:
+        :param initial_mean:
+        :param initial_std:
         :param path:
         :param proposed_extension:
         :return:
@@ -481,7 +504,7 @@ class PathGeneratorGraphAlignment(object):
                 # logger.trace("    traversal reversed to fit {}'s coverage.".format(proposed_extension[0][0]))
                 # logger.trace("    checked likes: {}".format(like_ratio_list))
                 return self.__heuristic_extend_path(
-                    self.graph.reverse_path(list(deepcopy(path))),
+                    list(self.graph.reverse_path(list(deepcopy(path)))),
                     not_do_reverse=True,
                     initial_mean=initial_mean,
                     initial_std=initial_std)

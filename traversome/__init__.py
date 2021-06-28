@@ -4,7 +4,7 @@
 Traversome: genomic isomer frequency estimation from genome assembly graphs and long reads
 """
 
-__version__ = "0.0.5"
+__version__ = "0.0.6.1"
 __author__ = "JianJun Jin and Deren Eaton"
 
 
