@@ -26,11 +26,6 @@ traversome mc -g graph.gfa -a align.gaf -o outdir (pymc3 crashes when the graph 
 ### Interpreting results
 ...
 
-
-### (Advanced) Bayesian estimation
-...
-
-
 ## Development
 
 ```

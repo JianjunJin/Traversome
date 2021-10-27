@@ -53,7 +53,6 @@ class ModelFitMaxLike(object):
             raise Exception("Likelihood maximization failed.")
 
     def reverse_model_selection(self, criteria=Criteria.AIC):
-        # TODO be aware of unidentifiable situations
         diff_tolerance = 1e-9
         # self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
         self.isomer_percents = [symengine.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)]
@@ -69,7 +68,6 @@ class ModelFitMaxLike(object):
         while len(chosen_ids) > 1:
             logger.info("Trying dropping {} component(s) ..".format(self.num_of_isomers - len(chosen_ids) + 1))
             test_id_res = OrderedDict()
-            # maybe do this latter, accept both if two models are unidentifiable
             # chosen_this_round = set()
             for iso_id in chosen_ids:
                 testing_ids = set(chosen_ids) - {iso_id}

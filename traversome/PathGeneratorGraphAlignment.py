@@ -329,7 +329,9 @@ class PathGeneratorGraphAlignment(object):
                     weights = [self.__read_paths_counter[self.read_paths[read_id]] for read_id, strand in candidates]
                     weights = harmony_weights(weights, diff=self.__differ_f)
                     if self.__cov_inert:
-                        cdd_cov = [self.__get_cov_mean(rev_p, exclude_path=path) for rev_p in candidates]
+                        # TODO check if bug persists
+                        cdd_cov = [self.__get_cov_mean(self.read_paths[read_id], exclude_path=path)
+                                   for read_id, strand in candidates]
                         weights = [exp(log(weights[go_c])-abs(log(cov/current_ave_coverage)))
                                    for go_c, cov in enumerate(cdd_cov)]
                     read_id, strand = self.__random.choices(candidates, weights=weights)[0]
