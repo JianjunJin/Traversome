@@ -783,6 +783,7 @@ class Assembly(AssemblySimple):
         else:
             return False
 
+    # TODO problematic
     def reduce_to_subgraph(self, bait_vertices, bait_offsets=None,  limit_extending_len=None,  extending_len_weighted_by_depth=False):
         """
         :param bait_vertices:

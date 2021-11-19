@@ -627,16 +627,28 @@ class AssemblySimple(object):
         out_matrix.interleaved = 70
         out_matrix.write_fasta(out_file, interleaved=interleaved)
 
-    def write_to_gfa(self, out_file, check_postfix=True):
+    def write_to_gfa(self, out_file, check_postfix=True, other_attr=None):
+        """
+        :param out_file: str
+        :param check_postfix: bool
+        :param other_attr: dict, e.g. {"CL":"z", "C2":"z"}
+        """
         if check_postfix and not out_file.endswith(".gfa"):
             out_file += ".gfa"
+        if not other_attr:
+            other_attr = {}
         out_file_handler = open(out_file, "w")
         for vertex_name in self.vertex_info:
-            out_file_handler.write("\t".join([
-                "S", vertex_name, self.vertex_info[vertex_name].seq[True],
-                "LN:i:" + str(self.vertex_info[vertex_name].len),
-                "RC:i:" + str(int(self.vertex_info[vertex_name].len * self.vertex_info[vertex_name].cov))
-            ]) + "\n")
+            out_file_handler.write("\t".join(
+                [
+                    "S", vertex_name, self.vertex_info[vertex_name].seq[True],
+                    "LN:i:" + str(self.vertex_info[vertex_name].len),
+                    "RC:i:" + str(int(self.vertex_info[vertex_name].len * self.vertex_info[vertex_name].cov))] +
+                [
+                    "%s:%s:%s" % (attr_name, attr_type, self.vertex_info[vertex_name].other_attr.get(attr_name, ""))
+                    for attr_name, attr_type in other_attr.items()
+                    if self.vertex_info[vertex_name].other_attr.get(attr_name, False)
+                ]) + "\n")
         recorded_connections = set()
         for vertex_name in self.vertex_info:
             for this_end in (False, True):
