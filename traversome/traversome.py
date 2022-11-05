@@ -109,9 +109,9 @@ class Traversome(object):
             hetero_chromosomes=hetero_chromosomes
         )
         if self.num_of_isomers == 0:
-            exit()
+            raise Exception("No candidate isomers found!")
         elif self.num_of_isomers == 1:
-            self.component_probs = [1.]
+            self.component_probs[0] = 1.
         else:
             if self.do_bayesian:
                 logger.debug("Estimating candidate isomer frequencies using Bayesian MCMC ...")
@@ -346,6 +346,7 @@ class Traversome(object):
         self.generate_sub_path_stats()
         # build an index
         self.update_sp_to_sp_id_dict()
+        # TODO: check the number
         logger.info("Generated {} valid sub-paths".format(len(self.all_sub_paths)))
 
     def update_sp_to_sp_id_dict(self):
@@ -484,13 +485,13 @@ class Traversome(object):
         """
         use a combination of multiple multinomial distributions
         :param isomer_percents:
-             input sympy.Symbols for maximum likelihood analysis (scipy),
+             input symengine.Symbols for maximum likelihood analysis (scipy),
                  e.g. [Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_isomers)].
              input pm.Dirichlet for bayesian analysis (pymc3),
                  e.g. pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,)).
         :param log_func:
-             input sympy.log for maximum likelihood analysis using scipy,
-             inut tt.log for bayesian analysis using pymc3
+             input symengine.log for maximum likelihood analysis using scipy,
+             input tt.log for bayesian analysis using pymc3
         :param within_isomer_ids:
              constrain the isomer testing scope. Test all isomers by default.
                  e.g. set([0, 2])

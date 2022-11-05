@@ -70,7 +70,7 @@ class PathGeneratorGraphOnly(object):
                     new_path = self.graph.reverse_path(input_path)
                 else:
                     new_path = input_path
-                # logger.debug(new_path, input_unique_vertex)
+                # logger.debug(path, input_unique_vertex)
                 try:
                     reseed_from = new_path.index(input_unique_vertex)
                 except ValueError as e:
