@@ -33,6 +33,7 @@ class Traversome(object):
             graph,
             alignment,
             outdir,
+            num_processes=1,
             do_bayesian=False,
             force_circular=True,
             out_prob_threshold=0.001,
@@ -45,6 +46,7 @@ class Traversome(object):
         self.alignment_file = alignment
         self.alignment_format = self.parse_alignment_format_from_postfix()
         self.outdir = outdir
+        self.num_processes = num_processes
         self.do_bayesian = do_bayesian
         self.force_circular = force_circular
         self.out_prob_threshold = out_prob_threshold
@@ -106,6 +108,7 @@ class Traversome(object):
         self.generate_candidate_paths(
             path_generator=path_generator,
             num_search=self.kwargs["num_search"],
+            num_processes=self.num_processes,
             hetero_chromosomes=hetero_chromosomes
         )
         if self.num_of_isomers == 0:
@@ -180,6 +183,7 @@ class Traversome(object):
             self,
             path_generator="H",
             num_search=1000,
+            num_processes=1,
             hetero_chromosomes=True):
         """
         generate candidate isomer paths from the graph
@@ -209,6 +213,7 @@ class Traversome(object):
                 graph_alignment=self.alignment,
                 random_obj=self.random,
                 num_search=num_search,
+                num_processes=num_processes,
                 force_circular=self.force_circular,
                 hetero_chromosome=hetero_chromosomes)
 

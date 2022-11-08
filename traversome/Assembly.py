@@ -871,11 +871,19 @@ class Assembly(AssemblySimple):
             self.remove_vertex(rm_contigs, update_cluster=True)
 
     def generate_heuristic_components(
-            self, graph_alignment, random_obj, num_search, force_circular=True, hetero_chromosome=True):
+            self,
+            graph_alignment,
+            random_obj,
+            num_search,
+            num_processes=1,
+            force_circular=True,
+            hetero_chromosome=True):
         """
         :param graph_alignment:
         :param random_obj: random
             passed from traversome.random [or from import random]
+        :param num_search
+        :param num_processes
         :param force_circular
         :param hetero_chromosome
         """
@@ -883,6 +891,7 @@ class Assembly(AssemblySimple):
             assembly_graph=self,
             graph_alignment=graph_alignment,
             num_search=num_search,
+            num_processes=num_processes,
             force_circular=force_circular,
             hetero_chromosome=hetero_chromosome,
             random_obj=random_obj)

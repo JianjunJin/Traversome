@@ -6,6 +6,25 @@ from scipy.stats import norm
 from collections import OrderedDict
 import numpy as np
 from numpy import log, exp, power
+from multiprocessing import Manager, Pool
+import warnings
+
+
+#suppress numpy warnings at exp()
+warnings.filterwarnings('ignore')
+# from pathos.multiprocessing import ProcessingPool as Pool
+import dill
+
+
+# following the solution using dill: https://stackoverflow.com/a/24673524
+def run_dill_encoded(payload):
+    fun, args = dill.loads(payload)
+    return fun(*args)
+
+
+def apply_async(pool, fun, args):
+    payload = dill.dumps((fun, args))
+    return pool.apply_async(run_dill_encoded, (payload,))
 
 
 class PathGeneratorGraphAlignment(object):
@@ -20,6 +39,7 @@ class PathGeneratorGraphAlignment(object):
                  graph_alignment,
                  random_obj,
                  num_search=1000,
+                 num_processes=1,
                  force_circular=True,
                  hetero_chromosome=True,
                  differ_f=1.,
@@ -53,6 +73,7 @@ class PathGeneratorGraphAlignment(object):
             Set to zero if the graph is a single-sourced graph.
         :param use_alignment_cov: use the coverage from assembly graph if False.
         """
+        assert 1 <= num_processes
         assert 0 <= differ_f
         assert 0 <= decay_f
         assert 100 <= decay_t
@@ -60,6 +81,7 @@ class PathGeneratorGraphAlignment(object):
         self.graph = assembly_graph
         self.alignment = graph_alignment
         self.num_search = num_search
+        self.num_processes = num_processes
         self.force_circular = force_circular
         self.hetero_chromosome = hetero_chromosome
         self.__differ_f = differ_f
@@ -84,7 +106,10 @@ class PathGeneratorGraphAlignment(object):
         self.components = list()
         self.components_counts = dict()
 
-    def generate_heuristic_components(self):
+    def generate_heuristic_components(self, num_processes=None):
+        if num_processes is None:  # use the user input value if provided
+            num_processes = self.num_processes
+        assert num_processes >= 1
         logger.info("generating heuristic components .. ")
         if not self.__read_paths_counter_indexed:
             self.index_readpaths_subpaths()
@@ -95,7 +120,10 @@ class PathGeneratorGraphAlignment(object):
             self.use_contig_coverage_from_assembly_graph()
         # self.estimate_single_copy_vertices()
         logger.debug("start traversing ..")
-        self.get_heuristic_paths()
+        if num_processes == 1:
+            self.__gen_heuristic_paths_uni()
+        else:
+            self.__gen_heuristic_paths_mp_dill_version(num_proc=num_processes)
 
     # def generate_heuristic_circular_isomers(self):
     #     # based on alignments
@@ -189,39 +217,129 @@ class PathGeneratorGraphAlignment(object):
     #                     self.single_copy_vertices_prob[v_name] #
     #     else:
 
-    def get_heuristic_paths(self):
+    def get_single_traversal(self):
+        return self.graph.get_standardized_circular_path(self.graph.roll_path(self.__heuristic_extend_path([])))
+
+    def __gen_heuristic_paths_uni(self):
+        """
+        single-process version of generating heuristic paths
+        """
         count_search = 0
         count_valid = 0
         v_len = len(self.graph.vertex_info)
         while count_valid < self.num_search:
+            new_path = self.get_single_traversal()
             count_search += 1
-            new_path = self.graph.get_standardized_circular_path(self.graph.roll_path(self.__heuristic_extend_path([])))
             logger.trace("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
             # logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
             #     len(self.components), count_valid, self.num_search, count_search))
-            if self.force_circular and not self.graph.is_circular_path(new_path):
+            invalid_search = (self.force_circular and not self.graph.is_circular_path(new_path)) or \
+                             (not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path))
+            if invalid_search:
                 continue
-            if not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path):
-                continue
-            count_search -= 1
-            if len(new_path) >= v_len * 2:
-                new_path_list = self.__decompose_hetero_units(new_path)
             else:
-                new_path_list = [new_path]
-            for new_path in new_path_list:
-                count_search += 1
-                count_valid += 1
-                if new_path in self.components_counts:
-                    self.components_counts[new_path] += 1
-                    logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                        len(self.components), count_valid, self.num_search, count_search))
+                if len(new_path) >= v_len * 2:
+                    new_path_list = self.__decompose_hetero_units(new_path)
                 else:
-                    self.components_counts[new_path] = 1
-                    self.components.append(new_path)
-                    logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                        len(self.components), count_valid, self.num_search, count_search))
+                    new_path_list = [new_path]
+                for new_path in new_path_list:
+                    count_valid += 1
+                    if new_path in self.components_counts:
+                        self.components_counts[new_path] += 1
+                        logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                            len(self.components), count_valid, self.num_search, count_search))
+                    else:
+                        self.components_counts[new_path] = 1
+                        self.components.append(new_path)
+                        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                            len(self.components), count_valid, self.num_search, count_search))
+                    if count_valid == self.num_search:
+                        break
         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
             len(self.components), count_valid, self.num_search, count_search))
+
+    # TODO: modularize each traversal process as an independent run, communicating via files
+    def __heuristic_traversal_worker_dill_version(self, components, components_counts, g_vars, lock, event, v_len):
+        """
+        single worker of traversal, called by self.get_heuristic_paths_multiprocessing
+        starting a new process from dill dumped python object: slow
+        """
+        while g_vars.count_valid < self.num_search:
+            # move the parallelizable code block before the lock
+            # <<<
+            new_path = self.get_single_traversal()
+            repr_path = self.graph.repr_path(new_path)
+            invalid_search = (self.force_circular and not self.graph.is_circular_path(new_path)) or \
+                             (not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path))
+            if not invalid_search:
+                if len(new_path) >= v_len * 2:
+                    new_path_list = self.__decompose_hetero_units(new_path)
+                else:
+                    new_path_list = [new_path]
+            else:
+                new_path_list = []
+            # >>>
+            # locking the counts and components
+            lock.acquire()
+            g_vars.count_search += 1
+            logger.trace("    traversal {}: {}".format(g_vars.count_search, repr_path))
+            if invalid_search:
+                lock.release()
+                continue
+            else:
+                for new_path in new_path_list:
+                    g_vars.count_valid += 1
+                    if new_path in components_counts:
+                        components_counts[new_path] += 1
+                        logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                            len(components), g_vars.count_valid, self.num_search, g_vars.count_search))
+                    else:
+                        components_counts[new_path] = 1
+                        components.append(new_path)
+                        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                            len(components), g_vars.count_valid, self.num_search, g_vars.count_search))
+                    if g_vars.count_valid >= self.num_search:
+                        # TODO: kill all other workers
+                        event.set()
+                lock.release()
+        # TODO: kill all other workers
+
+    def __gen_heuristic_paths_mp_dill_version(self, num_proc=2):
+        """
+        multiprocess version of generating heuristic paths
+        starting a new process from dill dumped python object: slow
+        """
+        manager = Manager()
+        components_counts = manager.dict()
+        components = manager.list()
+        global_vars = manager.Namespace()
+        global_vars.count_search = 0
+        global_vars.count_valid = 0
+        lock = manager.Lock()
+        event = manager.Event()
+        v_len = len(self.graph.vertex_info)
+        mp = Pool(processes=num_proc)  # the worker processes are daemonic
+        jobs = []
+        for g_p in range(num_proc):
+            logger.debug("assigning job to worker {}".format(g_p + 1))
+            jobs.append(apply_async(
+                mp,
+                self.__heuristic_traversal_worker_dill_version,
+                (components, components_counts, global_vars, lock, event, v_len)))
+            logger.info("assigned job to worker {}".format(g_p + 1))
+            if global_vars.count_valid >= self.num_search:
+                break
+        for job in jobs:
+            job.get()  # tracking errors
+        mp.close()
+        logger.info("waiting ..")
+        event.wait()
+        mp.terminate()
+        mp.join()  # maybe no need to join
+        self.components_counts = dict(components_counts)
+        self.components = list(components)
+        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
+            len(self.components), global_vars.count_valid, self.num_search, global_vars.count_search))
 
     def __decompose_hetero_units(self, circular_path):
         """
@@ -330,7 +448,6 @@ class PathGeneratorGraphAlignment(object):
                     weights = [self.__read_paths_counter[self.read_paths[read_id]] for read_id, strand in candidates]
                     weights = harmony_weights(weights, diff=self.__differ_f)
                     if self.__cov_inert:
-                        # TODO check if bug persists
                         cdd_cov = [self.__get_cov_mean(self.read_paths[read_id], exclude_path=path)
                                    for read_id, strand in candidates]
                         weights = [exp(log(weights[go_c])-abs(log(cov/current_ave_coverage)))
@@ -341,9 +458,9 @@ class PathGeneratorGraphAlignment(object):
                     else:
                         path = self.graph.reverse_path(self.read_paths[read_id])
                     return self.__heuristic_extend_path(path)
-            # loglike_ls_cached will be calculated in if not self.hetero_chromosome
+            # like_ls_cached will be calculated in if not self.hetero_chromosome
             # it may be further used in self.__heuristic_check_multiplicity()
-            loglike_ls_cached = []
+            like_ls_cached = []
             if not candidate_ls_list:
                 # if no extending candidates based on overlap info, try to extend based on the graph
                 last_name, last_end = path[-1]
@@ -362,18 +479,20 @@ class PathGeneratorGraphAlignment(object):
                             for next_v in candidates_next:
                                 v_name, v_end = next_v
                                 current_v_counts = {v_name: current_vs.count(v_name)}
-                                like_ls = self.__cal_multiplicity_like(path=deepcopy(path),
-                                                                       proposed_extension=[next_v],
-                                                                       current_v_counts=current_v_counts,
-                                                                       old_cov_mean=old_cov_mean,
-                                                                       old_cov_std=old_cov_std,
-                                                                       single_cov_mean=single_cov_mean,
-                                                                       single_cov_std=single_cov_std)
-                                loglike_ls_cached.append(like_ls)
-                                weights.append(like_ls[0])
+                                loglike_ls = self.__cal_multiplicity_like(path=deepcopy(path),
+                                                                          proposed_extension=[next_v],
+                                                                          current_v_counts=current_v_counts,
+                                                                          old_cov_mean=old_cov_mean,
+                                                                          old_cov_std=old_cov_std,
+                                                                          single_cov_mean=single_cov_mean,
+                                                                          single_cov_std=single_cov_std,
+                                                                          logarithm=True)
+                                like_ls_cached.append(exp(loglike_ls))
+                                weights.append(loglike_ls[0])
+                            weights = exp(np.array(weights) - max(weights))
                             chosen_cdd_id = self.__random.choices(range(len(candidates_next)), weights=weights)[0]
                             next_name, next_end = candidates_next[chosen_cdd_id]
-                            loglike_ls_cached = loglike_ls_cached[chosen_cdd_id]
+                            like_ls_cached = like_ls_cached[chosen_cdd_id]
                         elif self.__cov_inert:
                             # coverage inertia (multi-chromosomes) and not hetero_chromosome are mutually exclusive
                             # coverage inertia, more likely to extend to contigs with similar depths,
@@ -387,19 +506,11 @@ class PathGeneratorGraphAlignment(object):
                         next_name, next_end = list(next_connections)[0]
                     # if self.hetero_chromosome or self.graph.is_fully_covered_by(path + [(next_name, not next_end)]):
                     return self.__heuristic_check_multiplicity(
-                        # initial_mean=initial_mean,
-                        # initial_std=initial_std,
                         path=path,
                         proposed_extension=[(next_name, not next_end)],
                         not_do_reverse=not_do_reverse,
-                        cached_like_ls=loglike_ls_cached
+                        cached_like_ls=like_ls_cached
                         )
-                    # else:
-                    #     return self.__heuristic_extend_path(
-                    #         path + [(next_name, not next_end)],
-                    #         not_do_reverse=not_do_reverse,
-                    #         initial_mean=initial_mean,
-                    #         initial_std=initial_std)
                 else:
                     if not_do_reverse:
                         logger.trace("      traversal ended without next vertex.")
@@ -487,10 +598,10 @@ class PathGeneratorGraphAlignment(object):
                                                                        old_cov_std=old_cov_std,
                                                                        single_cov_mean=single_cov_mean,
                                                                        single_cov_std=single_cov_std)
-                                loglike_ls_cached.append(like_ls)
+                                like_ls_cached.append(like_ls)
                                 weights[go_c] *= max(like_ls)
                                 logger.trace("candidate ext {}: {}".format(go_c, cdd_extend))
-                            logger.trace("loglike_ls_cached: {}".format(loglike_ls_cached))
+                            logger.trace("like_ls_cached: {}".format(like_ls_cached))
                     elif self.__cov_inert:
                         # coverage inertia (multi-chromosomes) and not hetero_chromosome are mutually exclusive
                         # coverage inertia, more likely to extend to contigs with similar depths,
@@ -502,8 +613,8 @@ class PathGeneratorGraphAlignment(object):
                         weights = exp(np.array([log(weights[go_c])-abs(log(cov / current_ave_coverage))
                                                 for go_c, cov in enumerate(cdd_cov)], dtype=np.float128))
                     chosen_cdd_id = self.__random.choices(range(len(candidates)), weights=weights)[0]
-                    if loglike_ls_cached:
-                        loglike_ls_cached = loglike_ls_cached[chosen_cdd_id]
+                    if like_ls_cached:
+                        like_ls_cached = like_ls_cached[chosen_cdd_id]
                     read_id, strand = candidates[chosen_cdd_id]
                     ovl_c_num = candidates_ovl_n[chosen_cdd_id]
                 read_path = self.read_paths[read_id]
@@ -527,7 +638,7 @@ class PathGeneratorGraphAlignment(object):
                     path=path,
                     proposed_extension=new_extend,
                     not_do_reverse=not_do_reverse,
-                    cached_like_ls=loglike_ls_cached)
+                    cached_like_ls=like_ls_cached)
                 # else:
                 #     return self.__heuristic_extend_path(
                 #         path + new_extend,
@@ -543,7 +654,8 @@ class PathGeneratorGraphAlignment(object):
             old_cov_mean=None,
             old_cov_std=None,
             single_cov_mean=None,
-            single_cov_std=None
+            single_cov_std=None,
+            logarithm=False,
     ):
         """
         called by __heuristic_extend_path through directly or through self.__heuristic_check_multiplicity
@@ -624,7 +736,10 @@ class PathGeneratorGraphAlignment(object):
         # logger.trace("    proposed_lengths: {}".format(proposed_lengths))
         # logger.trace("    accumulated_v_lengths: {}".format(accumulated_v_lengths))
         log_like_ratio_list = [_llr / accumulated_v_lengths[_go] for _go, _llr in enumerate(log_like_ratio_list)]
-        return exp(np.array(log_like_ratio_list, dtype=np.float128))
+        if logarithm:
+            return np.array(log_like_ratio_list, dtype=np.float128)
+        else:
+            return exp(np.array(log_like_ratio_list, dtype=np.float128))
 
     def __heuristic_check_multiplicity(
             self, path, proposed_extension, not_do_reverse, current_v_counts=None, cached_like_ls=None):

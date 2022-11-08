@@ -108,6 +108,9 @@ def ml(
     num_search: int = typer.Option(
         1000, "-N", "--num-search",
         help="Num of valid traversals for heuristic searching."),
+    num_processes: int = typer.Option(
+        1, "-p", "--processes",
+        help="Num of processes. "),
     function: MLFunChoice = typer.Option(
         MLFunChoice.AIC, "-F", "--func",
         help="Function: aic (reverse model selection using stepwise AIC)\n"
@@ -153,6 +156,7 @@ def ml(
             out_prob_threshold=out_seq_threshold,
             force_circular=topology == "c",
             num_search=num_search,
+            num_processes=num_processes,
             random_seed=random_seed,
             keep_temp=keep_temp,
             loglevel=log_level
@@ -198,6 +202,9 @@ def mc(
         0.0, "-S",
         help="Threshold for sequence output",
         min=0, max=1),
+    num_processes: int = typer.Option(
+        1, "-p", "--processes",
+        help="Num of processes. "),
     n_generations: int = typer.Option(10000, "--mcmc", help="MCMC generations"),
     n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
     overwrite: bool = typer.Option(False, help="Remove previous result if exists."),
@@ -224,6 +231,7 @@ def mc(
             outdir=str(output_dir),
             out_prob_threshold=out_seq_threshold,
             num_search=num_search,
+            num_processes=num_processes,
             do_bayesian=True,
             force_circular=topology == "c",
             n_generations=n_generations,
