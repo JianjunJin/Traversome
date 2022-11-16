@@ -181,7 +181,7 @@ class LogLikeFuncInfo(object):
         self.sample_size = sample_size
 
 
-class Criteria(str, Enum):
+class Criterion(str, Enum):
     AIC = "aic"
     BIC = "bic"  # BIC is actually unnecessary in this framework because observations will be always the same.
 

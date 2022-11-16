@@ -129,16 +129,23 @@ class VertexMergingHistory(object):
                 else:
                     self.__list.extend(each_item.list())
 
-    def add(self, new_history_or_vertex, add_new_to_front=False, reverse_the_latter=False):
+    def add(self, new_history_or_vertex, add_new_to_front=False, reverse_the_new=False):
         is_vertex = isinstance(new_history_or_vertex, tuple) and len(new_history_or_vertex) == 2
         is_hist = isinstance(new_history_or_vertex, VertexMergingHistory)
         assert is_vertex or is_hist
         if add_new_to_front:
-            if reverse_the_latter:
-                self.reverse()
-            self.__list.insert(0, new_history_or_vertex)
+            if reverse_the_new:
+                if is_vertex:
+                    self.__list.insert(0, (new_history_or_vertex[0], not new_history_or_vertex[1]))
+                else:
+                    self.__list = list(-new_history_or_vertex) + self.__list
+            else:
+                if is_vertex:
+                    self.__list.insert(0, new_history_or_vertex)
+                else:
+                    self.__list = list(new_history_or_vertex) + self.__list
         else:
-            if reverse_the_latter:
+            if reverse_the_new:
                 if is_vertex:
                     self.__list.append((new_history_or_vertex[0], not new_history_or_vertex[1]))
                 else:
@@ -232,10 +239,10 @@ class AssemblySimple(object):
         # parse the 
         if self.graph_file:
             if self.graph_file.endswith(".gfa"):
-                logger.info("Parsing graph (GFA) to Assembly object")
+                logger.info("Parsing graph (GFA)")
                 self.parse_gfa()
             else:
-                logger.info("Parsing graph (FASTG) to Assembly object")
+                logger.info("Parsing graph (FASTG)")
                 self.parse_fastg()
 
     def __repr__(self):
@@ -315,6 +322,7 @@ class AssemblySimple(object):
                 kmer_count = None
                 seq_depth_tag = None
                 sh_256_val = None
+                other_attributes = {}
 
                 # split each into element_tag, element_type, element_description
                 for element in elements:
@@ -356,6 +364,9 @@ class AssemblySimple(object):
                             raise ProcessingGraphFailed(
                                 seq_file_path + " for " + vertex_name + " does not exist!")
 
+                    else:
+                        other_attributes[element[0].upper()] = element[-1]
+
                 # store the relevant information
                 seq_len = len(sequence)
                 if (seq_len_tag is not None) and (seq_len != seq_len_tag):
@@ -373,12 +384,13 @@ class AssemblySimple(object):
                     # normalize kmer count to be per-bp
                     if kmer_count is not None:
                         seq_depth = kmer_count / float(seq_len)
-                    elif seq_depth_tag is not None:
+                    else:  # seq_depth_tag is not None:
                         seq_depth = seq_depth_tag
                     
                     # if seqdepth is in suitable range then save data
                     if self.min_cov <= seq_depth <= self.max_cov:
                         vert = Vertex(vertex_name, seq_len, seq_depth, sequence)
+                        vert.other_attr = other_attributes
                         self.vertex_info[vertex_name] = vert
 
                         # convert name from integer to contig name
@@ -388,6 +400,7 @@ class AssemblySimple(object):
                 # no count data, just store vertex w/ default coverage
                 else:
                     vert = Vertex(vertex_name, seq_len, DEFAULT_COV, sequence)
+                    vert.other_attr = other_attributes
                     self.vertex_info[vertex_name] = vert
 
         # return to beginning of file.
@@ -456,6 +469,7 @@ class AssemblySimple(object):
                 kmer_count = None
                 seq_depth_tag = None
                 sh_256_val = None
+                other_attributes = {}
                 for element in elements:
                     element = element.split(":")  # element_tag, element_type, element_description
                     # skip RC/FC
@@ -480,6 +494,8 @@ class AssemblySimple(object):
                         else:
                             raise ProcessingGraphFailed(
                                 seq_file_path + " for " + vertex_name + " does not exist!")
+                    else:
+                        other_attributes[element[0].upper()] = element[-1]
                 seq_len = len(sequence)
                 if seq_len_tag is not None and seq_len != seq_len_tag:
                     raise ProcessingGraphFailed(vertex_name + " has unmatched sequence length as noted!")
@@ -492,10 +508,12 @@ class AssemblySimple(object):
                         seq_depth = seq_depth_tag
                     if self.min_cov <= seq_depth <= self.max_cov:
                         self.vertex_info[vertex_name] = Vertex(vertex_name, seq_len, seq_depth, sequence)
+                        self.vertex_info[vertex_name].other_attr = other_attributes
                         if vertex_name.isdigit():
                             self.vertex_info[vertex_name].fill_fastg_form_name()
                 else:
                     self.vertex_info[vertex_name] = Vertex(vertex_name, seq_len, DEFAULT_COV, sequence)
+                    self.vertex_info[vertex_name].other_attr = other_attributes
 
         # return to start of file
         gfa_open.seek(0)
@@ -611,6 +629,11 @@ class AssemblySimple(object):
             else:
                 self.__overlap = 0
                 # raise ProcessingGraphFailed("No kmer detected!")
+        # assign general kmer to all edges
+        for vertex_name in self.vertex_info:
+            for this_end in (True, False):
+                for next_tuple in self.vertex_info[vertex_name].connections[this_end]:
+                    self.vertex_info[vertex_name].connections[this_end][next_tuple] = self.__overlap
 
     def overlap(self):
         if self.__overlap is None:
@@ -652,12 +675,12 @@ class AssemblySimple(object):
         recorded_connections = set()
         for vertex_name in self.vertex_info:
             for this_end in (False, True):
-                for next_v, next_e in self.vertex_info[vertex_name].connections[this_end]:
+                for (next_v, next_e), this_overlap in self.vertex_info[vertex_name].connections[this_end].items():
                     this_con = tuple(sorted([(vertex_name, this_end), (next_v, next_e)]))
                     if this_con not in recorded_connections:
                         recorded_connections.add(this_con)
                         out_file_handler.write("\t".join([
                             "L", vertex_name, ("-", "+")[this_end], next_v, ("-", "+")[not next_e],
-                            str(self.__overlap if self.__overlap else 0) + "M"
+                            str(this_overlap) + "M"
                         ]) + "\n")
 

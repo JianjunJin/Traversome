@@ -56,8 +56,6 @@ class Assembly(AssemblySimple):
         self.vertex_to_float_copy = {}
         self.copy_to_vertex = {}
         self.__inverted_repeat_vertex = {}
-        # self.__vertex_max_copy_id = {}
-        self.ave_depth = None
 
         # optional
         self.palindromic_repeats = None
@@ -67,6 +65,7 @@ class Assembly(AssemblySimple):
 
         # summarize init
         logger.debug("init graph: self.vertex_clusters={}".format(self.vertex_clusters))
+        logger.info("Assembly object loaded.")
 
     def new_graph_with_vertices_renamed(
             self,
@@ -104,7 +103,7 @@ class Assembly(AssemblySimple):
 
     def new_graph_with_vertices_reseeded(self, start_from=1):
         """
-        A function called from within .write_to_fastg()
+        A function called from within .write_to_fastg() given the criterion rename_if_needed == True
         """
         name_trans = {self.vertex_info[go - start_from]: str(go)
                       for go in range(start_from, start_from + len(self.vertex_info))}
@@ -282,7 +281,8 @@ class Assembly(AssemblySimple):
         """
         assert num_dup >= 1
         if not depth_factors:
-            depth_factors = [1. / num_dup]
+            # The list length of input values must equals num_dup.
+            depth_factors = [1. / num_dup] * num_dup
         assert len(depth_factors) == num_dup, "The list length of depth_factors must equals num_dup!"
         # deepcopy *
         duplicated_vertices_groups = []
@@ -456,9 +456,9 @@ class Assembly(AssemblySimple):
                     if len(self.vertex_info[next_vertex].connections[next_end]) == 1 and this_vertex != next_vertex:
                         # reverse the names
                         merged = True
-                        self.vertex_info[this_vertex].merging_history.add((next_vertex, not next_end),
-                                                                          add_new_to_front=this_end,
-                                                                          reverse_the_latter=not next_end)
+                        self.vertex_info[this_vertex].merging_history.add((next_vertex, not this_end==next_end),
+                                                                          add_new_to_front=not this_end,
+                                                                          reverse_the_new=False)
                         new_vertex = str(self.vertex_info[this_vertex].merging_history)
 
                         limited_vertices.remove(next_vertex)
@@ -466,7 +466,7 @@ class Assembly(AssemblySimple):
                         
                         # initialization
                         self.vertex_info[new_vertex] = deepcopy(self.vertex_info[this_vertex])
-                        self.vertex_info[new_vertex].label = new_vertex
+                        self.vertex_info[new_vertex].name = new_vertex
                         self.vertex_info[new_vertex].fastg_form_name = None
                         
                         # modify connections
@@ -475,11 +475,13 @@ class Assembly(AssemblySimple):
 
                         if (this_vertex, not this_end) in self.vertex_info[new_vertex].connections[this_end]:
                             # forms a circle
+                            overlap_x = self.vertex_info[new_vertex].connections[this_end][(this_vertex, not this_end)]
                             del self.vertex_info[new_vertex].connections[this_end][(this_vertex, not this_end)]
-                            self.vertex_info[new_vertex].connections[this_end][(new_vertex, not this_end)] = None
+                            self.vertex_info[new_vertex].connections[this_end][(new_vertex, not this_end)] = overlap_x
                         for new_end in (True, False):
                             for n_n_v, n_n_e in self.vertex_info[new_vertex].connections[new_end]:
-                                self.vertex_info[n_n_v].connections[n_n_e][(new_vertex, new_end)] = None
+                                self.vertex_info[n_n_v].connections[n_n_e][(new_vertex, new_end)] = \
+                                    self.vertex_info[new_vertex].connections[new_end][(n_n_v, n_n_e)]
                         
                         # len & cov
                         this_len = self.vertex_info[this_vertex].len
@@ -723,7 +725,7 @@ class Assembly(AssemblySimple):
                         locus_len = locus_end - locus_start + 1
                         # skip those tags concerning only the overlapping sites
                         if (locus_start == 1 or locus_end == self.vertex_info[vertex_name].len) \
-                                and locus_len == self.__overlap:
+                                and self.__overlap and locus_len <= self.__overlap:
                             continue
                         if locus_name in tag_loci[locus_type]:
                             new_weight = locus_len * self.vertex_info[vertex_name].cov
@@ -797,7 +799,7 @@ class Assembly(AssemblySimple):
             bait_offsets = {}
         rm_contigs = set()
         rm_sub_ids = []
-        overlap = self.__overlap if self.__overlap else 0
+        # overlap = self.__overlap if self.__overlap else 0
         for go_sub, vertices in enumerate(self.vertex_clusters):
             for vertex in sorted(vertices):
                 if vertex in bait_vertices:
@@ -827,10 +829,10 @@ class Assembly(AssemblySimple):
                                 (quota_len, base_cov) != best_explored_record.get((this_v, this_e), 0):
                             changed = True
                             best_explored_record[(this_v, this_e)] = (quota_len, base_cov)
-                            for next_v, next_e in self.vertex_info[this_v].connections[this_e]:
+                            for (next_v, next_e), this_olp in self.vertex_info[this_v].connections[this_e].items():
                                 # not the starting vertices
                                 if next_v not in bait_vertices:
-                                    new_quota_len = quota_len - (self.vertex_info[next_v].len - overlap) * \
+                                    new_quota_len = quota_len - (self.vertex_info[next_v].len - this_olp) * \
                                                     max(1, self.vertex_info[next_v].cov / base_cov)
                                     # if next_v is active: quota_len>0 AND (not_explored OR larger_len))
                                     next_p = (next_v, not next_e)
@@ -856,10 +858,10 @@ class Assembly(AssemblySimple):
                             changed = True
                             best_explored_record[(this_v, this_e)] = quota_len
                             # for this_direction in (True, False):
-                            for next_v, next_e in self.vertex_info[this_v].connections[this_e]:
+                            for (next_v, next_e), this_olp in self.vertex_info[this_v].connections[this_e]:
                                 # not the starting vertices
                                 if next_v not in bait_vertices:
-                                    new_quota_len = quota_len - (self.vertex_info[next_v].len - overlap)
+                                    new_quota_len = quota_len - (self.vertex_info[next_v].len - this_olp)
                                     # if next_v is active: quota_len>0 AND (not_explored OR larger_len))
                                     next_p = (next_v, not next_e)
                                     if new_quota_len > explorers.get(next_p, 0):
@@ -1047,9 +1049,9 @@ class Assembly(AssemblySimple):
         reverse_path = self.reverse_path(forward_path)
         return sorted([forward_path, reverse_path])[0]
 
-    def get_standardized_circular_path(self, raw_path):
+    def get_standardized_path_circ(self, raw_path):
         """
-        standardized for comparing and identify unique path
+        standardized for comparing and identify unique path, accounting for circular cases
         :param raw_path: path=[(name1:str, direction1:bool), (name2:str, direction2:bool), ..]
         :return: standardized_path
         """

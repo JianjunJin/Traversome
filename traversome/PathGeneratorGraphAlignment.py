@@ -123,7 +123,7 @@ class PathGeneratorGraphAlignment(object):
         if num_processes == 1:
             self.__gen_heuristic_paths_uni()
         else:
-            self.__gen_heuristic_paths_mp_dill_version(num_proc=num_processes)
+            self.__gen_heuristic_paths_mp_dv(num_proc=num_processes)
 
     # def generate_heuristic_circular_isomers(self):
     #     # based on alignments
@@ -217,9 +217,6 @@ class PathGeneratorGraphAlignment(object):
     #                     self.single_copy_vertices_prob[v_name] #
     #     else:
 
-    def get_single_traversal(self):
-        return self.graph.get_standardized_circular_path(self.graph.roll_path(self.__heuristic_extend_path([])))
-
     def __gen_heuristic_paths_uni(self):
         """
         single-process version of generating heuristic paths
@@ -230,11 +227,18 @@ class PathGeneratorGraphAlignment(object):
         while count_valid < self.num_search:
             new_path = self.get_single_traversal()
             count_search += 1
-            logger.trace("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
+            logger.debug("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
             # logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
             #     len(self.components), count_valid, self.num_search, count_search))
+
             invalid_search = (self.force_circular and not self.graph.is_circular_path(new_path)) or \
                              (not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path))
+
+            # Tested to be a bad idea
+            # # the searching has been forced to be running until a circular result was found,
+            # # so self.graph.is_circular_path(new_path)) is no more needed
+            # invalid_search = not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path)
+
             if invalid_search:
                 continue
             else:
@@ -246,7 +250,7 @@ class PathGeneratorGraphAlignment(object):
                     count_valid += 1
                     if new_path in self.components_counts:
                         self.components_counts[new_path] += 1
-                        logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                        logger.debug("  {} unique paths in {}/{} valid paths, {} traversals".format(
                             len(self.components), count_valid, self.num_search, count_search))
                     else:
                         self.components_counts[new_path] = 1
@@ -259,7 +263,7 @@ class PathGeneratorGraphAlignment(object):
             len(self.components), count_valid, self.num_search, count_search))
 
     # TODO: modularize each traversal process as an independent run, communicating via files
-    def __heuristic_traversal_worker_dill_version(self, components, components_counts, g_vars, lock, event, v_len):
+    def __heuristic_traversal_worker_dv(self, components, components_counts, g_vars, lock, event, v_len):
         """
         single worker of traversal, called by self.get_heuristic_paths_multiprocessing
         starting a new process from dill dumped python object: slow
@@ -304,7 +308,7 @@ class PathGeneratorGraphAlignment(object):
                 lock.release()
         # TODO: kill all other workers
 
-    def __gen_heuristic_paths_mp_dill_version(self, num_proc=2):
+    def __gen_heuristic_paths_mp_dv(self, num_proc=2):
         """
         multiprocess version of generating heuristic paths
         starting a new process from dill dumped python object: slow
@@ -324,7 +328,7 @@ class PathGeneratorGraphAlignment(object):
             logger.debug("assigning job to worker {}".format(g_p + 1))
             jobs.append(apply_async(
                 mp,
-                self.__heuristic_traversal_worker_dill_version,
+                self.__heuristic_traversal_worker_dv,
                 (components, components_counts, global_vars, lock, event, v_len)))
             logger.info("assigned job to worker {}".format(g_p + 1))
             if global_vars.count_valid >= self.num_search:
@@ -332,7 +336,7 @@ class PathGeneratorGraphAlignment(object):
         for job in jobs:
             job.get()  # tracking errors
         mp.close()
-        logger.info("waiting ..")
+        # logger.info("waiting ..")
         event.wait()
         mp.terminate()
         mp.join()  # maybe no need to join
@@ -386,10 +390,13 @@ class PathGeneratorGraphAlignment(object):
                     go_to__ = try_start + unit_len * unit_copy_num * (go_unit + 1)
                     this_path = path_shuffled[go_from__: go_to__]
                     if self.graph.is_circular_path(this_path):
-                        return_list.append(self.graph.get_standardized_circular_path(this_path))
+                        return_list.append(self.graph.get_standardized_path_circ(this_path))
                 return return_list
             else:
                 return [circular_path]
+
+    def get_single_traversal(self):
+        return self.graph.get_standardized_path_circ(self.graph.roll_path(self.__heuristic_extend_path([])))
 
     def __heuristic_extend_path(
             self, path, not_do_reverse=False):
@@ -408,6 +415,7 @@ class PathGeneratorGraphAlignment(object):
             if self.__random.random() > 0.5:
                 read_path = self.graph.reverse_path(read_path)
             path = list(read_path)
+            logger.trace("      starting path(" + str(len(path)) + "): " + str(path))
             # initial_mean, initial_std = self.__get_cov_mean(read_path, return_std=True)
             return self.__heuristic_extend_path(
                 path=path,
@@ -456,7 +464,7 @@ class PathGeneratorGraphAlignment(object):
                     if strand:
                         path = list(self.read_paths[read_id])
                     else:
-                        path = self.graph.reverse_path(self.read_paths[read_id])
+                        path = list(self.graph.reverse_path(self.read_paths[read_id]))
                     return self.__heuristic_extend_path(path)
             # like_ls_cached will be calculated in if not self.hetero_chromosome
             # it may be further used in self.__heuristic_check_multiplicity()
@@ -471,9 +479,9 @@ class PathGeneratorGraphAlignment(object):
                         if not self.hetero_chromosome:
                             # weighting candidates by the likelihood change of the multiplicity change
                             old_cov_mean, old_cov_std = self.__get_cov_mean(path, return_std=True)
-                            logger.trace("path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
+                            logger.trace("      path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
                             single_cov_mean, single_cov_std = self.__get_cov_mean_of_single(path, return_std=True)
-                            logger.trace("path single mean:" + str(single_cov_mean) + "," + str(single_cov_std))
+                            logger.trace("      path single mean:" + str(single_cov_mean) + "," + str(single_cov_std))
                             current_vs = [v_n for v_n, v_e in path]
                             weights = []
                             for next_v in candidates_next:
@@ -504,6 +512,7 @@ class PathGeneratorGraphAlignment(object):
                             next_name, next_end = self.__random.choice(candidates_next)
                     else:
                         next_name, next_end = list(next_connections)[0]
+                        like_ls_cached = None
                     # if self.hetero_chromosome or self.graph.is_fully_covered_by(path + [(next_name, not next_end)]):
                     return self.__heuristic_check_multiplicity(
                         path=path,
@@ -521,6 +530,7 @@ class PathGeneratorGraphAlignment(object):
                             list(self.graph.reverse_path(path)),
                             not_do_reverse=True)
             else:
+                logger.debug("    path(" + str(len(path)) + "): " + str(path))
                 # if there is only one candidate
                 if len(candidate_ls_list) == 1 and len(candidate_ls_list[0]) == 1:
                     read_id, strand = candidate_ls_list[0][0]
@@ -551,7 +561,7 @@ class PathGeneratorGraphAlignment(object):
                         # in the path proposal.
                         if num_reads_used >= self.__decay_t:
                             break
-                    logger.trace("# reads used: {}, # overlap used: [{},{}] ".format(
+                    logger.trace("       Drawing candidates from {} reads, with [{},{}] overlaps".format(
                         num_reads_used, min(candidates_ovl_n), max(candidates_ovl_n)))
                     if not self.hetero_chromosome:
                         ######
@@ -581,15 +591,17 @@ class PathGeneratorGraphAlignment(object):
                             # re-weighting candidates by the likelihood change of adding the extension
                             current_vs = [v_n for v_n, v_e in path]
                             old_cov_mean, old_cov_std = self.__get_cov_mean(path, return_std=True)
-                            logger.trace("path({}): {}".format(len(path), path))
-                            logger.trace("path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
+                            logger.trace("      path({}): {}".format(len(path), path))
+                            logger.trace("      path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
                             single_cov_mean, single_cov_std = self.__get_cov_mean_of_single(path, return_std=True)
-                            logger.trace("path single mean:" + str(single_cov_mean) + "," + str(single_cov_std))
+                            logger.trace("      path single mean:" + str(single_cov_mean) + "," + str(single_cov_std))
                             for go_c, (read_id, strand) in enumerate(candidates):
                                 read_path = self.read_paths[read_id]
+                                logger.trace("      candidate r-path {}: {}: {}".format(go_c, strand, read_path))
                                 if not strand:
-                                    list(self.graph.reverse_path(read_path))
+                                    read_path = list(self.graph.reverse_path(read_path))
                                 cdd_extend = read_path[candidates_ovl_n[go_c]:]
+                                logger.trace("      candidate ext {}: {}".format(go_c, cdd_extend))
                                 current_v_counts = {_v_n: current_vs.count(_v_n) for _v_n, _v_e in cdd_extend}
                                 like_ls = self.__cal_multiplicity_like(path=deepcopy(path),
                                                                        proposed_extension=cdd_extend,
@@ -600,8 +612,7 @@ class PathGeneratorGraphAlignment(object):
                                                                        single_cov_std=single_cov_std)
                                 like_ls_cached.append(like_ls)
                                 weights[go_c] *= max(like_ls)
-                                logger.trace("candidate ext {}: {}".format(go_c, cdd_extend))
-                            logger.trace("like_ls_cached: {}".format(like_ls_cached))
+                            logger.trace("      like_ls_cached: {}".format(like_ls_cached))
                     elif self.__cov_inert:
                         # coverage inertia (multi-chromosomes) and not hetero_chromosome are mutually exclusive
                         # coverage inertia, more likely to extend to contigs with similar depths,
@@ -615,18 +626,20 @@ class PathGeneratorGraphAlignment(object):
                     chosen_cdd_id = self.__random.choices(range(len(candidates)), weights=weights)[0]
                     if like_ls_cached:
                         like_ls_cached = like_ls_cached[chosen_cdd_id]
+                    else:
+                        like_ls_cached = None
                     read_id, strand = candidates[chosen_cdd_id]
                     ovl_c_num = candidates_ovl_n[chosen_cdd_id]
                 read_path = self.read_paths[read_id]
-                logger.trace("read_path({}-{})({}): {}".format(ovl_c_num, len(read_path), strand, read_path))
+                logger.trace("      read_path({}-{})({}): {}".format(ovl_c_num, len(read_path), strand, read_path))
                 if not strand:
                     read_path = list(self.graph.reverse_path(read_path))
                 new_extend = read_path[ovl_c_num:]
                 # if not strand:
                 #     new_extend = list(self.graph.reverse_path(new_extend))
 
-                logger.debug("path(" + str(len(path)) + "): " + str(path))
-                logger.debug("potential extend(" + str(len(new_extend)) + "): " + str(new_extend))
+                logger.debug("      potential extend(" + str(len(new_extend)) + "): " + str(new_extend))
+                # input("pause")
                 # logger.debug("closed_from_start: " + str(closed_from_start))
                 # logger.debug("    candidate path: {} .. {} .. {}".format(path[:3], len(path), path[-3:]))
                 # logger.debug("    extend path   : {}".format(new_extend))
@@ -674,14 +687,14 @@ class PathGeneratorGraphAlignment(object):
                                 for v_n in set([v_n for v_n, v_e in proposed_extension])}
         if not (old_cov_mean and old_cov_std):
             old_cov_mean, old_cov_std = self.__get_cov_mean(path, return_std=True)
-            logger.debug("    path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
+            logger.debug("        path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
             # logger.debug("initial mean: " + str(initial_mean) + "," + str(initial_std))
         # logger.trace("    old_path: {}".format(self.graph.repr_path(path)))
         # logger.trace("    checking proposed_extension: {}".format(self.graph.repr_path(proposed_extension)))
         # use single-copy mean and std instead of initial
         if not (single_cov_mean and single_cov_std):
             single_cov_mean, single_cov_std = self.__get_cov_mean_of_single(path, return_std=True)
-            logger.debug("    path single mean:" + str(single_cov_mean) + "," + str(single_cov_std))
+            logger.debug("        path single mean:" + str(single_cov_mean) + "," + str(single_cov_std))
 
         # check the multiplicity of every vertices
         # check the likelihood of making longest extension first, than shorten the extension
@@ -716,9 +729,9 @@ class PathGeneratorGraphAlignment(object):
                                         scale=single_cov_std)
             old_cov_mean, old_cov_std = new_cov_mean, new_cov_std
             # weighted by log(length), de-weight later for comparison
-            logger.trace("    unweighted loglike ratio: {}".format(new_like - old_like))
-            logger.trace("    weighting by length: {}".format(proposed_lengths[v_name]))
-            logger.trace("    weighted loglike ratio: {}".format((new_like - old_like) * proposed_lengths[v_name]))
+            logger.trace("        unweighted loglike ratio: {}".format(new_like - old_like))
+            logger.trace("        weighting by length: {}".format(proposed_lengths[v_name]))
+            logger.trace("        weighted loglike ratio: {}".format((new_like - old_like) * proposed_lengths[v_name]))
             log_like_ratio += (new_like - old_like) * proposed_lengths[v_name]
             log_like_ratio_list.append(log_like_ratio)
             # logger.trace("      initial_mean: %.4f, old_mean: %.4f (%.4f), proposed_mean: %.4f (%.4f)" % (
@@ -775,7 +788,7 @@ class PathGeneratorGraphAlignment(object):
                         not_do_reverse=not_do_reverse)
         # extend_names = [v_n for v_n, v_e in path]
         # extend_names = {v_n: extendnames.count(v_n) for v_n in set(extend_names)}
-        if not (cached_like_ls is None):
+        if not (cached_like_ls is None or cached_like_ls == []):
             like_ratio_list = cached_like_ls
         else:
             like_ratio_list = self.__cal_multiplicity_like(
@@ -797,13 +810,27 @@ class PathGeneratorGraphAlignment(object):
                     list(deepcopy(path)) + list(proposed_extension[:proposed_end]),
                     not_do_reverse=not_do_reverse)
         else:
+            # Tested to be a bad idea
+            # if self.force_circular:
+            #     if self.graph.is_circular_path(self.graph.roll_path(path)):
+            #         logger.trace("        circular traversal ended to fit {}'s coverage.".format(
+            #                      proposed_extension[0][0]))
+            #         logger.trace("        checked likes: {}".format(like_ratio_list))
+            #         return list(deepcopy(path))
+            #     else:
+            #         # do not waste current search, extend anyway
+            #         return self.__heuristic_extend_path(
+            #             list(deepcopy(path)) + list(proposed_extension[:1 + np.argmax(np.array(like_ratio_list))]),
+            #             not_do_reverse=not_do_reverse)
+            # else:
+
             if not_do_reverse:
-                logger.trace("    traversal ended to fit {}'s coverage.".format(proposed_extension[0][0]))
-                logger.trace("    checked likes: {}".format(like_ratio_list))
+                logger.trace("        linear traversal ended to fit {}'s coverage.".format(proposed_extension[0][0]))
+                logger.trace("        checked likes: {}".format(like_ratio_list))
                 return list(deepcopy(path))
             else:
-                logger.trace("    traversal reversed to fit {}'s coverage.".format(proposed_extension[0][0]))
-                logger.trace("    checked likes: {}".format(like_ratio_list))
+                logger.trace("        linear traversal reversed to fit {}'s coverage.".format(proposed_extension[0][0]))
+                logger.trace("        checked likes: {}".format(like_ratio_list))
                 return self.__heuristic_extend_path(
                     list(self.graph.reverse_path(list(deepcopy(path)))),
                     not_do_reverse=True)

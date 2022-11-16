@@ -76,13 +76,13 @@ class EstMultiplicityPrecise(object):
                 return [{"graph": deepcopy(self.graph), "cov": cov_}]
             return
 
-        # the core function calls 
-        self.get_max_multiplicity()
+        # the core function calls
         self.build_formulae()
         self.add_self_loop_formulae()
         self.add_limit_formulae()
 
         self.sympy_solve_equations()
+        self.get_max_multiplicity()
         if self.return_new_graphs:
             return self.optimize_model()
         else:
@@ -554,7 +554,7 @@ class EstMultiplicityPrecise(object):
                     pass
 
             # report model fitting 
-            logger.info("Best function value: " + str(best_fun))        
+            logger.info("Best function value: " + str(best_fun))
         
         # report results
         logger.info("Copy results: " + str(copy_results))

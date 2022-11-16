@@ -7,6 +7,7 @@ import pymc3 as pm
 import theano.tensor as tt
 import numpy as np
 import arviz as az
+from typing import OrderedDict as typingODict
 
 
 class ModelFitBayesian(object):
@@ -14,17 +15,29 @@ class ModelFitBayesian(object):
     """
     def __init__(self, traversome_obj):
         self.traversome = traversome_obj
+        self.num_of_isomers = traversome_obj.num_of_components
         self.trace = None
         # self.graph = traversome_obj.graph
-        pass
 
-    def run_mcmc(self, n_generations, n_burn):
+    def run_mcmc(self, n_generations, n_burn, chosen_ids: typingODict[int, bool] = None):
         logger.info("{} subpaths in total".format(len(self.traversome.all_sub_paths)))
-        isomer_num = self.traversome.num_of_isomers
+        if chosen_ids:
+            chosen_ids = OrderedDict([(self.traversome.be_unidentifiable_to[isomer_id], True)
+                                      for isomer_id in chosen_ids])
+        else:
+            chosen_ids = OrderedDict([(isomer_id, True) for isomer_id in self.traversome.merged_components])
+        chosen_num = len(chosen_ids)
         with pm.Model() as isomer_model:
-            isomer_percents = pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,))
+            # Because many traversome attributes including subpath information were created using the original component
+            # ids, so here we prefer not making traversome.get_multinomial_like_formula complicated. Instead, we create
+            # isomer_percents with foo values inserted when that component id is not in chosen_ids.
+            real_percents = pm.Dirichlet(name="props", a=np.ones(chosen_num), shape=(chosen_num,))
+            isomer_percents = [False] * self.num_of_isomers
+            for go_id_id, chosen_id in enumerate(chosen_ids):
+                isomer_percents[chosen_id] = real_percents[go_id_id]
+            #
             loglike_expression = self.traversome.get_multinomial_like_formula(
-                isomer_percents=isomer_percents, log_func=tt.log).loglike_expression
+                isomer_percents=isomer_percents, log_func=tt.log, within_isomer_ids=set(chosen_ids)).loglike_expression
             pm.Potential("likelihood", loglike_expression)
             # pm.Deterministic("likelihood", likes)
             # pm.DensityDist?
@@ -55,4 +68,4 @@ class ModelFitBayesian(object):
             axes = az.plot_trace(self.trace)
             fig = axes.ravel()[0].figure
             fig.savefig(os.path.join(self.traversome.outdir, "mcmc.trace_plot.pdf"))
-        return OrderedDict([(_go, _prop) for _go, _prop in enumerate(summary["mean"])])
+        return OrderedDict([(_c_id, _prop) for _c_id, _prop in zip(chosen_ids, summary["mean"])])

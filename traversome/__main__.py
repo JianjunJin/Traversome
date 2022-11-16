@@ -71,7 +71,7 @@ class PathGen(str, Enum):
     Provided = "U"
 
 
-class MLFunChoice(str, Enum):
+class ModelSelectionMode(str, Enum):
     AIC = "aic"
     BIC = "bic"
     Single = "single"
@@ -87,91 +87,92 @@ class ChComposition(str, Enum):
     unconstrained = "u"
 
 
-@app.command()
-def ml(
-    graph_file: Path = typer.Option(
-        ..., "-g", "--graph",
-        help="GFA/FASTG format Graph file",
-        exists=True, resolve_path=True),
-    alignment_file: Path = typer.Option(
-        ..., "-a", "--alignment",
-        help="GAF format alignment file",
-        exists=True, resolve_path=True,
-    ),
-    output_dir: Path = typer.Option(
-        './', "-o", "--output",
-        help="Output directory",
-        exists=False, resolve_path=True),
-    path_generator: PathGen = typer.Option(
-        PathGen.Heuristic, "-P",
-        help="Path generator: H (Heuristic)/U (User-provided)"),
-    num_search: int = typer.Option(
-        1000, "-N", "--num-search",
-        help="Num of valid traversals for heuristic searching."),
-    num_processes: int = typer.Option(
-        1, "-p", "--processes",
-        help="Num of processes. "),
-    function: MLFunChoice = typer.Option(
-        MLFunChoice.AIC, "-F", "--func",
-        help="Function: aic (reverse model selection using stepwise AIC)\n"
-             "bic (reverse model selection using stepwise BIC)\n"
-             "single (conduct maximum likelihood estimation on the component-richest model without model selection)"),
-    random_seed: int = typer.Option(
-        12345, "--rs", "--random-seed", help="Random seed. "),
-    topology: ChTopology = typer.Option(
-        ChTopology.circular, "--topology",
-        help="Chromosomes topology: c (constrained to be circular)/ u (unconstrained). "),
-    composition: ChComposition = typer.Option(
-        ChComposition.unconstrained, "--composition",
-        help="Chromosomes composition: "
-             "s (single, each single form covers all compositions) / "
-             "u (unconstrained, single or multi-chromosomes. recommended)"),
-    out_seq_threshold: float = typer.Option(
-        0.0, "-S",
-        help="Threshold for sequence output",
-        min=0, max=1),
-    overwrite: bool = typer.Option(False, help="Remove previous result if exists."),
-    keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
-    log_level: LogLevel = typer.Option(
-        LogLevel.INFO, "--loglevel", "--log-level", help="Logging level. Use DEBUG for more, ERROR for less."),
-    ):
-    """
-    Conduct Maximum Likelihood analysis for solving assembly graph
-    Examples:
-    traversome ml -g graph.gfa -a align.gaf -o .
-    """
-    from loguru import logger
-    initialize(
-        output_dir=output_dir,
-        loglevel=log_level,
-        overwrite=overwrite)
-    try:
-        assert path_generator != "U", "User-provided is under developing, please use heuristic instead!"
-        from traversome.traversome import Traversome
-        traverser = Traversome(
-            graph=str(graph_file),
-            alignment=str(alignment_file),
-            outdir=str(output_dir),
-            function=function,
-            out_prob_threshold=out_seq_threshold,
-            force_circular=topology == "c",
-            num_search=num_search,
-            num_processes=num_processes,
-            random_seed=random_seed,
-            keep_temp=keep_temp,
-            loglevel=log_level
-        )
-        traverser.run(
-            path_generator=path_generator,
-            hetero_chromosomes=composition == "u"  # opts.is_multi_chromosomes,
-            )
-    except:
-        logger.exception("")
-    logger.info("Total cost %.4f" % (time.time() - time_zero))
+# deprecated for now
+# @app.command()
+# def ml(
+#     graph_file: Path = typer.Option(
+#         ..., "-g", "--graph",
+#         help="GFA/FASTG format Graph file",
+#         exists=True, resolve_path=True),
+#     alignment_file: Path = typer.Option(
+#         ..., "-a", "--alignment",
+#         help="GAF format alignment file",
+#         exists=True, resolve_path=True,
+#     ),
+#     output_dir: Path = typer.Option(
+#         './', "-o", "--output",
+#         help="Output directory",
+#         exists=False, resolve_path=True),
+#     path_generator: PathGen = typer.Option(
+#         PathGen.Heuristic, "-P",
+#         help="Path generator: H (Heuristic)/U (User-provided)"),
+#     num_search: int = typer.Option(
+#         1000, "-N", "--num-search",
+#         help="Num of valid traversals for heuristic searching."),
+#     num_processes: int = typer.Option(
+#         1, "-p", "--processes",
+#         help="Num of processes. "),
+#     function: ModelSelectionMode = typer.Option(
+#         ModelSelectionMode.AIC, "-F", "--func",
+#         help="Function: aic (reverse model selection using stepwise AIC)\n"
+#              "bic (reverse model selection using stepwise BIC)\n"
+#              "single (conduct maximum likelihood estimation on the component-richest model without model selection)"),
+#     random_seed: int = typer.Option(
+#         12345, "--rs", "--random-seed", help="Random seed. "),
+#     topology: ChTopology = typer.Option(
+#         ChTopology.circular, "--topology",
+#         help="Chromosomes topology: c (constrained to be circular)/ u (unconstrained). "),
+#     composition: ChComposition = typer.Option(
+#         ChComposition.unconstrained, "--composition",
+#         help="Chromosomes composition: "
+#              "s (single, each single form covers all compositions) / "
+#              "u (unconstrained, single or multi-chromosomes. recommended)"),
+#     out_seq_threshold: float = typer.Option(
+#         0.0, "-S",
+#         help="Threshold for sequence output",
+#         min=0, max=1),
+#     overwrite: bool = typer.Option(False, help="Remove previous result if exists."),
+#     keep_temp: float = typer.Option(False, "--keep-temp", help="Keep temporary files for debug. "),
+#     log_level: LogLevel = typer.Option(
+#         LogLevel.INFO, "--loglevel", "--log-level", help="Logging level. Use DEBUG for more, ERROR for less."),
+#     ):
+#     """
+#     Conduct Maximum Likelihood analysis for solving assembly graph
+#     Examples:
+#     traversome ml -g graph.gfa -a align.gaf -o .
+#     """
+#     from loguru import logger
+#     initialize(
+#         output_dir=output_dir,
+#         loglevel=log_level,
+#         overwrite=overwrite)
+#     try:
+#         assert path_generator != "U", "User-provided is under developing, please use heuristic instead!"
+#         from traversome.traversome import Traversome
+#         traverser = Traversome(
+#             graph=str(graph_file),
+#             alignment=str(alignment_file),
+#             outdir=str(output_dir),
+#             function=function,
+#             out_prob_threshold=out_seq_threshold,
+#             force_circular=topology == "c",
+#             num_search=num_search,
+#             num_processes=num_processes,
+#             random_seed=random_seed,
+#             keep_temp=keep_temp,
+#             loglevel=log_level
+#         )
+#         traverser.run(
+#             path_generator=path_generator,
+#             hetero_chromosomes=composition == "u"  # opts.is_multi_chromosomes,
+#             )
+#     except:
+#         logger.exception("")
+#     logger.info("Total cost %.4f" % (time.time() - time_zero))
 
 
 @app.command()
-def mc(
+def thorough(
     graph_file: Path = typer.Option(
         ..., "-g", "--graph",
         help="GFA/FASTG format Graph file",
@@ -189,6 +190,10 @@ def mc(
         PathGen.Heuristic, "-P",
         help="Path generator: H (Heuristic)/U (User-provided)"),
     num_search: int = typer.Option(1000, "-N", "--num-search", help="Num of valid traversals for heuristic searching."),
+    criterion: ModelSelectionMode = typer.Option(
+        ModelSelectionMode.AIC, "-F", "--func",
+        help="aic (reverse model selection using stepwise AIC, default)\n"
+             "bic (reverse model selection using stepwise BIC)"),
     random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed"),
     topology: ChTopology = typer.Option(
         ChTopology.circular, "--topology",
@@ -229,10 +234,10 @@ def mc(
             graph=str(graph_file),
             alignment=str(alignment_file),
             outdir=str(output_dir),
+            model_criterion=criterion,
             out_prob_threshold=out_seq_threshold,
             num_search=num_search,
             num_processes=num_processes,
-            do_bayesian=True,
             force_circular=topology == "c",
             n_generations=n_generations,
             n_burn=n_burn,
