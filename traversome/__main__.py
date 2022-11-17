@@ -199,10 +199,10 @@ def thorough(
         ChTopology.circular, "--topology",
         help="Chromosomes topology: c (constrained to be circular)/ u (unconstrained). "),
     composition: ChComposition = typer.Option(
-        ChComposition.unconstrained, "--composition",
+        ChComposition.single, "--composition",
         help="Chromosomes composition: "
-             "s (single, each single form covers all compositions) / "
-             "u (unconstrained, single or multi-chromosomes. recommended)"),
+             "s (single, each single form covers all contigs, default) / "
+             "u (unconstrained, single or multi-chromosomes)"),
     out_seq_threshold: float = typer.Option(
         0.0, "-S",
         help="Threshold for sequence output",
