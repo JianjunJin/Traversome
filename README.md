@@ -1,12 +1,12 @@
 
 
 # Traversome (Under active development)
-Genomic isomer frequency estimation from genome assembly graphs and long reads.
+Genomic structure frequency estimation from genome assembly graphs and long reads.
 
 
 ### Install dependencies
 ```bash
-conda install typer numpy pandas scipy pymc3 sympy loguru -c conda-forge
+conda install dill typer numpy pandas scipy pymc3 sympy loguru -c conda-forge
 conda install python-symengine -c symengine -c conda-forge
 ```
 
@@ -19,8 +19,7 @@ pip install -e ./Traversome --no-deps
 ### Command line interface (CLI)
 
 ```bash
-traversome ml -g graph.gfa -a align.gaf -o outdir
-traversome mc -g graph.gfa -a align.gaf -o outdir (pymc3 crashes when the graph becomes complicated)
+traversome thorough -g graph.gfa -a align.gaf -o outdir
 ```
 
 ### Interpreting results
