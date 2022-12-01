@@ -118,7 +118,7 @@ class ModelFitMaxLike(object):
                     previous_prop = test_id_res[best_drop_id]["prop"]
                     previous_echo = test_id_res[best_drop_id]["echo"]
                     del chosen_ids[best_drop_id]
-                    logger.info("Drop {}".format(self.__str_rep_id(best_drop_id)))
+                    logger.info("Drop id_{}".format(self.__str_rep_id(best_drop_id)))
                     logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
                     logger.info("Log-likelihood: %s" % previous_like)
                     self.__drop_zero_components(chosen_ids, previous_prop, previous_echo, diff_tolerance)
@@ -148,7 +148,7 @@ class ModelFitMaxLike(object):
                 for uid_iso_id in self.traversome.merged_components[iso_id]:
                     del representative_props[uid_iso_id]
                 del echo_props[self.__str_rep_id(iso_id)]
-                logger.info("Drop {}".format(self.__str_rep_id(iso_id)))
+                logger.info("Drop id_{}".format(self.__str_rep_id(iso_id)))
 
     def __compute_like_and_criteria(self, chosen_id_set, criteria):
         logger.debug("Generating the likelihood function .. ")

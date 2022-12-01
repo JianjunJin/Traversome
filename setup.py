@@ -27,6 +27,7 @@ if on_rtd:
     install_requires = []
 else:
     install_requires = [
+        "dill",
         "numpy",
         "pandas",
         "scipy",

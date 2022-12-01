@@ -64,8 +64,8 @@ class Assembly(AssemblySimple):
         self.__reverse_paths = {}
 
         # summarize init
-        logger.debug("init graph: self.vertex_clusters={}".format(self.vertex_clusters))
-        logger.info("Assembly object loaded.")
+        # logger.debug("init graph: self.vertex_clusters={}".format(self.vertex_clusters))
+        logger.debug("Assembly object loaded.")
 
     def new_graph_with_vertices_renamed(
             self,
@@ -872,33 +872,33 @@ class Assembly(AssemblySimple):
             rm_contigs = {candidate_v for candidate_v in self.vertex_info if candidate_v not in accepted}
             self.remove_vertex(rm_contigs, update_cluster=True)
 
-    def generate_heuristic_components(
-            self,
-            graph_alignment,
-            random_obj,
-            num_search,
-            num_processes=1,
-            force_circular=True,
-            hetero_chromosome=True):
-        """
-        :param graph_alignment:
-        :param random_obj: random
-            passed from traversome.random [or from import random]
-        :param num_search
-        :param num_processes
-        :param force_circular
-        :param hetero_chromosome
-        """
-        generator = PathGeneratorGraphAlignment(
-            assembly_graph=self,
-            graph_alignment=graph_alignment,
-            num_search=num_search,
-            num_processes=num_processes,
-            force_circular=force_circular,
-            hetero_chromosome=hetero_chromosome,
-            random_obj=random_obj)
-        generator.generate_heuristic_components()
-        return generator.components
+    # def generate_heuristic_components(
+    #         self,
+    #         graph_alignment,
+    #         random_obj,
+    #         num_search,
+    #         num_processes=1,
+    #         force_circular=True,
+    #         hetero_chromosome=True):
+    #     """
+    #     :param graph_alignment:
+    #     :param random_obj: random
+    #         passed from traversome.random [or from import random]
+    #     :param num_search
+    #     :param num_processes
+    #     :param force_circular
+    #     :param hetero_chromosome
+    #     """
+    #     generator = PathGeneratorGraphAlignment(
+    #         assembly_graph=self,
+    #         graph_alignment=graph_alignment,
+    #         num_search=num_search,
+    #         num_processes=num_processes,
+    #         force_circular=force_circular,
+    #         hetero_chromosome=hetero_chromosome,
+    #         random_obj=random_obj)
+    #     generator.generate_heuristic_components()
+    #     return generator.components
 
     def find_all_circular_isomers(self, mode="embplant_pt", re_estimate_multiplicity=False):
         """
@@ -1051,6 +1051,7 @@ class Assembly(AssemblySimple):
 
     def get_standardized_path_circ(self, raw_path):
         """
+        #TODO speed up
         standardized for comparing and identify unique path, accounting for circular cases
         :param raw_path: path=[(name1:str, direction1:bool), (name2:str, direction2:bool), ..]
         :return: standardized_path

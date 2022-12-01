@@ -13,6 +13,8 @@ from enum import Enum
 from collections import OrderedDict
 import numpy as np
 import random
+# from pathos.multiprocessing import ProcessingPool as Pool
+import dill
 
 
 # PY VERSION CHECK: only 2.7 and 3.5+ (this could be enforced by pip/conda)
@@ -431,7 +433,7 @@ def generate_clusters_from_connections(vertices, connections):
     return vertex_clusters
 
 
-def find_greatest_common_divisor(number_list):  
+def find_greatest_common_divisor(number_list):
     "euclid_algorithm"
     number_list = number_list[:]
     if len(number_list) == 1:
@@ -783,3 +785,8 @@ def harmony_weights(raw_weights, diff):
     weights_trans = weights**diff
     return weights_trans / sum(weights_trans)
 
+
+# following the solution using dill: https://stackoverflow.com/a/24673524
+def run_dill_encoded(payload):
+    fun, args = dill.loads(payload)
+    return fun(*args)
