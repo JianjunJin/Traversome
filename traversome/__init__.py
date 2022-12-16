@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 
 """
-Traversome: genomic isomer frequency estimation from genome assembly graphs and long reads
+Traversome: genome variant resolution and frequency estimation from genome assembly graphs and long reads
 """
 
 
-__version__ = "0.0.8"
+__version__ = "0.0.8.1"
 __author__ = "JianJun Jin and Deren Eaton"
 
 

@@ -161,7 +161,7 @@ class SequenceList(object):
 
 class SubPathInfo(object):
     def __init__(self):
-        self.from_isomers = {}
+        self.from_variants = {}
         self.mapped_records = []
         self.num_possible_X = -1  # The X in binomial: theoretical num of matched chances
         self.num_possible_Xs = OrderedDict()  # For generating Xs in multinomial: theoretical num of matched chances

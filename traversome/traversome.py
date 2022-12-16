@@ -17,7 +17,7 @@ from traversome.utils import \
     SubPathInfo, LogLikeFormulaInfo, Criterion  # ProcessingGraphFailed,
 from traversome.ModelFitMaxLike import ModelFitMaxLike
 from traversome.ModelFitBayesian import ModelFitBayesian
-from traversome.PathGeneratorGraphAlignment import PathGeneratorGraphAlignment
+from traversome.PathGenerator import PathGenerator
 # from traversome.CleanGraph import CleanGraph
 from typing import OrderedDict as typingODict
 from typing import Set
@@ -69,21 +69,21 @@ class Traversome(object):
         self.read_paths = OrderedDict()
         self.max_read_path_size = None
 
-        # component model to be generated
-        self.component_paths = []  # each element is a tuple(path)
-        self.component_sizes = []
-        self.num_of_components = None
-        self.component_subpath_counters = OrderedDict()  # each value is a dict(sub_path->sub_path_counts)
+        # variant model to be generated
+        self.variant_paths = []  # each element is a tuple(path)
+        self.variant_sizes = []
+        self.num_put_variants = None
+        self.variant_subpath_counters = OrderedDict()  # each value is a dict(sub_path->sub_path_counts)
         self.all_sub_paths = OrderedDict()
         self.sbp_to_sbp_id = {}
         self.observed_sbp_id_set = set()
         self.be_unidentifiable_to = {}
-        # use the merged components to represent each set of components.
-        # within each set the components are unidentifiable to each other
-        self.merged_components = {}
+        # use the merged variants to represent each set of variants.
+        # within each set the variants are unidentifiable to each other
+        self.merged_variants = {}
         # The result of model fitting using ml/mc, the base to update above model information for a second fitting run
-        # {component_id: percent}
-        self.component_proportions = OrderedDict()
+        # {variant_id: percent}
+        self.variant_proportions = OrderedDict()
 
         # self.pal_len_sbp_Xs = OrderedDict()
         # self.sbp_Xs = []
@@ -111,28 +111,28 @@ class Traversome(object):
         self.get_align_len_dist()
         # logger.debug("Cleaning graph ...")
         # self.clean_graph()
-        logger.debug("Generating candidate isomer paths ...")
-        self.generate_candidate_paths(
+        logger.debug("Generating candidate variant paths ...")
+        self.gen_candidate_paths(
             path_generator=path_generator,
             num_search=self.kwargs["num_search"],
             num_processes=self.num_processes,
             hetero_chromosomes=hetero_chromosomes
         )
-        if self.num_of_components == 0:
-            raise Exception("No candidate isomers found!")
-        elif self.num_of_components == 1:
-            self.component_proportions[0] = 1.
+        if self.num_put_variants == 0:
+            raise Exception("No candidate variants found!")
+        elif self.num_put_variants == 1:
+            self.variant_proportions[0] = 1.
         else:
-            logger.debug("Estimating candidate isomer frequencies using Maximum Likelihood...")
+            logger.debug("Estimating candidate variant frequencies using Maximum Likelihood...")
             # if self.kwargs["criterion"] == "single":
             #     # single point estimate
-            #     self.ext_component_proportions = self.fit_model_using_point_maximum_likelihood()
+            #     self.ext_variant_proportions = self.fit_model_using_point_maximum_likelihood()
             # else:
-            self.component_proportions = self.fit_model_using_reverse_model_selection(
+            self.variant_proportions = self.fit_model_using_reverse_model_selection(
                 criterion=self.kwargs["model_criterion"])
             # update candidate info according to the result of reverse model selection
-            logger.debug("Estimating candidate isomer frequencies using Bayesian MCMC ...")
-            self.component_proportions = self.fit_model_using_bayesian_mcmc(chosen_ids=self.component_proportions)
+            logger.debug("Estimating candidate variant frequencies using Bayesian MCMC ...")
+            self.variant_proportions = self.fit_model_using_bayesian_mcmc(chosen_ids=self.variant_proportions)
 
         self.output_seqs()
 
@@ -189,58 +189,59 @@ class Traversome(object):
         logger.info(
             "Alignment length range at path: [{}, {}]".format(self.min_alignment_length, self.max_alignment_length))
 
-    def generate_candidate_paths(
+    def gen_candidate_paths(
             self,
             path_generator="H",
             num_search=1000,
             num_processes=1,
             hetero_chromosomes=True):
         """
-        generate candidate isomer paths from the graph
+        generate candidate variant paths from the graph
         """
         if path_generator == "H":
-            generator = PathGeneratorGraphAlignment(
+            generator = PathGenerator(
                 traversome_obj=self,
                 num_search=num_search,
                 num_processes=num_processes,
                 force_circular=self.force_circular,
                 hetero_chromosome=hetero_chromosomes)
-            generator.generate_heuristic_components()
-            self.component_paths = generator.components
-        self.__update_vars_depending_component_paths()
+            generator.generate_heuristic_paths()
+            self.variant_paths = generator.variants
+        self.__update_params_for_variants()
 
-    def __update_vars_depending_component_paths(self):
-        self.component_sizes = [self.graph.get_path_length(isomer_p)
-                                for isomer_p in self.component_paths]
-        self.num_of_components = len(self.component_paths)
+    def __update_params_for_variants(self):
+        self.variant_sizes = [self.graph.get_path_length(variant_p)
+                              for variant_p in self.variant_paths]
+        self.num_put_variants = len(self.variant_paths)
 
-        for go_p, path in enumerate(self.component_paths):
+        for go_p, path in enumerate(self.variant_paths):
             logger.debug("PATH{}: {}".format(go_p, self.graph.repr_path(path)))
 
         # generate subpaths: the binomial sets
-        if self.num_of_components > 1:
+        if self.num_put_variants > 1:
             logger.info("Generating sub-paths ..")
-            self.generate_all_informative_sub_paths()
-        elif self.num_of_components == 0:
+            self.gen_all_informative_sub_paths()
+        elif self.num_put_variants == 0:
             logger.warning("No valid configuration found for the input assembly graph.")
         else:
+            # self.merged_variants = OrderedDict([(0, [0])])
             logger.warning("Only one genomic configuration found for the input assembly graph.")
 
-    def get_component_sub_paths(self, component_path, this_overlap=None):
+    def get_variant_sub_paths(self, variant_path, this_overlap=None):
         # TODO: speed up by storing result?
         if this_overlap is None:
             this_overlap = self.graph.overlap()
         these_sub_paths = dict()
-        num_seg = len(component_path)
+        num_seg = len(variant_path)
         if self.force_circular:
-            for go_start_v, start_segment in enumerate(component_path):
+            for go_start_v, start_segment in enumerate(variant_path):
                 # find the longest sub_path,
                 # that begins with start_segment and be in the range of alignment length
                 this_longest_sub_path = [start_segment]
                 this_internal_path_len = 0
                 go_next = (go_start_v + 1) % num_seg
                 while this_internal_path_len < self.max_alignment_length:
-                    next_segment = component_path[go_next]
+                    next_segment = variant_path[go_next]
                     this_longest_sub_path.append(next_segment)
                     this_internal_path_len += self.graph.vertex_info[next_segment[0]].len - this_overlap
                     go_next = (go_next + 1) % num_seg
@@ -261,14 +262,14 @@ class Traversome(object):
                         these_sub_paths[this_sub_path] = 0
                     these_sub_paths[this_sub_path] += 1
         else:
-            for go_start_v, start_segment in enumerate(component_path):
+            for go_start_v, start_segment in enumerate(variant_path):
                 # find the longest sub_path,
                 # that begins with start_segment and be in the range of alignment length
                 this_longest_sub_path = [start_segment]
                 this_internal_path_len = 0
                 go_next = go_start_v + 1
                 while go_next < num_seg and this_internal_path_len < self.max_alignment_length:
-                    next_segment = component_path[go_next]
+                    next_segment = variant_path[go_next]
                     this_longest_sub_path.append(next_segment)
                     this_internal_path_len += self.graph.vertex_info[next_segment[0]].len - this_overlap
                     go_next += 1
@@ -289,49 +290,50 @@ class Traversome(object):
                     these_sub_paths[this_sub_path] += 1
         return these_sub_paths
 
-    def generate_all_informative_sub_paths(self):
+    def gen_all_informative_sub_paths(self):
         """
-        generate all sub paths and their occurrences for each candidate isomer
+        generate all sub paths and their occurrences for each candidate variant
         """
-        # count sub path occurrences for each candidate isomer and recorded in self.component_subpath_counters
+        # count sub path occurrences for each candidate variant and recorded in self.variant_subpath_counters
         this_overlap = self.graph.overlap()
-        self.component_subpath_counters = OrderedDict()
-        for go_path, this_path in enumerate(self.component_paths):
-            self.component_subpath_counters[go_path] = \
-                self.get_component_sub_paths(this_path, this_overlap=this_overlap)
+        self.variant_subpath_counters = OrderedDict()
+        for go_path, this_path in enumerate(self.variant_paths):
+            self.variant_subpath_counters[go_path] = \
+                self.get_variant_sub_paths(this_path, this_overlap=this_overlap)
 
         # create unidentifiable table
         self.be_unidentifiable_to = OrderedDict()
-        for represent_iso_id in range(self.num_of_components):
-            for check_iso_id in range(represent_iso_id, self.num_of_components):
+        for represent_iso_id in range(self.num_put_variants):
+            for check_iso_id in range(represent_iso_id, self.num_put_variants):
                 # every id will be checked only once, either unidentifiable to a previous id or represent itself
                 if check_iso_id not in self.be_unidentifiable_to:
                     if check_iso_id == represent_iso_id:  # represent itself
                         self.be_unidentifiable_to[check_iso_id] = check_iso_id
-                    elif self.component_subpath_counters[check_iso_id] == \
-                            self.component_subpath_counters[represent_iso_id]:
+                    elif self.variant_subpath_counters[check_iso_id] == \
+                            self.variant_subpath_counters[represent_iso_id]:
                         self.be_unidentifiable_to[check_iso_id] = represent_iso_id
-        self.merged_components = \
+        logger.info(str(self.be_unidentifiable_to))
+        self.merged_variants = \
             OrderedDict([(rps_id, []) for rps_id in sorted(set(self.be_unidentifiable_to.values()))])
         for check_iso_id, rps_iso_id in self.be_unidentifiable_to.items():
-            self.merged_components[rps_iso_id].append(check_iso_id)
-        for unidentifiable_ids in self.merged_components.values():
+            self.merged_variants[rps_iso_id].append(check_iso_id)
+        for unidentifiable_ids in self.merged_variants.values():
             if len(unidentifiable_ids) > 1:
                 logger.warning("Mutually unidentifiable paths in current alignment: %s" % unidentifiable_ids)
 
-        # transform self.component_subpath_counters to self.all_sub_paths
+        # transform self.variant_subpath_counters to self.all_sub_paths
         self.all_sub_paths = OrderedDict()
-        for go_isomer, sub_paths_group in self.component_subpath_counters.items():
+        for go_variant, sub_paths_group in self.variant_subpath_counters.items():
             for this_sub_path, this_sub_freq in sub_paths_group.items():
                 if this_sub_path not in self.all_sub_paths:
                     self.all_sub_paths[this_sub_path] = SubPathInfo()
-                self.all_sub_paths[this_sub_path].from_isomers[go_isomer] = this_sub_freq
+                self.all_sub_paths[this_sub_path].from_variants[go_variant] = this_sub_freq
 
-        # to simplify downstream calculation, remove shared sub-paths shared by all isomers
+        # to simplify downstream calculation, remove shared sub-paths shared by all variants
         for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
-            if len(this_sub_path_info.from_isomers) == self.num_of_components and \
-                    len(set(this_sub_path_info.from_isomers.values())) == 1:
-                for go_isomer, sub_paths_group in self.component_subpath_counters.items():
+            if len(this_sub_path_info.from_variants) == self.num_put_variants and \
+                    len(set(this_sub_path_info.from_variants.values())) == 1:
+                for go_variant, sub_paths_group in self.variant_subpath_counters.items():
                     del sub_paths_group[this_sub_path]
                 del self.all_sub_paths[this_sub_path]
 
@@ -474,14 +476,14 @@ class Traversome(object):
             else:
                 logger.trace("Drop subpath without observation: {}: {}".format(go_sp, this_sub_path))
 
-    def cover_all_observed_sp(self, isomer_ids):
+    def cover_all_observed_sp(self, variant_ids):
         if not self.observed_sbp_id_set:
             self.update_observed_sp_ids()
         model_sp_ids = set()
-        for go_iso in isomer_ids:
-            for sub_path in self.component_subpath_counters[go_iso]:
+        for go_iso in variant_ids:
+            for sub_path in self.variant_subpath_counters[go_iso]:
                 if sub_path in self.sbp_to_sbp_id:
-                    # if sub_path was not dropped after the construction of self.component_subpath_counters
+                    # if sub_path was not dropped after the construction of self.variant_subpath_counters
                     model_sp_ids.add(self.sbp_to_sbp_id[sub_path])
         if self.observed_sbp_id_set.issubset(model_sp_ids):
             return True
@@ -489,41 +491,41 @@ class Traversome(object):
             return False
 
     def get_multinomial_like_formula(self,
-                                     isomer_percents,
+                                     variant_percents,
                                      log_func,
-                                     within_isomer_ids: Set = None):
+                                     within_variant_ids: Set = None):
         """
         use a combination of multiple multinomial distributions
-        :param isomer_percents:
+        :param variant_percents:
              input symengine.Symbols for maximum likelihood analysis (scipy),
-                 e.g. [Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_components)].
+                 e.g. [Symbol("P" + str(variant_id)) for variant_id in range(self.num_put_variants)].
              input pm.Dirichlet for bayesian analysis (pymc3),
-                 e.g. pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,)).
+                 e.g. pm.Dirichlet(name="comp", a=np.ones(variant_num), shape=(variant_num,)).
         :param log_func:
              input symengine.log for maximum likelihood analysis using scipy,
              input tt.log for bayesian analysis using pymc3
-        :param within_isomer_ids:
-             constrain the isomer testing scope. Test all isomers by default.
+        :param within_variant_ids:
+             constrain the variant testing scope. Test all variants by default.
                  e.g. set([0, 2])
         :return: LogLikeFormulaInfo object
         """
-        if not within_isomer_ids or within_isomer_ids == set(range(self.num_of_components)):
-            within_isomer_ids = None
+        if not within_variant_ids or within_variant_ids == set(range(self.num_put_variants)):
+            within_variant_ids = None
         # total length (all possible matches, ignoring margin effect if not circular)
         total_length = 0
-        if within_isomer_ids:
-            for go_isomer, go_length in enumerate(self.component_sizes):
-                if go_isomer in within_isomer_ids:
-                    total_length += isomer_percents[go_isomer] * float(go_length)
+        if within_variant_ids:
+            for go_variant, go_length in enumerate(self.variant_sizes):
+                if go_variant in within_variant_ids:
+                    total_length += variant_percents[go_variant] * float(go_length)
         else:
-            for go_isomer, go_length in enumerate(self.component_sizes):
-                total_length += isomer_percents[go_isomer] * float(go_length)
+            for go_variant, go_length in enumerate(self.variant_sizes):
+                total_length += variant_percents[go_variant] * float(go_length)
 
         # prepare subset of all_sub_paths in a list
         these_sp_info = OrderedDict()
-        # if within_isomer_ids:
+        # if within_variant_ids:
         #     for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
-        #         if set(this_sp_info.from_isomers) & within_isomer_ids:
+        #         if set(this_sp_info.from_variants) & within_variant_ids:
         #             these_sp_info[go_sp] = this_sp_info
         # else:
         for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
@@ -533,7 +535,7 @@ class Traversome(object):
             if these_sp_info[check_sp].num_possible_X < 1:
                 del these_sp_info[check_sp]
                 continue
-            if within_isomer_ids and not (set(these_sp_info[check_sp].from_isomers) & within_isomer_ids):
+            if within_variant_ids and not (set(these_sp_info[check_sp].from_variants) & within_variant_ids):
                 del these_sp_info[check_sp]
 
         # calculate the observations
@@ -543,17 +545,17 @@ class Traversome(object):
         logger.debug("  Formulating the subpath probabilities ..")
         this_sbp_Xs = [these_sp_info[_go_sp_].num_possible_X for _go_sp_ in these_sp_info]
         for go_valid_sp, this_sp_info in enumerate(these_sp_info.values()):
-            isomer_weight = 0
-            if within_isomer_ids:
+            variant_weight = 0
+            if within_variant_ids:
                 sub_from_iso = {_go_iso_: _sp_freq_
-                                for _go_iso_, _sp_freq_ in this_sp_info.from_isomers.items()
-                                if _go_iso_ in within_isomer_ids}
-                for go_isomer, sp_freq in sub_from_iso.items():
-                    isomer_weight += isomer_percents[go_isomer] * sp_freq
+                                for _go_iso_, _sp_freq_ in this_sp_info.from_variants.items()
+                                if _go_iso_ in within_variant_ids}
+                for go_variant, sp_freq in sub_from_iso.items():
+                    variant_weight += variant_percents[go_variant] * sp_freq
             else:
-                for go_isomer, sp_freq in this_sp_info.from_isomers.items():
-                    isomer_weight += isomer_percents[go_isomer] * sp_freq
-            this_sbp_Xs[go_valid_sp] *= isomer_weight
+                for go_variant, sp_freq in this_sp_info.from_variants.items():
+                    variant_weight += variant_percents[go_variant] * sp_freq
+            this_sbp_Xs[go_valid_sp] *= variant_weight
         this_sbp_prob = [_sbp_X / total_length for _sbp_X in this_sbp_Xs]
 
         # mark2, if include this, better removing code block under mark1
@@ -583,24 +585,24 @@ class Traversome(object):
         loglike_expression = 0
         for go_sp, obs in enumerate(observations):
             loglike_expression += log_func(this_sbp_prob[go_sp]) * obs
-        variable_size = len(within_isomer_ids) if within_isomer_ids else self.num_of_components
+        variable_size = len(within_variant_ids) if within_variant_ids else self.num_put_variants
         sample_size = sum(observations)
 
         return LogLikeFormulaInfo(loglike_expression, variable_size, sample_size)
 
-    # def get_binomial_like_formula(self, isomer_percents, log_func, within_isomer_ids=None):
+    # def get_binomial_like_formula(self, variant_percents, log_func, within_variant_ids=None):
     #     """
     #     use a combination of multiple binormial distributions
     #     deprecated
-    #     :param isomer_percents:
+    #     :param variant_percents:
     #          input sympy.Symbols for maximum likelihood analysis (scipy),
-    #              e.g. [Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_components)].
+    #              e.g. [Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_put_variants)].
     #          input pm.Dirichlet for bayesian analysis (pymc3),
     #              e.g. pm.Dirichlet(name="props", a=np.ones(isomer_num), shape=(isomer_num,)).
     #     :param log_func:
     #          input sympy.log for maximum likelihood analysis using scipy,
     #          inut tt.log for bayesian analysis using pymc3
-    #     :param within_isomer_ids:
+    #     :param within_variant_ids:
     #          constrain the isomer testing scope. Test all isomers by default.
     #              e.g. set([0, 2])
     #     :return: LogLikeFormulaInfo object
@@ -613,13 +615,13 @@ class Traversome(object):
     #         logger_step = 1
     #     # total length
     #     total_length = 0
-    #     if within_isomer_ids:
-    #         for go_isomer, go_length in enumerate(self.component_sizes):
-    #             if go_isomer in within_isomer_ids:
-    #                 total_length += isomer_percents[go_isomer] * float(go_length)
+    #     if within_variant_ids:
+    #         for go_isomer, go_length in enumerate(self.variant_sizes):
+    #             if go_isomer in within_variant_ids:
+    #                 total_length += variant_percents[go_isomer] * float(go_length)
     #     else:
-    #         for go_isomer, go_length in enumerate(self.component_sizes):
-    #             total_length += isomer_percents[go_isomer] * float(go_length)
+    #         for go_isomer, go_length in enumerate(self.variant_sizes):
+    #             total_length += variant_percents[go_isomer] * float(go_length)
     #     # accumulate likelihood by sub path
     #     loglike_expression = 0
     #     variable_size = 0
@@ -628,20 +630,20 @@ class Traversome(object):
     #         if this_sp_info.num_possible_X < 1:
     #             continue
     #         total_starting_points = 0
-    #         if within_isomer_ids:
+    #         if within_variant_ids:
     #             # remove irrelevant isomers
     #             sub_from_iso = {_go_iso_: _sp_freq_
-    #                             for _go_iso_, _sp_freq_ in this_sp_info.from_isomers.items()
-    #                             if _go_iso_ in within_isomer_ids}
+    #                             for _go_iso_, _sp_freq_ in this_sp_info.from_variants.items()
+    #                             if _go_iso_ in within_variant_ids}
     #             if not sub_from_iso:
     #                 # drop unsupported sub paths
     #                 continue
     #             else:
     #                 for go_isomer, sp_freq in sub_from_iso.items():
-    #                     total_starting_points += isomer_percents[go_isomer] * sp_freq * this_sp_info.num_possible_X
+    #                     total_starting_points += variant_percents[go_isomer] * sp_freq * this_sp_info.num_possible_X
     #         else:
-    #             for go_isomer, sp_freq in this_sp_info.from_isomers.items():
-    #                 total_starting_points += isomer_percents[go_isomer] * sp_freq * this_sp_info.num_possible_X
+    #             for go_isomer, sp_freq in this_sp_info.from_variants.items():
+    #                 total_starting_points += variant_percents[go_isomer] * sp_freq * this_sp_info.num_possible_X
     #         this_prob = total_starting_points / total_length
     #         loglike_expression += this_sp_info.num_matched * log_func(this_prob) + \
     #                               (this_sp_info.num_in_range - this_sp_info.num_matched) * log_func(1 - this_prob)
@@ -671,20 +673,20 @@ class Traversome(object):
     #     """
     #     if ext_component_proportions:
     #         assert isinstance(ext_component_proportions, OrderedDict)
-    #         self.component_proportions = ext_component_proportions
+    #         self.variant_proportions = ext_component_proportions
     #
-    #     self.component_paths = []  # each element is a tuple(path)
-    #     self.component_sizes = []
-    #     self.num_of_components = None
-    #     self.component_subpath_counters = OrderedDict()  # each value is a dict(sub_path->sub_path_counts)
+    #     self.variant_paths = []  # each element is a tuple(path)
+    #     self.variant_sizes = []
+    #     self.num_put_variants = None
+    #     self.variant_subpath_counters = OrderedDict()  # each value is a dict(sub_path->sub_path_counts)
     #     self.all_sub_paths = OrderedDict()
     #     self.sbp_to_sbp_id = {}
     #     self.observed_sbp_id_set = set()
     #     #
     #     self.be_unidentifiable_to = {}
-    #     # use the merged components to represent each set of components.
-    #     # within each set the components are unidentifiable to each other
-    #     self.merged_components = {}
+    #     # use the merged variants to represent each set of variants.
+    #     # within each set the variants are unidentifiable to each other
+    #     self.merged_variants = {}
     #
     #     for
 
@@ -693,24 +695,27 @@ class Traversome(object):
         return self.bayesian_fit.run_mcmc(self.kwargs["n_generations"], self.kwargs["n_burn"], chosen_ids=chosen_ids)
 
     def output_seqs(self):
-        out_seq_num = len([x for x in self.component_proportions.values() if x > self.out_prob_threshold])
+        out_seq_num = len([x for x in self.variant_proportions.values() if x > self.out_prob_threshold])
         out_digit = len(str(out_seq_num))
-        logger.info("Output {} seqs (%.4f to %.{}f): ".format(out_seq_num, len(str(self.out_prob_threshold)) - 2)
-                    % (max(self.component_proportions.values()), self.out_prob_threshold))
-        sorted_rank = sorted(list(self.component_proportions), key=lambda x: -self.component_proportions[x])
+        count_seq = 0
+        sorted_rank = sorted(list(self.variant_proportions), key=lambda x: -self.variant_proportions[x])
         # for go_isomer, this_prob in self.ext_component_proportions.items():
-        for count_seq, go_component_set in enumerate(sorted_rank):
-            this_prob = self.component_proportions[go_component_set]
+        for count_seq, go_variant_set in enumerate(sorted_rank):
+            this_prob = self.variant_proportions[go_variant_set]
             if this_prob > self.out_prob_threshold:
-                this_base_name = "component.%0{}i".format(out_digit) % (count_seq + 1)
+                this_base_name = "variant.%0{}i".format(out_digit) % (count_seq + 1)
                 seq_file_name = os.path.join(self.outdir, this_base_name + ".fasta")
                 with open(seq_file_name, "w") as output_handler:
-                    unidentifiable_ids = self.merged_components[go_component_set]
+                    if self.merged_variants:
+                        unidentifiable_ids = self.merged_variants[go_variant_set]
+                    else:
+                        # when self.generate_all_informative_sub_paths() was not called
+                        unidentifiable_ids = [go_variant_set]
                     len_un_id = len(unidentifiable_ids)
                     freq_mark = "@{}.".format(count_seq + 1) if len_un_id > 1 else ""
                     lengths = []
                     for go_ss, comp_id in enumerate(unidentifiable_ids):
-                        this_seq = self.graph.export_path(self.component_paths[comp_id])
+                        this_seq = self.graph.export_path(self.variant_paths[comp_id])
                         this_len = len(this_seq.seq)
                         lengths.append(this_len)
                         if freq_mark:
@@ -721,12 +726,17 @@ class Traversome(object):
                             seq_label = ">{} freq={:.4f} len={}bp".format(this_seq.label, this_prob, this_len)
                             logger.debug("{} path={}".format(this_base_name, this_seq.label))
                         output_handler.write(seq_label + "\n" + this_seq.seq + "\n")
-                    if len_un_id > 1:
-                        logger.info("{} freq:{:.4f} len:{} unidentifiable:{}".format(
-                            this_base_name, this_prob, "/".join([str(_l) for _l in lengths]), len_un_id))
-                    else:
-                        logger.info("{} freq:{:.4f} len:{}".format(
-                            this_base_name, this_prob, "/".join([str(_l) for _l in lengths])))
+                        count_seq += 1
+                    logger.info("{}x{} freq:{:.4f} len:{}".format(
+                        this_base_name, len_un_id, this_prob, "/".join([str(_l) for _l in lengths])))
+                    # if len_un_id > 1:
+                    #     logger.info("{} freq:{:.4f} len:{} unidentifiable:{}".format(
+                    #         this_base_name, this_prob, "/".join([str(_l) for _l in lengths]), len_un_id))
+                    # else:
+                    #     logger.info("{} freq:{:.4f} len:{}".format(
+                    #         this_base_name, this_prob, "/".join([str(_l) for _l in lengths])))
+        logger.info("Output {} seqs (%.4f to %.{}f): ".format(count_seq, len(str(self.out_prob_threshold)) - 2)
+                    % (max(self.variant_proportions.values()), self.out_prob_threshold))
 
     def shuffled(self, sorted_list):
         sorted_list = deepcopy(sorted_list)
@@ -744,7 +754,7 @@ class Traversome(object):
                     "sink": sys.stdout, 
                     "format": (
                         "{time:YYYY-MM-DD-HH:mm:ss.SS} | "
-                        "<magenta>{file: >30} | </magenta>"
+                        "<magenta>{file: >20} | </magenta>"
                         "<cyan>{function: <30} | </cyan>"
                         "<level>{message}</level>"
                     ),
@@ -753,7 +763,7 @@ class Traversome(object):
                 {
                     "sink": self.logfile,                   
                     "format": "{time:YYYY-MM-DD-HH:mm:ss.SS} | "
-                              "<magenta>{file: >30} | </magenta>"
+                              "<magenta>{file: >20} | </magenta>"
                               "<cyan>{function: <30} | </cyan>"
                               "<level>{message}</level>",
                     "level": loglevel,

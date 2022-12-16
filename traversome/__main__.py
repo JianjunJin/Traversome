@@ -13,7 +13,7 @@ from traversome import __version__
 
 # add the -h option for showing help
 CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
-RUNNING_HEAD = f"traversome (v.{__version__}): genomic isomer frequency estimator"
+RUNNING_HEAD = f"traversome (v.{__version__}): genomic variant frequency estimator"
 RUNNING_ENV_INFO = \
     "\n" \
     "Python " + str(sys.version).replace("\n", " ") + "\n" + \

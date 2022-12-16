@@ -14,18 +14,18 @@ np.seterr(divide="ignore", invalid="ignore")
 
 class ModelFitMaxLike(object):
     """
-    Find the parameters (isomer proportions) to maximize the likelihood
+    Find the parameters (variant proportions) to maximize the likelihood
     """
     def __init__(self, traversome_obj):
         self.traversome = traversome_obj
-        self.num_of_isomers = traversome_obj.num_of_components
+        self.num_put_variants = traversome_obj.num_put_variants
         # self.all_sub_paths = traversome_obj.all_sub_paths
         # self.graph = traversome_obj.graph
-        # self.isomer_sizes = traversome_obj.component_sizes
+        # self.variant_sizes = traversome_obj.variant_sizes
         # self.align_len_at_path_sorted = traversome_obj.align_len_at_path_sorted
 
         # to be generated
-        self.isomer_percents = None
+        self.variant_percents = None
 
         # res without model selection
         self.pe_neg_loglike_function = None
@@ -33,20 +33,20 @@ class ModelFitMaxLike(object):
 
     def point_estimate(self,
                        chosen_ids: typingODict[int, bool] = None):
-        # self.isomer_percents = [sympy.Symbol("P" + str(isomer_id)) for isomer_id in range(self.num_of_components)]
+        # self.variant_percents = [sympy.Symbol("P" + str(variant_id)) for variant_id in range(self.num_put_variants)]
         if chosen_ids:
-            chosen_ids = OrderedDict([(self.traversome.be_unidentifiable_to[isomer_id], True)
-                                      for isomer_id in chosen_ids])
+            chosen_ids = OrderedDict([(self.traversome.be_unidentifiable_to[variant_id], True)
+                                      for variant_id in chosen_ids])
         else:
-            chosen_ids = OrderedDict([(isomer_id, True) for isomer_id in self.traversome.merged_components])
-        # Because many traversome attributes including subpath information were created using the original component
+            chosen_ids = OrderedDict([(variant_id, True) for variant_id in self.traversome.merged_variants])
+        # Because many traversome attributes including subpath information were created using the original variant
         # ids, so here we prefer not making traversome.get_multinomial_like_formula complicated. Instead, we create
-        # isomer_percents with foo values inserted when that component id is not in chosen_ids.
-        self.isomer_percents = [symengine.Symbol("P" + str(isomer_id)) if isomer_id in chosen_ids else False
-                                for isomer_id in range(self.num_of_isomers)]
+        # variant_percents with foo values inserted when that variant id is not in chosen_ids.
+        self.variant_percents = [symengine.Symbol("P" + str(variant_id)) if variant_id in chosen_ids else False
+                                 for variant_id in range(self.num_put_variants)]
         logger.info("Generating the likelihood function .. ")
         self.pe_neg_loglike_function = self.get_neg_likelihood_of_iso_freq(
-            within_isomer_ids=set(chosen_ids))\
+            within_variant_ids=set(chosen_ids))\
             .loglike_func
         logger.info("Maximizing the likelihood function .. ")
         success_run = self.minimize_neg_likelihood(
@@ -74,39 +74,39 @@ class ModelFitMaxLike(object):
         """
         diff_tolerance = 1e-9
         if chosen_ids:
-            chosen_ids = OrderedDict([(self.traversome.be_unidentifiable_to[isomer_id], True)
-                                      for isomer_id in chosen_ids])
+            chosen_ids = OrderedDict([(self.traversome.be_unidentifiable_to[variant_id], True)
+                                      for variant_id in chosen_ids])
         else:
-            chosen_ids = OrderedDict([(isomer_id, True) for isomer_id in self.traversome.merged_components])
-        # Because many traversome attributes including subpath information were created using the original component
+            chosen_ids = OrderedDict([(variant_id, True) for variant_id in self.traversome.merged_variants])
+        # Because many traversome attributes including subpath information were created using the original variant
         # ids, so here we prefer not making traversome.get_multinomial_like_formula complicated. Instead, we create
-        # isomer_percents with foo values inserted when that component id is not in chosen_ids.
-        self.isomer_percents = [symengine.Symbol("P" + str(isomer_id)) if isomer_id in chosen_ids else False
-                                for isomer_id in range(self.num_of_isomers)]
-        logger.debug("Test components {}".format(list(chosen_ids)))
+        # variant_percents with foo values inserted when that variant id is not in chosen_ids.
+        self.variant_percents = [symengine.Symbol("P" + str(variant_id)) if variant_id in chosen_ids else False
+                                 for variant_id in range(self.num_put_variants)]
+        logger.debug("Test variants {}".format(list(chosen_ids)))
         previous_prop, previous_echo, previous_like, previous_criteria = \
             self.__compute_like_and_criteria(chosen_id_set=set(chosen_ids), criteria=criterion)
         # logger.info("Proportions: %s " % {_iid: previous_prop[_gid] for _gid, _iid in enumerate(chosen_ids)})
         # logger.info("Log-likelihood: %s" % previous_like)
-        # drop zero prob component
-        self.__drop_zero_components(chosen_ids, previous_prop, previous_echo, diff_tolerance)
+        # drop zero prob variant
+        self.__drop_zero_variants(chosen_ids, previous_prop, previous_echo, diff_tolerance)
         # stepwise
         while len(chosen_ids) > 1:
-            logger.debug("Trying dropping {} component(s) ..".format(self.num_of_isomers - len(chosen_ids) + 1))
+            logger.debug("Trying dropping {} variant(s) ..".format(self.num_put_variants - len(chosen_ids) + 1))
             test_id_res = OrderedDict()
             # chosen_this_round = set()
             for iso_id in chosen_ids:
                 testing_ids = set(chosen_ids) - {iso_id}
                 if self.traversome.cover_all_observed_sp(testing_ids):
                     logger.debug(
-                        "Test components [{}] - {}".
+                        "Test variants [{}] - {}".
                         format(", ".join([self.__str_rep_id(_c_i) for _c_i in chosen_ids]), self.__str_rep_id(iso_id)))
                     res_list = self.__compute_like_and_criteria(chosen_id_set=testing_ids, criteria=criterion)
                     test_id_res[iso_id] = \
                         {"prop": res_list[0], "echo": res_list[1], "loglike": res_list[2], criterion: res_list[3]}
                 else:
                     logger.debug(
-                        "Test components [{}] - {}: skipped for necessary subpath(s)"
+                        "Test variants [{}] - {}: skipped for necessary subpath(s)"
                         .format(", ".join([self.__str_rep_id(_c_i) for _c_i in chosen_ids]), self.__str_rep_id(iso_id)))
             if test_id_res:
                 best_drop_id, best_val = sorted([[_go_iso_, test_id_res[_go_iso_][criterion]]
@@ -121,11 +121,11 @@ class ModelFitMaxLike(object):
                     logger.info("Drop id_{}".format(self.__str_rep_id(best_drop_id)))
                     logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
                     logger.info("Log-likelihood: %s" % previous_like)
-                    self.__drop_zero_components(chosen_ids, previous_prop, previous_echo, diff_tolerance)
+                    self.__drop_zero_variants(chosen_ids, previous_prop, previous_echo, diff_tolerance)
                     # for iso_id in list(chosen_ids):
                     #     if abs(previous_prop[iso_id] - 0.) < diff_tolerance:
                     #         del chosen_ids[iso_id]
-                    #         for uid_iso_id in self.traversome.merged_components[iso_id]:
+                    #         for uid_iso_id in self.traversome.merged_variants[iso_id]:
                     #             del previous_prop[uid_iso_id]
                     #         del previous_echo[self.__str_rep_id(iso_id)]
                     #         logger.info("Drop {}".format(self.__str_rep_id(iso_id)))
@@ -141,11 +141,11 @@ class ModelFitMaxLike(object):
         logger.info("Log-likelihood: %s" % previous_like)
         return previous_prop
 
-    def __drop_zero_components(self, chosen_ids, representative_props, echo_props, diff_tolerance):
+    def __drop_zero_variants(self, chosen_ids, representative_props, echo_props, diff_tolerance):
         for iso_id in list(chosen_ids):
             if abs(representative_props[iso_id] - 0.) < diff_tolerance:
                 del chosen_ids[iso_id]
-                for uid_iso_id in self.traversome.merged_components[iso_id]:
+                for uid_iso_id in self.traversome.merged_variants[iso_id]:
                     del representative_props[uid_iso_id]
                 del echo_props[self.__str_rep_id(iso_id)]
                 logger.info("Drop id_{}".format(self.__str_rep_id(iso_id)))
@@ -153,8 +153,8 @@ class ModelFitMaxLike(object):
     def __compute_like_and_criteria(self, chosen_id_set, criteria):
         logger.debug("Generating the likelihood function .. ")
         neg_loglike_func_obj = self.get_neg_likelihood_of_iso_freq(
-            within_isomer_ids=chosen_id_set)
-        logger.info("Maximizing the likelihood function for {} components".format(len(chosen_id_set)))
+            within_variant_ids=chosen_id_set)
+        logger.info("Maximizing the likelihood function for {} variants".format(len(chosen_id_set)))
         success_run = self.minimize_neg_likelihood(
             neg_loglike_func=neg_loglike_func_obj.loglike_func,
             num_variables=len(chosen_id_set),
@@ -185,13 +185,13 @@ class ModelFitMaxLike(object):
     def __summarize_run_prop(self, success_run, within_iso_ids=None):
         prop_dict = {}
         if within_iso_ids:
-            representatives = [rep_id for rep_id in self.traversome.merged_components if rep_id in within_iso_ids]
+            representatives = [rep_id for rep_id in self.traversome.merged_variants if rep_id in within_iso_ids]
         else:
-            representatives = list(self.traversome.merged_components)
+            representatives = list(self.traversome.merged_variants)
         echo_prop = OrderedDict()
         for go, this_prop in enumerate(success_run.x):
             echo_prop[self.__str_rep_id(representatives[go])] = this_prop
-            unidentifiable_iso_ids = self.traversome.merged_components[representatives[go]]
+            unidentifiable_iso_ids = self.traversome.merged_variants[representatives[go]]
             this_prop /= len(unidentifiable_iso_ids)
             for uid_iso_id in unidentifiable_iso_ids:
                 prop_dict[uid_iso_id] = this_prop
@@ -199,24 +199,24 @@ class ModelFitMaxLike(object):
         return use_prop, echo_prop
 
     def __str_rep_id(self, rep_id):
-        return "+".join([str(_uid_iso_id) for _uid_iso_id in self.traversome.merged_components[rep_id]])
+        return "+".join([str(_uid_iso_id) for _uid_iso_id in self.traversome.merged_variants[rep_id]])
 
-    def get_neg_likelihood_of_iso_freq(self, within_isomer_ids=None, scipy_style=True):
+    def get_neg_likelihood_of_iso_freq(self, within_variant_ids=None, scipy_style=True):
         # log_like_formula = self.traversome.get_likelihood_binomial_formula(
-        #     self.isomer_percents,
+        #     self.variant_percents,
         #     log_func=sympy.log,
-        #     within_isomer_ids=within_isomer_ids)
+        #     within_variant_ids=within_variant_ids)
         log_like_formula = self.traversome.get_multinomial_like_formula(
-            self.isomer_percents,
+            self.variant_percents,
             # log_func=sympy.log,
             log_func=symengine.log,
-            within_isomer_ids=within_isomer_ids)
-        if within_isomer_ids is None:
-            within_isomer_ids = set(range(self.num_of_isomers))
+            within_variant_ids=within_variant_ids)
+        if within_variant_ids is None:
+            within_variant_ids = set(range(self.num_put_variants))
         # neg_likelihood_of_iso_freq = sympy.lambdify(
         neg_likelihood_of_iso_freq = symengine.lambdify(
-            args=[self.isomer_percents[isomer_id]
-                  for isomer_id in range(self.num_of_isomers) if isomer_id in within_isomer_ids],
+            args=[self.variant_percents[variant_id]
+                  for variant_id in range(self.num_put_variants) if variant_id in within_variant_ids],
             # expr=-log_like_formula.loglike_expression)
             exprs=[-log_like_formula.loglike_expression])
         logger.trace("Formula: {}".format(-log_like_formula.loglike_expression))
@@ -246,13 +246,13 @@ class ModelFitMaxLike(object):
             initials = np.random.random(num_variables)
             initials /= sum(initials)
             # logger.debug("initials", initials)
-            # np.full(shape=num_of_components, fill_value=float(1. / num_of_components), dtype=np.float)
+            # np.full(shape=num_put_variants, fill_value=float(1. / num_put_variants), dtype=np.float)
             result = optimize.minimize(
                 fun=neg_loglike_func,
                 x0=initials,
                 jac=False, method='SLSQP', bounds=[(0., 1.0)] * num_variables, constraints=constraints,
                 options=other_optimization_options)
-            # bounds=[(-1.0e-9, 1.0)] * num_isomers will violate bound constraints and cause ValueError
+            # bounds=[(-1.0e-9, 1.0)] * num_variants will violate bound constraints and cause ValueError
             if result.success:
                 success_runs.append(result)
                 if len(success_runs) > 5:

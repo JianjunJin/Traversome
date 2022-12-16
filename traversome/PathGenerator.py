@@ -17,10 +17,10 @@ import dill
 warnings.filterwarnings('ignore')
 
 
-class PathGeneratorGraphAlignment(object):
+class PathGenerator(object):
     """
-    generate heuristic components (isomers & sub-chromosomes) from alignments.
-    Here the components are not necessarily identical in contig composition.
+    generate heuristic variants (isomers & sub-chromosomes) from alignments.
+    Here the variants are not necessarily identical in contig composition.
     TODO automatically estimate num_search using convergence-test like approach
     """
 
@@ -97,19 +97,20 @@ class PathGeneratorGraphAlignment(object):
         #     OrderedDict([(_v, 1.) for _v in single_copy_vertices]) if single_copy_vertices \
         #         else OrderedDict()
         self.__candidate_single_copy_vs = set()
-        self.components = list()
-        self.components_counts = dict()
+        self.variants = list()
+        self.variants_counts = dict()
 
-    def generate_heuristic_components(self, num_processes=None):
+    def generate_heuristic_paths(self, num_processes=None):
         if num_processes is None:  # use the user input value if provided
             num_processes = self.num_processes
         assert num_processes >= 1
-        logger.info("generating heuristic components .. ")
+        logger.info("generating heuristic variants .. ")
         if not self.__read_paths_counter_indexed:
             self.index_readpaths_subpaths()
         if self.__use_alignment_cov:
             logger.debug("estimating contig coverages from read paths ..")
             self.estimate_contig_coverages_from_read_paths()
+            # TODO: remove low coverage contigs
         else:
             self.use_contig_coverage_from_assembly_graph()
         self.estimate_single_copy_vertices()
@@ -196,7 +197,7 @@ class PathGeneratorGraphAlignment(object):
         """
         Currently only use the connection information
 
-        TODO: use estimate component separation and multiplicity estimation to better estimate this
+        TODO: use estimate variant separation and multiplicity estimation to better estimate this
         """
         for go_v, v_name in enumerate(self.graph.vertex_info):
             if len(self.graph.vertex_info[v_name].connections[True]) < 2 and \
@@ -234,7 +235,7 @@ class PathGeneratorGraphAlignment(object):
             count_search += 1
             logger.debug("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
             # logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
-            #     len(self.components), count_valid, self.num_search, count_search))
+            #     len(self.variants), count_valid, self.num_search, count_search))
 
             is_circular_p = self.graph.is_circular_path(new_path)
             invalid_search = (self.force_circular and not is_circular_p) or \
@@ -255,22 +256,22 @@ class PathGeneratorGraphAlignment(object):
                     new_path_list = [new_path]
                 for new_path in new_path_list:
                     count_valid += 1
-                    if new_path in self.components_counts:
-                        self.components_counts[new_path] += 1
+                    if new_path in self.variants_counts:
+                        self.variants_counts[new_path] += 1
                         logger.debug("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                            len(self.components), count_valid, self.num_search, count_search))
+                            len(self.variants), count_valid, self.num_search, count_search))
                     else:
-                        self.components_counts[new_path] = 1
-                        self.components.append(new_path)
+                        self.variants_counts[new_path] = 1
+                        self.variants.append(new_path)
                         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                            len(self.components), count_valid, self.num_search, count_search))
+                            len(self.variants), count_valid, self.num_search, count_search))
                     if count_valid == self.num_search:
                         break
         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-            len(self.components), count_valid, self.num_search, count_search))
+            len(self.variants), count_valid, self.num_search, count_search))
 
     # TODO: modularize each traversal process as an independent run, communicating via files
-    def __heuristic_traversal_worker(self, components, components_counts, g_vars, lock, event):
+    def __heuristic_traversal_worker(self, variant, variants_counts, g_vars, lock, event):
         """
         single worker of traversal, called by self.get_heuristic_paths_multiprocessing
         starting a new process from dill dumped python object: slow
@@ -292,7 +293,7 @@ class PathGeneratorGraphAlignment(object):
             else:
                 new_path_list = []
             # >>>
-            # locking the counts and components
+            # locking the counts and variants
             lock.acquire()
             g_vars.count_search += 1
             logger.trace("    traversal {}: {}".format(g_vars.count_search, repr_path))
@@ -307,15 +308,15 @@ class PathGeneratorGraphAlignment(object):
                         break
                     else:
                         g_vars.count_valid += 1
-                        if new_path in components_counts:
-                            components_counts[new_path] += 1
+                        if new_path in variants_counts:
+                            variants_counts[new_path] += 1
                             logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                                len(components), g_vars.count_valid, self.num_search, g_vars.count_search))
+                                len(variant), g_vars.count_valid, self.num_search, g_vars.count_search))
                         else:
-                            components_counts[new_path] = 1
-                            components.append(new_path)
+                            variants_counts[new_path] = 1
+                            variant.append(new_path)
                             logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                                len(components), g_vars.count_valid, self.num_search, g_vars.count_search))
+                                len(variant), g_vars.count_valid, self.num_search, g_vars.count_search))
                 lock.release()
         # TODO: kill all other workers
 
@@ -325,8 +326,8 @@ class PathGeneratorGraphAlignment(object):
         starting a new process from dill dumped python object: slow
         """
         manager = Manager()
-        components_counts = manager.dict()
-        components = manager.list()
+        variants_counts = manager.dict()
+        variants = manager.list()
         global_vars = manager.Namespace()
         global_vars.count_search = 0
         global_vars.count_valid = 0
@@ -337,7 +338,7 @@ class PathGeneratorGraphAlignment(object):
         # dump function and args
         logger.info("Serializing the heuristic searching for multiprocessing ..")
         payload = dill.dumps((self.__heuristic_traversal_worker,
-                              (components, components_counts, global_vars, lock, event)))
+                              (variants, variants_counts, global_vars, lock, event)))
         # logger.info("Start generating candidate paths ..")
         jobs = []
         for g_p in range(num_proc):
@@ -353,14 +354,14 @@ class PathGeneratorGraphAlignment(object):
         event.wait()
         pool_obj.terminate()
         pool_obj.join()  # maybe no need to join
-        self.components_counts = dict(components_counts)
-        self.components = list(components)
+        self.variants_counts = dict(variants_counts)
+        self.variants = list(variants)
         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-            len(self.components), global_vars.count_valid, self.num_search, global_vars.count_search))
+            len(self.variants), global_vars.count_valid, self.num_search, global_vars.count_search))
 
     def __decompose_hetero_units(self, circular_path):
         """
-        Decompose a path that may be composed of multiple circular paths (units) containing similar components
+        Decompose a path that may be composed of multiple circular paths (units) containing similar variants
         e.g. 1,2,3,4,5,1,-3,-2,4,5 was composed of 1,2,3,4,5 and 1,-3,-2,4,5,
              when all contigs were likely to be single copy
         e.g. 1,2,3,2,3,7,5,1,-3,-2,-3,-2,8,5 was composed of 1,2,3,2,3,7,5 and 1,-3,-2,-3,-2,8,5,
@@ -468,7 +469,7 @@ class PathGeneratorGraphAlignment(object):
                     del sne_indices[0]
                 logger.trace("      sne_indices: {}".format(sne_indices))
 
-                # 3.2 try to decompose and calculate the shared components
+                # 3.2 try to decompose and calculate the shared variants
                 #     to determine whether those starts are qualified
                 #     to break the original path into units
                 for start_n_e, *s_indices in sne_indices:
@@ -476,16 +477,16 @@ class PathGeneratorGraphAlignment(object):
                     for from_id, to_id in zip(s_indices[:-1], s_indices[1:]):
                         units.append(circular_path[from_id:to_id])
                     units.append(circular_path[s_indices[-1]:] + circular_path[:s_indices[0]])
-                    component_counts = np.array([[_unit.count(v_n_e_)
-                                                  for v_n_e_ in unique_vne_list]
-                                                 for _unit in units])
-                    # idx_shared = (component_counts == component_counts[0]).all(axis=0)
-                    components_shared = component_counts.min(axis=0)
+                    variant_counts = np.array([[_unit.count(v_n_e_)
+                                                for v_n_e_ in unique_vne_list]
+                                                for _unit in units])
+                    # idx_shared = (variant_counts == variant_counts[0]).all(axis=0)
+                    variants_shared = variant_counts.min(axis=0)
                     # logger.info("idx_shared ({}): {}".format(len(idx_shared), idx_shared))
-                    # logger.info("component_counts[0] ({}): {}".format(len(component_counts[0]), component_counts[0]))
+                    # logger.info("variant_counts[0] ({}): {}".format(len(variant_counts[0]), variant_counts[0]))
                     # logger.info("v_lengths ({}): {}".format(len(v_lengths), v_lengths))
                     shared_len = \
-                        num_units * sum(components_shared * v_lengths) / total_base_len
+                        num_units * sum(variants_shared * v_lengths) / total_base_len
                     logger.trace("      shared_len: {}".format(shared_len))
                     if shared_len > self.__min_unit_similarity:
                         this_scheme = tuple(sorted([self.graph.get_standardized_path_circ(self.graph.roll_path(_unit))
@@ -497,11 +498,11 @@ class PathGeneratorGraphAlignment(object):
 
             # 3.3 calculate the support from read paths
             circular_units = []
-            original_sub_paths = set(self.tvs.get_component_sub_paths(circular_path))
+            original_sub_paths = set(self.tvs.get_variant_sub_paths(circular_path))
             for this_scheme in qualified_schemes:
                 these_sub_paths = set()
                 for this_unit in this_scheme:
-                    these_sub_paths |= set(self.tvs.get_component_sub_paths(this_unit))
+                    these_sub_paths |= set(self.tvs.get_variant_sub_paths(this_unit))
                 if original_sub_paths - these_sub_paths:
                     # the original one contains unique subpath(s)
                     continue
@@ -521,7 +522,7 @@ class PathGeneratorGraphAlignment(object):
 
     # def __decompose_hetero_units_old(self, circular_path):
     #     """
-    #     Decompose a path that may be composed of multiple circular paths (units), which shared the same components
+    #     Decompose a path that may be composed of multiple circular paths (units), which shared the same variants
     #     e.g. 1,2,3,4,5,1,-3,-2,4,5 was composed of 1,2,3,4,5 and 1,-3,-2,4,5
     #     """
     #     def get_v_counts(_path): return [_path.count(_v_name) for _v_name in self.graph.vertex_info]
@@ -562,9 +563,9 @@ class PathGeneratorGraphAlignment(object):
     #             for go_unit in range(int(gcd/unit_copy_num)):
     #                 go_from__ = try_start + unit_len * unit_copy_num * go_unit
     #                 go_to__ = try_start + unit_len * unit_copy_num * (go_unit + 1)
-    #                 component_path = path_shuffled[go_from__: go_to__]
-    #                 if self.graph.is_circular_path(component_path):
-    #                     return_list.append(self.graph.get_standardized_path_circ(component_path))
+    #                 variant_path = path_shuffled[go_from__: go_to__]
+    #                 if self.graph.is_circular_path(variant_path):
+    #                     return_list.append(self.graph.get_standardized_path_circ(variant_path))
     #             return return_list
     #         else:
     #             return [circular_path]
@@ -579,7 +580,7 @@ class PathGeneratorGraphAlignment(object):
         improvement needed
         :param path: empty path like [] or starting path like [("v1", True), ("v2", False)]
         :param not_do_reverse: mainly for iteration, a mark to stop searching from the reverse end
-        :return: a candidate component. e.g. [("v0", True), ("v1", True), ("v2", False), ("v3", True)]
+        :return: a candidate variant path. e.g. [("v0", True), ("v1", True), ("v2", False), ("v3", True)]
         """
         if not path:
             # randomly choose the read path and the direction
@@ -1117,11 +1118,11 @@ class PathGeneratorGraphAlignment(object):
     #         self, ongoing_paths, next_connections, vertices_left, in_all_start_ve):
     #     if not vertices_left:
     #         new_paths, new_standardized = self.graph.get_standardized_isomer(ongoing_paths)
-    #         if new_standardized not in self.components_counts:
-    #             self.components_counts[new_standardized] = 1
-    #             self.components.append(new_standardized)
+    #         if new_standardized not in self.variants_counts:
+    #             self.variants_counts[new_standardized] = 1
+    #             self.variants.append(new_standardized)
     #         else:
-    #             self.components_counts[new_standardized] += 1
+    #             self.variants_counts[new_standardized] += 1
     #         return
     #
     #     find_next = False
@@ -1138,11 +1139,11 @@ class PathGeneratorGraphAlignment(object):
     #             new_connections = sorted(self.graph.vertex_info[next_vertex].connections[not next_end])
     #             if not new_left:
     #                 new_paths, new_standardized = self.graph.get_standardized_isomer(new_paths)
-    #                 if new_standardized not in self.components_counts:
-    #                     self.components_counts[new_standardized] = 1
-    #                     self.components.append(new_standardized)
+    #                 if new_standardized not in self.variants_counts:
+    #                     self.variants_counts[new_standardized] = 1
+    #                     self.variants.append(new_standardized)
     #                 else:
-    #                     self.components_counts[new_standardized] += 1
+    #                     self.variants_counts[new_standardized] += 1
     #                 return
     #             else:
     #                 self.__directed_graph_solver(new_paths, new_connections, new_left, in_all_start_ve)
@@ -1160,11 +1161,11 @@ class PathGeneratorGraphAlignment(object):
     #                 new_connections = sorted(self.graph.vertex_info[new_start_vertex].connections[new_start_end])
     #                 if not new_left:
     #                     new_paths, new_standardized = self.graph.get_standardized_isomer(new_paths)
-    #                     if new_standardized not in self.components_counts:
-    #                         self.components_counts[new_standardized] = 1
-    #                         self.components.append(new_standardized)
+    #                     if new_standardized not in self.variants_counts:
+    #                         self.variants_counts[new_standardized] = 1
+    #                         self.variants.append(new_standardized)
     #                     else:
-    #                         self.components_counts[new_standardized] += 1
+    #                         self.variants_counts[new_standardized] += 1
     #                 else:
     #                     self.__directed_graph_solver(new_paths, new_connections, new_left, new_all_start_ve)
     #                     break
@@ -1199,18 +1200,18 @@ class PathGeneratorGraphAlignment(object):
     #                 this_path_derived.append(new_path[change_start:] + new_path[:change_start])
     #                 this_path_derived.append(rev_path[change_start:] + rev_path[:change_start])
     #             standardized_path = tuple(sorted(this_path_derived)[0])
-    #             if standardized_path not in self.components_counts:
-    #                 self.components_counts[standardized_path] = 1
-    #                 self.components.append(standardized_path)
+    #             if standardized_path not in self.variants_counts:
+    #                 self.variants_counts[standardized_path] = 1
+    #                 self.variants.append(standardized_path)
     #             else:
-    #                 self.components_counts[standardized_path] += 1
+    #                 self.variants_counts[standardized_path] += 1
     #         else:
     #             new_path = tuple(new_path)
-    #             if new_path not in self.components_counts:
-    #                 self.components_counts[new_path] = 1
-    #                 self.components.append(new_path)
+    #             if new_path not in self.variants_counts:
+    #                 self.variants_counts[new_path] = 1
+    #                 self.variants.append(new_path)
     #             else:
-    #                 self.components_counts[new_path] += 1
+    #                 self.variants_counts[new_path] += 1
     #         return
     #
     #     for next_vertex, next_end in next_connections:
@@ -1236,18 +1237,18 @@ class PathGeneratorGraphAlignment(object):
     #                             this_path_derived.append(new_path[change_start:] + new_path[:change_start])
     #                             this_path_derived.append(rev_path[change_start:] + rev_path[:change_start])
     #                         standardized_path = tuple(sorted(this_path_derived)[0])
-    #                         if standardized_path not in self.components_counts:
-    #                             self.components_counts[standardized_path] = 1
-    #                             self.components.append(standardized_path)
+    #                         if standardized_path not in self.variants_counts:
+    #                             self.variants_counts[standardized_path] = 1
+    #                             self.variants.append(standardized_path)
     #                         else:
-    #                             self.components_counts[standardized_path] += 1
+    #                             self.variants_counts[standardized_path] += 1
     #                     else:
     #                         new_path = tuple(new_path)
-    #                         if new_path not in self.components_counts:
-    #                             self.components_counts[new_path] = 1
-    #                             self.components.append(new_path)
+    #                         if new_path not in self.variants_counts:
+    #                             self.variants_counts[new_path] = 1
+    #                             self.variants.append(new_path)
     #                         else:
-    #                             self.components_counts[new_path] += 1
+    #                             self.variants_counts[new_path] += 1
     #                     return
     #                 else:
     #                     return

@@ -10,10 +10,10 @@ from copy import deepcopy
 from collections import OrderedDict
 from loguru import logger
 from traversome.AssemblySimple import AssemblySimple #, VertexMergingHistory, VertexEditHistory
-from traversome.PathGeneratorGraphOnly import PathGeneratorGraphOnly
-from traversome.PathGeneratorGraphAlignment import PathGeneratorGraphAlignment
-from traversome.EstMultiplicityFromCov import EstMultiplicityFromCov
-from traversome.EstMultiplicityPrecise import EstMultiplicityPrecise
+# from traversome.PathGeneratorGraphOnly import PathGeneratorGraphOnly
+from traversome.PathGenerator import PathGenerator
+# from traversome.EstMultiplicityFromCov import EstMultiplicityFromCov
+# from traversome.EstMultiplicityPrecise import EstMultiplicityPrecise
 from traversome.utils import (
     Sequence, SequenceList, 
     ProcessingGraphFailed, 
@@ -584,52 +584,52 @@ class Assembly(AssemblySimple):
             corrected_path = tuple(input_path)
         return corrected_path
 
-    def estimate_multiplicity_by_cov(
-            self,
-            limited_vertices=None,
-            given_average_cov=None,
-            mode="embplant_pt",
-            re_initialize=False):
-        """
-        Use seq coverage data to estimate copy and depth.
-        :param limited_vertices: vertex scope, default: all vertices
-        :param given_average_cov: user-defined average depth
-        :param mode: genome type
-        :param re_initialize: reinitialize
-        """
-        EstMultiplicityFromCov(graph=self,
-                               verts=limited_vertices,
-                               avgcov=given_average_cov,
-                               mode=mode,
-                               reinit=re_initialize).run()
-
-    def estimate_multiplicity_precisely(
-            self,
-            # ave_depth,
-            maximum_copy_num=8,
-            broken_graph_allowed=False,
-            return_new_graphs=False,
-            target_name_for_log="target",
-            debug=False):
-        """
-
-        :param maximum_copy_num:
-        :param broken_graph_allowed:
-        :param return_new_graphs: return result if True else record res in current graph obj
-        :param target_name_for_log: str
-        :param debug: pass to scipy.optimize.minimize etc.
-        :return:
-        """
-        res = EstMultiplicityPrecise(
-            graph=self,
-            # ave_depth=ave_depth,
-            maximum_copy_num=maximum_copy_num,
-            broken_graph_allowed=broken_graph_allowed,
-            return_new_graphs=return_new_graphs,
-            label=target_name_for_log,
-            debug=debug).run()
-        if return_new_graphs:
-            return res
+    # def estimate_multiplicity_by_cov(
+    #         self,
+    #         limited_vertices=None,
+    #         given_average_cov=None,
+    #         mode="embplant_pt",
+    #         re_initialize=False):
+    #     """
+    #     Use seq coverage data to estimate copy and depth.
+    #     :param limited_vertices: vertex scope, default: all vertices
+    #     :param given_average_cov: user-defined average depth
+    #     :param mode: genome type
+    #     :param re_initialize: reinitialize
+    #     """
+    #     EstMultiplicityFromCov(graph=self,
+    #                            verts=limited_vertices,
+    #                            avgcov=given_average_cov,
+    #                            mode=mode,
+    #                            reinit=re_initialize).run()
+    #
+    # def estimate_multiplicity_precisely(
+    #         self,
+    #         # ave_depth,
+    #         maximum_copy_num=8,
+    #         broken_graph_allowed=False,
+    #         return_new_graphs=False,
+    #         target_name_for_log="target",
+    #         debug=False):
+    #     """
+    #
+    #     :param maximum_copy_num:
+    #     :param broken_graph_allowed:
+    #     :param return_new_graphs: return result if True else record res in current graph obj
+    #     :param target_name_for_log: str
+    #     :param debug: pass to scipy.optimize.minimize etc.
+    #     :return:
+    #     """
+    #     res = EstMultiplicityPrecise(
+    #         graph=self,
+    #         # ave_depth=ave_depth,
+    #         maximum_copy_num=maximum_copy_num,
+    #         broken_graph_allowed=broken_graph_allowed,
+    #         return_new_graphs=return_new_graphs,
+    #         label=target_name_for_log,
+    #         debug=debug).run()
+    #     if return_new_graphs:
+    #         return res
 
     def tag_in_between(self, database_n):
         # add those in between the tagged vertices to tagged_vertices, which offered the only connection
@@ -889,7 +889,7 @@ class Assembly(AssemblySimple):
     #     :param force_circular
     #     :param hetero_chromosome
     #     """
-    #     generator = PathGeneratorGraphAlignment(
+    #     generator = PathGenerator(
     #         assembly_graph=self,
     #         graph_alignment=graph_alignment,
     #         num_search=num_search,
@@ -898,29 +898,29 @@ class Assembly(AssemblySimple):
     #         hetero_chromosome=hetero_chromosome,
     #         random_obj=random_obj)
     #     generator.generate_heuristic_components()
-    #     return generator.components
+    #     return generator.variants
 
-    def find_all_circular_isomers(self, mode="embplant_pt", re_estimate_multiplicity=False):
-        """
-        :param mode:
-        :param library_info: not used currently
-        :return: sorted_paths
-        """
-        generator = PathGeneratorGraphOnly(
-            graph=self,
-            mode=mode,
-            re_estimate_multiplicity=re_estimate_multiplicity)
-        generator.find_all_circular_isomers()
-        return generator.components
+    # def find_all_circular_isomers(self, mode="embplant_pt", re_estimate_multiplicity=False):
+    #     """
+    #     :param mode:
+    #     :param library_info: not used currently
+    #     :return: sorted_paths
+    #     """
+    #     generator = PathGeneratorGraphOnly(
+    #         graph=self,
+    #         mode=mode,
+    #         re_estimate_multiplicity=re_estimate_multiplicity)
+    #     generator.find_all_circular_isomers()
+    #     return generator.variants
 
-    def find_all_isomers(self, mode="embplant_pt"):
-        """
-        :param mode:
-        :return: sorted_paths
-        """
-        generator = PathGeneratorGraphOnly(graph=self, mode=mode)
-        generator.find_all_isomers()
-        return generator.components
+    # def find_all_isomers(self, mode="embplant_pt"):
+    #     """
+    #     :param mode:
+    #     :return: sorted_paths
+    #     """
+    #     generator = PathGeneratorGraphOnly(graph=self, mode=mode)
+    #     generator.find_all_isomers()
+    #     return generator.variants
 
     def is_circular_path(self, input_path):
         return (input_path[0][0], not input_path[0][1]) in \
@@ -1091,11 +1091,11 @@ class Assembly(AssemblySimple):
             standard_id = sorted([0, 1], key=lambda x: [forward_path, reverse_path][x])[0]
             return tuple([forward_path, reverse_path][standard_id]), standard_id == 0
 
-    def get_standardized_isomer(self, isomer_raw_paths):
+    def get_standardized_variant(self, v_raw_paths):
         """
-        standardized for comparing and identify unique isomer, similar to self.get_standardized_path()
-        :param raw_path: isomer=[path, path, path]
-        :return: isomer_with_only_palindromic_corrected, standardized_isomer
+        standardized for comparing and identify unique variant, similar to self.get_standardized_path()
+        :param v_raw_paths: [path, path, path]
+        :return: variant_with_only_palindromic_corrected, standardized_variant
         """
 
         # detect palindromic_repeats if not detected yet
@@ -1103,17 +1103,17 @@ class Assembly(AssemblySimple):
             self.detect_palindromic_repeats()
         # if there are palindromic repeats, correct the palindromic node direction into True
         if self.palindromic_repeats:
-            corrected_isomer = [
+            corrected_variant = [
                 [(this_v, True) if this_v in self.palindromic_repeats
                  else (this_v, this_e) for this_v, this_e in path_part]
-                for path_part in isomer_raw_paths
+                for path_part in v_raw_paths
             ]
         else:
-            corrected_isomer = deepcopy(isomer_raw_paths)
+            corrected_variant = deepcopy(v_raw_paths)
 
         # ...
-        here_standardized_isomer = []
-        for part_path in corrected_isomer:
+        here_standardized_variant = []
+        for part_path in corrected_variant:
 
             # ...
             rev_part = self.reverse_path(part_path)
@@ -1130,9 +1130,9 @@ class Assembly(AssemblySimple):
                 standard_part = tuple(sorted([part_path, rev_part])[0])
 
             # store this part in the path
-            here_standardized_isomer.append(standard_part)
+            here_standardized_variant.append(standard_part)
 
-        return corrected_isomer, tuple(sorted(here_standardized_isomer))  # , key=lambda x: smart_trans_for_sort(x)
+        return corrected_variant, tuple(sorted(here_standardized_variant))  # , key=lambda x: smart_trans_for_sort(x)
 
     def get_num_of_possible_alignment_start_points(self, read_len, align_to_path, path_internal_len):
         """
