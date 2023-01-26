@@ -7,7 +7,11 @@ For more details on each step of this analysis see the relevant section of
 of the documentation.
 
 ### The Dataset
-The kakapo genome ...
+The kakapo genome was sequenced and assembled as part of the [Vertebrate Genome
+Project (VGP)](...) as described in a recent paper (... et al. ...). In this
+paper the kakapo was highlighted as an example for which the mitochondrial
+genome assembly exhibited evidence of heteroplasmy...
+
 
 ### Assembly Graph Estimation
 For this sample data high depth sequencing data is available in the form of 
@@ -17,7 +21,7 @@ infer an accurate assembly graph representing all contigs in the genome,
 and evidence of connections between them. 
 
 ### Assembly Graph Visualization
-...
+... more details.
 
 ### Graph Alignment Mapping
 ...
