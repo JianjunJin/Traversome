@@ -817,10 +817,22 @@ class PathGenerator(object):
             if not self.__read_paths_not_in_variants:
                 break
             else:
+                # print(self.tvs.variant_subpath_counters)
+                # print(len(self.__read_paths_not_in_variants))
+                # print(self.__read_paths_not_in_variants)
                 for variant_path in self.variants[previous_len_variant:]:
+                    # print("variant_path", variant_path)
                     for sub_path in self.tvs.get_variant_sub_paths(variant_path):
+                        # print("check subpath", sub_path)
                         if sub_path in self.__read_paths_not_in_variants:
                             self.__read_paths_not_in_variants.discard(sub_path)
+                    # the current get_variant_sub_paths function only consider subpaths with length > 1
+                    # TODO: get subpath adaptive to length=1, more general and less restrictions
+                    # after which the following block can be removed
+                    for single_v, single_e in variant_path:
+                        single_sbp = ((single_v, False), )
+                        if single_sbp in self.__read_paths_not_in_variants:
+                            self.__read_paths_not_in_variants.discard(single_sbp)
                     if not self.__read_paths_not_in_variants:
                         break
                 if not self.__read_paths_not_in_variants:
