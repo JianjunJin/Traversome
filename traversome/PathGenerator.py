@@ -844,7 +844,8 @@ class PathGenerator(object):
                 #     a==-log(p)
                 # we want the fraction in gaps to be smaller than 1/len(self.read_paths), e.g. 0.5/len(self.read_paths)
                 current_ratio = len(self.__read_paths_not_in_variants) / len(self.read_paths)
-                logger.info("uncovered_paths/all_paths = %.4f" % current_ratio)
+                logger.info("uncovered_paths/all_paths = %i/%i = %.4f" %
+                            (len(self.__read_paths_not_in_variants), len(self.read_paths), current_ratio))
                 self.num_valid_search *= log(0.5 / len(self.read_paths)) / log(current_ratio)
                 self.num_valid_search = int(self.num_valid_search)
                 logger.info("resetting num_valid_search={}".format(self.num_valid_search))
