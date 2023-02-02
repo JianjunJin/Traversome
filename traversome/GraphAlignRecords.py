@@ -129,6 +129,7 @@ class SPATSVRecord(object):
         return path_list
 
 
+# TODO parallelize parsing
 class GraphAlignRecords(object):
     """
     Stores GraphAlign records...
@@ -174,7 +175,13 @@ class GraphAlignRecords(object):
         logger.info("Parsing alignment ({})".format(self.alignment_format))
         self.parse_alignment_file()
 
-    def parse_alignment_file(self):
+    def parse_alignment_file(self, n_proc=1):
+        if n_proc == 1:
+            self.parse_alignment_file_single()
+        else:
+            pass
+
+    def parse_alignment_file_single(self):
         """
 
         """
@@ -239,35 +246,46 @@ class GraphAlignRecords(object):
                     while go_r < len(self.records):
                         gaf_record = self.records[go_r]
                         if len(gaf_record.path) > 1:
-                            # if path did not reach out the overlap region between the terminal vertex and
-                            # the neighboring internal vertex, the terminal vertex should be trimmed from the path
-                            head_vertex_len = self.assembly_graph.vertex_info[gaf_record.path[0][0]].len
-                            tail_vertex_len = self.assembly_graph.vertex_info[gaf_record.path[-1][0]].len
-                            if head_vertex_len - gaf_record.p_start - 1 <= this_overlap:
-                                del gaf_record.path[0]
-                            if tail_vertex_len - (gaf_record.p_len - gaf_record.p_end - 1) <= this_overlap:
-                                del gaf_record.path[-1]
-                            if not gaf_record.path:
-                                del self.records[go_r]
+                            head_v = gaf_record.path[0][0]
+                            tail_v = gaf_record.path[-1][0]
+                            # if head_v or tail_v does not appear in the graph, delete current record
+                            if head_v in self.assembly_graph.vertex_info and tail_v in self.assembly_graph.vertex_info:
+                                # if path did not reach out the overlap region between the terminal vertex and
+                                # the neighboring internal vertex, the terminal vertex should be trimmed from the path
+                                head_vertex_len = self.assembly_graph.vertex_info[head_v].len
+                                tail_vertex_len = self.assembly_graph.vertex_info[tail_v].len
+                                if head_vertex_len - gaf_record.p_start - 1 <= this_overlap:
+                                    del gaf_record.path[0]
+                                if tail_vertex_len - (gaf_record.p_len - gaf_record.p_end - 1) <= this_overlap:
+                                    del gaf_record.path[-1]
+                                if not gaf_record.path:
+                                    del self.records[go_r]
+                                else:
+                                    go_r += 1
                             else:
-                                go_r += 1
+                                del self.records[go_r]
                         else:
                             go_r += 1
                 else:
                     while go_r < len(self.records):
                         spa_tsv_record = self.records[go_r]
                         if len(spa_tsv_record.path) > 1:
-                            # if path did not reach out the overlap region between the terminal vertex and
-                            # the neighboring internal vertex, the terminal vertex should be trimmed from the path
-                            head_vertex_len = self.assembly_graph.vertex_info[spa_tsv_record.path[0][0]].len
-                            if head_vertex_len - spa_tsv_record.p_start - 1 <= this_overlap:
-                                del spa_tsv_record.path[0]
-                            if spa_tsv_record.path_align_lengths[-1] <= this_overlap:
-                                del spa_tsv_record.path[-1]
-                            if not spa_tsv_record.path:
-                                del self.records[go_r]
+                            head_v = spa_tsv_record.path[0][0]
+                            # if head_v does not appear in the graph, delete current record
+                            if head_v in self.assembly_graph.vertex_info:
+                                # if path did not reach out the overlap region between the terminal vertex and
+                                # the neighboring internal vertex, the terminal vertex should be trimmed from the path
+                                head_vertex_len = self.assembly_graph.vertex_info[head_v].len
+                                if head_vertex_len - spa_tsv_record.p_start - 1 <= this_overlap:
+                                    del spa_tsv_record.path[0]
+                                if spa_tsv_record.path_align_lengths[-1] <= this_overlap:
+                                    del spa_tsv_record.path[-1]
+                                if not spa_tsv_record.path:
+                                    del self.records[go_r]
+                                else:
+                                    go_r += 1
                             else:
-                                go_r += 1
+                                del self.records[go_r]
                         else:
                             go_r += 1
 

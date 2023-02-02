@@ -9,6 +9,7 @@ import os, sys, platform
 from pathlib import Path
 from enum import Enum
 import typer
+from math import inf
 from traversome import __version__
 
 # add the -h option for showing help
@@ -106,7 +107,7 @@ class ChComposition(str, Enum):
 #     path_generator: PathGen = typer.Option(
 #         PathGen.Heuristic, "-P",
 #         help="Path generator: H (Heuristic)/U (User-provided)"),
-#     num_search: int = typer.Option(
+#     num_valid_search: int = typer.Option(
 #         1000, "-N", "--num-search",
 #         help="Num of valid traversals for heuristic searching."),
 #     num_processes: int = typer.Option(
@@ -156,7 +157,7 @@ class ChComposition(str, Enum):
 #             function=function,
 #             out_prob_threshold=out_seq_threshold,
 #             force_circular=topology == "c",
-#             num_search=num_search,
+#             num_valid_search=num_valid_search,
 #             num_processes=num_processes,
 #             random_seed=random_seed,
 #             keep_temp=keep_temp,
@@ -189,7 +190,9 @@ def thorough(
     path_generator: PathGen = typer.Option(
         PathGen.Heuristic, "-P",
         help="Path generator: H (Heuristic)/U (User-provided)"),
-    num_search: int = typer.Option(1000, "-N", "--num-search", help="Num of valid traversals for heuristic searching."),
+    num_valid_search: int = typer.Option(
+        1000, "-N", "--num-search",
+        help="Num of valid traversals for heuristic searching."),
     criterion: ModelSelectionMode = typer.Option(
         ModelSelectionMode.AIC, "-F", "--func",
         help="aic (reverse model selection using stepwise AIC, default)\n"
@@ -199,13 +202,29 @@ def thorough(
         ChTopology.circular, "--topology",
         help="Chromosomes topology: c (constrained to be circular)/ u (unconstrained). "),
     composition: ChComposition = typer.Option(
-        ChComposition.single, "--composition",
+        ChComposition.unconstrained, "--composition",
         help="Chromosomes composition: "
              "s (single, each single form covers all contigs, default) / "
              "u (unconstrained, single or multi-chromosomes)"),
     out_seq_threshold: float = typer.Option(
         0.0, "-S",
         help="Threshold for sequence output",
+        min=0, max=1),
+    min_alignment_identity_cutoff: float = typer.Option(
+        0.8, "--min-align-id",
+        help="Threshold for alignment identity, below which the alignment with be discarded. ",
+        min=0, max=1),
+    min_alignment_len_cutoff: int = typer.Option(
+        100, "--min-align-len",
+        help="Threshold for alignment length, below which the alignment with be discarded. ",
+        min=100),
+    graph_component_selection: float = typer.Option(
+        0., "--graph-selection",
+        help="Use this if your graph is not manually curated into a single-component complete graph. "
+             "Followed by the weight ratio cutoff, below which a secondary connected component will be discarded. "
+             "The weight is calculated as \sum_{i=1}^{N}length_i*depth_i, where N is the contigs in that component. "
+             "A cutoff of 0 means keeping all components in the graph, while 1 means only keep the connected "
+             "component with the largest weight",
         min=0, max=1),
     num_processes: int = typer.Option(
         1, "-p", "--processes",
@@ -220,7 +239,7 @@ def thorough(
     """
     Conduct Bayesian MCMC analysis for solving assembly graph
     Examples:
-    traversome mc -g graph.gfa -a align.gaf -o .
+    traversome thorough -g graph.gfa -a align.gaf -o .
     """
     from loguru import logger
     initialize(
@@ -236,14 +255,17 @@ def thorough(
             outdir=str(output_dir),
             model_criterion=criterion,
             out_prob_threshold=out_seq_threshold,
-            num_search=num_search,
+            num_valid_search=num_valid_search,
             num_processes=num_processes,
             force_circular=topology == "c",
             n_generations=n_generations,
             n_burn=n_burn,
             random_seed=random_seed,
             keep_temp=keep_temp,
-            loglevel=log_level
+            loglevel=log_level,
+            min_alignment_identity_cutoff=min_alignment_identity_cutoff,
+            min_alignment_len_cutoff=min_alignment_len_cutoff,
+            graph_component_selection=graph_component_selection,
         )
         traverser.run(
             path_generator=path_generator,

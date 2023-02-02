@@ -191,8 +191,27 @@ class Assembly(AssemblySimple):
                                                {this_v:
                                                     (next_v
                                                      for connected_set in self.vertex_info[this_v].connections.values()
-                                                     for next_v in connected_set)
+                                                     for next_v, next_e in connected_set)
                                                 for this_v in self.vertex_info})
+
+    def reduce_graph_by_weight(self, cutoff: float, update_cluster: bool = True):
+        """
+        below which a secondary connected component will be discarded.
+        The weight is calculated as \sum_{i=1}^{N}length_i*depth_i, where N is the contigs in that component.
+        A cutoff of 0 means keeping all components in the graph, while 1 means only keep the connected
+        component with the largest weight.
+        """
+        if cutoff > 0:
+            if not self.vertex_clusters:
+                self.update_vertex_clusters()
+            weights = [sum([self.vertex_info[_v].cov * self.vertex_info[_v].len for _v in cls])
+                       for cls in self.vertex_clusters]
+            max_w = max(weights)
+            discard_vs = set()
+            for go_c, weight in enumerate(weights):
+                if weight < max_w * cutoff:
+                    discard_vs.update(self.vertex_clusters[go_c])
+            self.remove_vertex(discard_vs, update_cluster=update_cluster)
 
     def remove_vertex(self, vertices, update_cluster=True):
         """
@@ -876,7 +895,7 @@ class Assembly(AssemblySimple):
     #         self,
     #         graph_alignment,
     #         random_obj,
-    #         num_search,
+    #         num_valid_search,
     #         num_processes=1,
     #         force_circular=True,
     #         hetero_chromosome=True):
@@ -884,7 +903,7 @@ class Assembly(AssemblySimple):
     #     :param graph_alignment:
     #     :param random_obj: random
     #         passed from traversome.random [or from import random]
-    #     :param num_search
+    #     :param num_valid_search
     #     :param num_processes
     #     :param force_circular
     #     :param hetero_chromosome
@@ -892,7 +911,7 @@ class Assembly(AssemblySimple):
     #     generator = PathGenerator(
     #         assembly_graph=self,
     #         graph_alignment=graph_alignment,
-    #         num_search=num_search,
+    #         num_valid_search=num_valid_search,
     #         num_processes=num_processes,
     #         force_circular=force_circular,
     #         hetero_chromosome=hetero_chromosome,
@@ -1061,11 +1080,11 @@ class Assembly(AssemblySimple):
 
         if self.is_circular_path(forward_path):
             # if path is circular, try all start points
-            iso_paths = [forward_path, reverse_path]
+            bi_paths = [forward_path, reverse_path]
             for change_start in range(1, len(forward_path)):
-                iso_paths.append(forward_path[change_start:] + forward_path[:change_start])
-                iso_paths.append(reverse_path[change_start:] + reverse_path[:change_start])
-            return tuple(sorted(iso_paths)[0])
+                bi_paths.append(forward_path[change_start:] + forward_path[:change_start])
+                bi_paths.append(reverse_path[change_start:] + reverse_path[:change_start])
+            return tuple(sorted(bi_paths)[0])
         else:
             return tuple(sorted([forward_path, reverse_path])[0])
 
@@ -1081,12 +1100,12 @@ class Assembly(AssemblySimple):
 
         if detect_circular and self.is_circular_path(forward_path):
             # if path is circular, try all start points
-            iso_paths = [forward_path, reverse_path]
+            bi_paths = [forward_path, reverse_path]
             for change_start in range(1, len(forward_path)):
-                iso_paths.append(forward_path[change_start:] + forward_path[:change_start])
-                iso_paths.append(reverse_path[change_start:] + reverse_path[:change_start])
-            standard_id = sorted(range(len(iso_paths)), key=lambda x: iso_paths[x])[0]
-            return tuple(iso_paths[standard_id]), standard_id % 2 == 0
+                bi_paths.append(forward_path[change_start:] + forward_path[:change_start])
+                bi_paths.append(reverse_path[change_start:] + reverse_path[:change_start])
+            standard_id = sorted(range(len(bi_paths)), key=lambda x: bi_paths[x])[0]
+            return tuple(bi_paths[standard_id]), standard_id % 2 == 0
         else:
             standard_id = sorted([0, 1], key=lambda x: [forward_path, reverse_path][x])[0]
             return tuple([forward_path, reverse_path][standard_id]), standard_id == 0
