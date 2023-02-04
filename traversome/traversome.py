@@ -109,8 +109,6 @@ class Traversome(object):
             alignment_format=self.alignment_format,
             min_aligned_path_len=self.kwargs.get("min_alignment_len_cutoff", 100),
             min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.8),
-            trim_overlap_with_graph=True,
-            assembly_graph=self.graph,
         )
         self.generate_read_paths()
         self.get_align_len_dist()
