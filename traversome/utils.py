@@ -36,9 +36,23 @@ else:
     sys.exit(0)
 
 
-
 def complementary_seqs(input_seq_iter):
     return tuple([complementary_seq(seq) for seq in input_seq_iter])
+
+
+DEGENERATE_PAIRS = [["R", ("A", "G")],
+                    ["Y", ("C", "T")],
+                    ["M", ("A", "C")],
+                    ["K", ("G", "T")],
+                    ["S", ("C", "G")],
+                    ["W", ("A", "T")],
+                    ["H", ("A", "C", "T")],
+                    ["B", ("C", "G", "T")],
+                    ["V", ("A", "C", "G")],
+                    ["D", ("A", "G", "T")],
+                    ["N", ("A", "C", "G", "T")]]
+REV_DEGENERATE = {__degenerated_base: __bases for __degenerated_base, __bases in DEGENERATE_PAIRS}
+TO_DEGENERATE = {__bases: __degenerated_base for __degenerated_base, __bases in DEGENERATE_PAIRS}
 
 
 ########################################################################
@@ -391,7 +405,7 @@ class ProcessingGraphFailed(Exception):
 # def generate_clusters_from_connections(vertices, connections):
 #     """
 #     :param vertices: list or set
-#     :param connections: symmetric records, e.g.
+#     :param connections: symmetric raw_records, e.g.
 #                         {"vertex_1": ["vertex_2", "vertex_3"],
 #                          "vertex_2": ["vertex_1"],
 #                          "vertex_3": ["vertex_1", "vertex_5"],
@@ -822,3 +836,5 @@ def harmony_weights(raw_weights, diff):
 def run_dill_encoded(payload):
     fun, args = dill.loads(payload)
     return fun(*args)
+
+
