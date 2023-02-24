@@ -909,7 +909,7 @@ class Assembly(AssemblySimple):
     #     :param hetero_chromosome
     #     """
     #     generator = PathGenerator(
-    #         assembly_graph=self,
+    #         assembly_graph_obj=self,
     #         graph_alignment=graph_alignment,
     #         num_valid_search=num_valid_search,
     #         num_processes=num_processes,
@@ -983,14 +983,17 @@ class Assembly(AssemblySimple):
             seq_names[-1] += "(circular)"
         return ",".join(seq_names)
 
-    def export_path(self, in_path):
+    def export_path_seq_str(self, in_path):
         overlap = self.__overlap if self.__overlap else 0
         seq_segments = []
         for this_vertex, this_end in in_path:
             seq_segments.append(self.vertex_info[this_vertex].seq[this_end][overlap:])
         if not self.is_circular_path(in_path):
             seq_segments[0] = self.vertex_info[in_path[0][0]].seq[in_path[0][1]][:overlap] + seq_segments[0]
-        return Sequence(self.repr_path(in_path), "".join(seq_segments))
+        return "".join(seq_segments)
+
+    def export_path(self, in_path):
+        return Sequence(self.repr_path(in_path), self.export_path_seq_str(in_path))
 
     def reverse_path(self, raw_path):
         tuple_path = tuple(raw_path)
