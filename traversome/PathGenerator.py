@@ -55,9 +55,9 @@ class SingleTraversal(object):
         if not path:
             # randomly choose the read path and the direction
             # # change the weight (-~ depth) to flatten the search
-            read_p_freq_reciprocal = [1. / self.__read_paths_counter[r_p] for r_p in self.read_paths]
-            read_path = random.choices(self.read_paths, weights=read_p_freq_reciprocal)[0]
-            # read_path = random.choices(self.read_paths)[0]
+            # read_p_freq_reciprocal = [1. / self.__read_paths_counter[r_p] for r_p in self.read_paths]
+            # read_path = random.choices(self.read_paths, weights=read_p_freq_reciprocal)[0]
+            read_path = random.choices(self.read_paths)[0]
             if random.random() > 0.5:
                 read_path = self.graph.reverse_path(read_path)
             path = list(read_path)
@@ -779,13 +779,14 @@ class PathGenerator(object):
         # self.__vertex_to_readpath = {vertex: set() for vertex in self.graph.vertex_info}
         self.__starting_subpath_to_readpaths = {}
         self.__middle_subpath_to_readpaths = {}
-        self.__read_paths_not_in_variants = set()
+        self.__read_paths_not_in_variants = {}
         self.__read_paths_counter_indexed = False
         self.contig_coverages = OrderedDict()
         # self.single_copy_vertices_prob = \
         #     OrderedDict([(_v, 1.) for _v in single_copy_vertices]) if single_copy_vertices \
         #         else OrderedDict()
         self.__candidate_single_copy_vs = set()
+        self.__previous_len_variant = 0
         self.count_valid = 0
         self.count_search = 0
         self.variants = list()
@@ -806,52 +807,12 @@ class PathGenerator(object):
             self.use_contig_coverage_from_assembly_graph()
         self.estimate_single_copy_vertices()
         logger.debug("start traversing ..")
-        previous_len_variant = 0
+        self.__previous_len_variant = 0
         while True:
             if num_processes == 1:
                 self.__gen_heuristic_paths_uni()
             else:
                 self.__gen_heuristic_paths_mp(num_proc=num_processes)
-            logger.info("assessing read path coverage")
-            """The minimum requirement is that all observed read_paths were covered"""
-            if not self.__read_paths_not_in_variants:
-                break
-            else:
-                # print(self.tvs.variant_subpath_counters)
-                # print(len(self.__read_paths_not_in_variants))
-                # print(self.__read_paths_not_in_variants)
-                for variant_path in self.variants[previous_len_variant:]:
-                    # print("variant_path", variant_path)
-                    for sub_path in self.tvs.get_variant_sub_paths(variant_path):
-                        # print("check subpath", sub_path)
-                        if sub_path in self.__read_paths_not_in_variants:
-                            self.__read_paths_not_in_variants.discard(sub_path)
-                    # the current get_variant_sub_paths function only consider subpaths with length > 1
-                    # TODO: get subpath adaptive to length=1, more general and less restrictions
-                    # after which the following block can be removed
-                    for single_v, single_e in variant_path:
-                        single_sbp = ((single_v, False), )
-                        if single_sbp in self.__read_paths_not_in_variants:
-                            self.__read_paths_not_in_variants.discard(single_sbp)
-                    if not self.__read_paths_not_in_variants:
-                        break
-                if not self.__read_paths_not_in_variants:
-                    break
-                # the distribution of sampled subpaths are complex due to graph-based heuristic extension
-                # here we just approximate it as Poisson distribution
-                # similar to the lander-waterman model in genome sequencing,
-                # our hypothesized coverage (a=N*factor, where N is num_valid_search) and fraction in gaps (p) is
-                #     a==-log(p)
-                # we want the fraction in gaps to be smaller than 1/len(self.read_paths), e.g. 0.5/len(self.read_paths)
-                current_ratio = len(self.__read_paths_not_in_variants) / len(self.read_paths)
-                logger.info("uncovered_paths/all_paths = %i/%i = %.4f" %
-                            (len(self.__read_paths_not_in_variants), len(self.read_paths), current_ratio))
-                self.num_valid_search *= log(0.5 / len(self.read_paths)) / log(current_ratio)
-                self.num_valid_search = int(self.num_valid_search)
-                logger.info("resetting num_valid_search={}".format(self.num_valid_search))
-                previous_len_variant = len(self.variants)
-                # TODO this process will never stop if the graph cannot generate a circular path on forced circular
-
     # def generate_heuristic_circular_isomers(self):
     #     # based on alignments
     #     logger.warning("This function is under testing .. ")
@@ -863,11 +824,54 @@ class PathGenerator(object):
     # def generate_all_circular_isomers(self):
     #     # based on alignments
 
+    def __access_read_path_coverage(self, growing_variants, previous_len_variant, num_valid_search, path_not_traversed):
+        logger.info("assessing read path coverage ..")
+        logger.debug(str(path_not_traversed))
+        logger.debug(bool(path_not_traversed))
+        """The minimum requirement is that all observed read_paths were covered"""
+        if not path_not_traversed:
+            return 0
+        else:
+            logger.debug(str([str(_rp) + ";  " for _rp in path_not_traversed]))
+            logger.debug(str(growing_variants))
+            logger.debug(str(previous_len_variant))
+            for variant_path in growing_variants[previous_len_variant:]:
+                logger.debug("check variant_path " + str(variant_path))
+                for sub_path in self.tvs.get_variant_sub_paths(variant_path):
+                    # logger.debug("check subpath", sub_path)
+                    if sub_path in path_not_traversed:
+                        del path_not_traversed[sub_path]
+                # the current get_variant_sub_paths function only consider subpaths with length > 1
+                # TODO: get subpath adaptive to length=1, more general and less restrictions
+                # after which the following block can be removed
+                for single_v, single_e in variant_path:
+                    single_sbp = ((single_v, False),)
+                    if single_sbp in path_not_traversed:
+                        del path_not_traversed[single_sbp]
+                if not path_not_traversed:
+                    return 0
+            if not path_not_traversed:
+                return 0
+            # the distribution of sampled subpaths are complex due to graph-based heuristic extension
+            # here we just approximate it as Poisson distribution
+            # similar to the lander-waterman model in genome sequencing,
+            # our hypothesized coverage (a=N*factor, where N is num_valid_search) and fraction in gaps (p) is
+            #     a==-log(p)
+            # we want the fraction in gaps to be smaller than 1/len(self.read_paths), e.g. 0.5/len(self.read_paths)
+            current_ratio = len(path_not_traversed) / len(self.read_paths)
+            logger.info("uncovered_paths/all_paths = %i/%i = %.4f" %
+                        (len(path_not_traversed), len(self.read_paths), current_ratio))
+            new_num_valid_search = num_valid_search * log(0.5 / len(self.read_paths)) / log(current_ratio)
+            new_num_valid_search = int(new_num_valid_search)
+            logger.info("resetting num_valid_search={}".format(new_num_valid_search))
+            return new_num_valid_search - num_valid_search
+            # TODO this process will never stop if the graph cannot generate a circular path on forced circular
+
     def index_readpaths_subpaths(self, filter_by_graph=True):
         self.__read_paths_counter = dict()
         alignment_lengths = []
         if filter_by_graph:
-            for gaf_record in self.alignment:
+            for gaf_record in self.alignment.raw_records:
                 this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
                 # summarize only when the graph contain the path
                 if self.graph.contain_path(this_read_path):
@@ -879,7 +883,7 @@ class PathGenerator(object):
                     # record alignment length
                     alignment_lengths.append(gaf_record.p_align_len)
         else:
-            for gaf_record in self.alignment:
+            for gaf_record in self.alignment.raw_records:
                 this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
                 if this_read_path in self.__read_paths_counter:
                     self.__read_paths_counter[this_read_path] += 1
@@ -908,7 +912,7 @@ class PathGenerator(object):
                         reverse_read_path_tuple[go_sub: go_sub + sub_contig_num], read_id, False)
         #
         self.local_max_alignment_len = sorted(alignment_lengths)[-1]
-        self.__read_paths_not_in_variants = set(self.__read_paths_counter)
+        self.__read_paths_not_in_variants = {_rp: None for _rp in self.__read_paths_counter}
         self.__read_paths_counter_indexed = True
 
     def estimate_contig_coverages_from_read_paths(self):
@@ -961,7 +965,8 @@ class PathGenerator(object):
         """
         # logger.info("Start generating candidate paths ..")
         # v_len = len(self.graph.vertex_info)
-        while self.count_valid < self.num_valid_search:
+        # while self.count_valid < self.num_valid_search:
+        while True:
             single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
             single_traversal.run()
             new_path = single_traversal.result_path
@@ -995,16 +1000,25 @@ class PathGenerator(object):
                         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
                             len(self.variants), self.count_valid, self.num_valid_search, self.count_search))
                     if self.count_valid == self.num_valid_search:
-                        break
+                        add_search = self.__access_read_path_coverage(
+                            growing_variants=self.variants,
+                            previous_len_variant=self.__previous_len_variant,
+                            num_valid_search=self.num_valid_search,
+                            path_not_traversed=self.__read_paths_not_in_variants)
+                        if add_search:
+                            self.__previous_len_variant = len(self.variants)
+                            self.num_valid_search += add_search
+                        else:
+                            break
         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
             len(self.variants), self.count_valid, self.num_valid_search, self.count_search))
 
-    def __heuristic_traversal_worker(self, variant, variants_counts, g_vars, lock, event):
+    def __heuristic_traversal_worker(self, variant, variants_counts, path_not_traversed, g_vars, lock, event):
         """
         single worker of traversal, called by self.get_heuristic_paths_multiprocessing
         starting a new process from dill dumped python object: slow
         """
-        while g_vars.count_valid < self.num_valid_search:
+        while g_vars.count_valid < g_vars.num_valid_search:
             # move the parallelizable code block before the lock
             # <<<
             # TODO to cover all subpaths
@@ -1038,16 +1052,27 @@ class PathGenerator(object):
                     if new_path in variants_counts:
                         variants_counts[new_path] += 1
                         logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                            len(variant), g_vars.count_valid, self.num_valid_search, g_vars.count_search))
+                            len(variant), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
                     else:
                         variants_counts[new_path] = 1
                         variant.append(new_path)
                         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                            len(variant), g_vars.count_valid, self.num_valid_search, g_vars.count_search))
-                    if g_vars.count_valid >= self.num_valid_search:
-                        # kill all other workers
-                        event.set()
-                        break
+                            len(variant), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
+                    if g_vars.count_valid >= g_vars.num_valid_search:
+                        add_search = self.__access_read_path_coverage(
+                            growing_variants=variant,
+                            previous_len_variant=g_vars.previous_len_variant,
+                            num_valid_search=g_vars.num_valid_search,
+                            path_not_traversed=path_not_traversed)
+                        logger.info("adding searches by " + str(add_search))
+                        if add_search:
+                            g_vars.previous_len_variant = len(variant)
+                            g_vars.num_valid_search += add_search
+                        else:
+                            # kill all other workers
+                            lock.release()
+                            event.set()
+                            break
                 lock.release()
 
     def __gen_heuristic_paths_mp(self, num_proc=2):
@@ -1058,12 +1083,17 @@ class PathGenerator(object):
         manager = Manager()
         variants_counts = manager.dict()
         variants = manager.list()
+        path_not_traversed = manager.dict()
         if self.variants_counts:
             variants_counts.update(self.variants_counts)
             variants.extend(self.variants)
+        for rp_not_in_v in self.__read_paths_not_in_variants:
+            path_not_traversed[rp_not_in_v] = None
         global_vars = manager.Namespace()
         global_vars.count_search = self.count_search
         global_vars.count_valid = self.count_valid
+        global_vars.num_valid_search = self.num_valid_search
+        global_vars.previous_len_variant = self.__previous_len_variant
         lock = manager.Lock()
         event = manager.Event()
         # v_len = len(self.graph.vertex_info)
@@ -1071,15 +1101,26 @@ class PathGenerator(object):
         # dump function and args
         logger.info("Serializing the heuristic searching for multiprocessing ..")
         payload = dill.dumps((self.__heuristic_traversal_worker,
-                              (variants, variants_counts, global_vars, lock, event)))
+                              (variants, variants_counts, path_not_traversed, global_vars, lock, event)))
         # logger.info("Start generating candidate paths ..")
         jobs = []
         for g_p in range(num_proc):
             logger.debug("assigning job to worker {}".format(g_p + 1))
             jobs.append(pool_obj.apply_async(run_dill_encoded, (payload,)))
             logger.debug("assigned job to worker {}".format(g_p + 1))
-            if global_vars.count_valid >= self.num_valid_search:
-                break
+            if global_vars.count_valid >= global_vars.num_valid_search:
+                lock.acquire()
+                add_search = self.__access_read_path_coverage(
+                    growing_variants=variants,
+                    previous_len_variant=global_vars.previous_len_variant,
+                    num_valid_search=global_vars.num_valid_search,
+                    path_not_traversed=path_not_traversed)
+                if not add_search:
+                    lock.release()
+                    break
+                else:
+                    global_vars.num_valid_search += add_search
+                    lock.release()
         for job in jobs:
             job.get()  # tracking errors
         pool_obj.close()

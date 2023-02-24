@@ -5,9 +5,17 @@ Class objects to store Graph Alignments
 """
 
 import csv
+import os.path
 import re
 from loguru import logger
-# from traversome.Assembly import Assembly  # used here to validate type
+from collections import OrderedDict
+from traversome.Assembly import Assembly  # used here to validate type
+from traversome.utils import REV_DEGENERATE  # ,TO_DEGENERATE, run_dill_encoded
+import sympy
+from itertools import product
+from multiprocessing import Manager, Pool
+# import dill
+
 
 CONVERT_STRAND = {"+": True, "-": False}
 CIGAR_ALPHA_REG = "([MIDNSHPX=])"
@@ -33,6 +41,7 @@ class GAFRecord(object):
         self.p_start = int(record_line_split[7])  # start position on the path
         self.p_end = int(record_line_split[8])  # end position on the path
         self.p_align_len = self.p_end - self.p_start
+
         self.num_match = int(record_line_split[9])
         self.align_len = int(record_line_split[10])
         self.align_quality = int(record_line_split[11])
@@ -51,7 +60,12 @@ class GAFRecord(object):
             self.cigar = self.split_cigar_str()
         else:
             self.cigar = None
+
         self.identity = self.optional_fields.get("id", self.num_match / float(self.align_len))
+
+        # # to be added if provided
+        # # self.q_seq = None  # q_seq to be added to ReadRecord instead
+        # self.p_seq = None
 
     def parse_gaf_path(self):
         path_list = []
@@ -63,7 +77,7 @@ class GAFRecord(object):
                 path_list.append((segment[1:].split(":")[0], False))
             else:
                 path_list.append((segment.split(":")[0], True))
-        return path_list
+        return tuple(path_list)
 
     def split_cigar_str(self):
         cigar_str = self.optional_fields['cg']
@@ -72,6 +86,10 @@ class GAFRecord(object):
         for go_part in range(0, len(cigar_split), 2):
             cigar_list.append((int(cigar_split[go_part]), cigar_split[go_part + 1]))
         return cigar_list
+
+    def as_gaf_str(self):
+        # TODO
+        pass
 
 
 class SPATSVRecord(object):
@@ -106,7 +124,7 @@ class SPATSVRecord(object):
         self.path_align_lengths = [int(_len_) for _len_ in record_line_split[7].split(",")]
         # self.path_seq was not found in GAF and not used for traversome
         # self.path_seq = record_line_split[8]
-        self.q_strand = self.q_end >= self.q_start
+        self.q_strand = self.q_end >= self.q_start  # will q_strand be negative in the real case
         # self.p_len was not provided. For GAF, self.p_len will be used during trimming.
         # self.p_len = None
         self.p_align_len = sum(self.path_align_lengths)
@@ -115,18 +133,192 @@ class SPATSVRecord(object):
         # SPAligner does not provide self.align_len, use the larger one to approximate this value
         self.align_len = max(self.p_align_len, self.q_align_len)
 
+        # # to be added if provided
+        # # self.q_seq = None  # q_seq to be added to ReadRecord instead
+        # self.p_seq = None
+
         # SPAligner does not provide following info, may use other approaches to generate if necessary
         # self.num_match = None
         # self.identity = None
         # self.align_quality = None
         # self.optional_fields = {}
-        # self.cigar = None
+        # self._cigar = None
 
     def parse_spa_tsv_path(self):
         path_list = []
         for v_str in self.path_str.split(","):
             path_list.append((v_str[:-1], CONVERT_STRAND[v_str[-1]]))
-        return path_list
+        return tuple(path_list)
+
+    def as_gaf_str(self):
+        pass
+
+
+class ReadRecord(object):
+    """
+    Read Record class to store consolidated multiple hits of the same read (query).
+    """
+    def __init__(self):
+        self.raw_ids = []
+        self.records = []
+        self.probs = []
+        self.likes = []
+        self.q_seq = None
+        # cache groups to speed up
+        self.__groups = []
+        # to ensure sorted before self.iter_overlapping_groups()
+        self.__sorted = False
+
+    def quick_add(self, raw_id: int, record):
+        self.raw_ids.append(raw_id)
+        self.records.append(record)
+
+    def append(self, raw_id: int, record):
+        self.raw_ids.append(raw_id)
+        self.records.append(record)
+        self.probs = []
+        self.likes = []
+        self.__groups = []
+        self.__sorted = False
+
+    def __delitem__(self, key: int):
+        del self.raw_ids[key]
+        del self.records[key]
+        self.probs = []
+        self.likes = []
+        self.__groups = []
+        self.__sorted = False
+
+    def __getitem__(self, item: int):
+        return self.records[item]
+
+    def __iter__(self):
+        for record in self.records:
+            yield record
+
+    def __len__(self):
+        return len(self.raw_ids)
+
+    def sort_by(self, record_attributes: str = ("q_start", "q_end", "cigar")):
+        new_order = sorted(range(len(self)),
+                           key=lambda x: [self.records[x].__getattribute__(r_a) for r_a in record_attributes])
+        self.records = [self.records[x] for x in new_order]
+        self.raw_ids = [self.raw_ids[x] for x in new_order]
+        if self.probs:
+            self.probs = [self.probs[x] for x in new_order]
+        self.__groups = []
+        self.__sorted = True
+
+    def iter_overlapping_groups(self):
+        if not self.__sorted:
+            self.sort_by()
+        if self.__groups:
+            for this_group in self.__groups:
+                yield this_group
+        else:
+            this_group = [self.records[0]]
+            longest_end = self.records[0].q_end
+            for record in self.records[1:]:
+                # TODO: this relies on the assumption that q_strand will always be true - true so far
+                #       otherwise, additional conditions need to be addressed
+                if record.q_start <= longest_end:
+                    this_group.append(record)
+                    longest_end = max(longest_end, record.q_end)
+                else:
+                    self.__groups.append(this_group)
+                    yield this_group
+                    this_group = [record]
+                    longest_end = record.q_end
+            self.__groups.append(this_group)
+            yield this_group
+
+
+# def _gtc_worker(_half_kmer, read_names, global_vars, _transition_counts, lock):
+#     """
+#     for parallelization, called by
+#     """
+#     lock.acquire()
+#     read_name = read_names[global_vars.go_read]
+#     global_vars.go_read += 1
+#     lock.release()
+#     read_record = self.read_records[read_name]
+#     self.__count_single_read_record(read_record, _half_kmer, _transition_counts)
+
+
+def _insert_gaps_to_alignment(_q_seq: list, _q_start: int, _r_seq: list, _r_start: int, _cigar: list):
+    _go_r, _go_q = _r_start, _q_start
+    for _cigar_len, _cigar_str in _cigar:
+        if _cigar_str in {"X", "="}:
+            _go_r += _cigar_len
+            _go_q += _cigar_len
+        elif _cigar_str == "I":
+            _r_seq = _r_seq[:_go_r] + ["-"] * _cigar_len + _r_seq[_go_r:]
+            _go_r += _cigar_len
+            _go_q += _cigar_len
+        elif _cigar_str == "D":
+            _q_seq = _q_seq[:_go_q] + ["-"] * _cigar_len + _q_seq[_go_q:]
+            _go_r += _cigar_len
+            _go_q += _cigar_len
+        else:
+            raise ValueError("unregistered _cigar string: " + _cigar_str)
+    return _q_seq, _r_seq
+
+
+def _add_alignment_to_transition_counts_mp(
+        _qry_seq, _ref_seq, _q_start, _cigar, _half_kmer, _kmer, _this_prob_tag, _size_tc, *_transition_counts):
+    """
+    TODO: _transition_counts[(ref_kmer,q_base,read,rec_id)]
+    multiprocessing version GraphAlignRecords.__add_alignment_to_transition_counts
+    without dill-based serializing, which is slower """
+    # update the transition matrix
+    qry_ali, ref_ali = _insert_gaps_to_alignment(
+        _q_seq=_qry_seq, _q_start=_q_start, _r_seq=_ref_seq, _r_start=_half_kmer, _cigar=_cigar)
+    for _go_q, query_base in enumerate(qry_ali):
+        ref_kmer = tuple(ref_ali[_go_q: _go_q + _kmer])
+        if set([len(_bases) for _bases in ref_kmer]) == {1}:
+            go_t = hash((ref_kmer, query_base)) % _size_tc
+            if (ref_kmer, query_base, _this_prob_tag) not in _transition_counts[go_t]:
+                _transition_counts[go_t][(ref_kmer, query_base, _this_prob_tag)] = 1
+            else:
+                _transition_counts[go_t][(ref_kmer, query_base, _this_prob_tag)] += 1
+        else:
+            # to simplify, assuming even separation of all cases
+            all_ref_cases = list(product(*ref_kmer))
+            # print(ref_kmer, all_ref_cases)
+            new_weight = 1 / len(all_ref_cases)
+            for ref_kmer in all_ref_cases:
+                go_t = hash((ref_kmer, query_base)) % _size_tc
+                if (ref_kmer, query_base, _this_prob_tag) not in _transition_counts[go_t]:
+                    _transition_counts[go_t][(ref_kmer, query_base, _this_prob_tag)] = new_weight
+                else:
+                    _transition_counts[go_t][(ref_kmer, query_base, _this_prob_tag)] += new_weight
+#
+
+# def _add_alignment_to_transition_counts_mp(
+#         _qry_seq, _ref_seq, _q_start, _cigar, _half_kmer, _transition_counts, _this_prob_tag):
+#     """
+#     TODO: _transition_counts[(ref_kmer,q_base,read,rec_id)]
+#     multiprocessing version GraphAlignRecords.__add_alignment_to_transition_counts
+#     without dill-based serializing, which is slow """
+#     # update the transition matrix
+#     qry_ali, ref_ali = _insert_gaps_to_alignment(
+#         _q_seq=_qry_seq, _q_start=_q_start, _r_seq=_ref_seq, _r_start=_half_kmer, _cigar=_cigar)
+#     _kmer = 2 * _half_kmer + 1
+#     for _go_q, query_base in enumerate(qry_ali):
+#         ref_kmer = tuple(ref_ali[_go_q: _go_q + _kmer])
+#         if set([len(_bases) for _bases in ref_kmer]) == {1}:
+#             if (query_base, _this_prob_tag) not in _transition_counts[ref_kmer]:
+#                 _transition_counts[ref_kmer][(query_base, _this_prob_tag)] = 0
+#             _transition_counts[ref_kmer][(query_base, _this_prob_tag)] += 1
+#         else:
+#             # to simplify, assuming even separation of all cases
+#             all_ref_cases = list(product(*ref_kmer))
+#             # print(ref_kmer, all_ref_cases)
+#             new_weight = 1 / len(all_ref_cases)
+#             for ref_kmer in all_ref_cases:
+#                 if (query_base, _this_prob_tag) not in _transition_counts[ref_kmer]:
+#                     _transition_counts[ref_kmer][(query_base, _this_prob_tag)] = 0
+#                 _transition_counts[ref_kmer][(query_base, _this_prob_tag)] += new_weight
 
 
 # TODO parallelize parsing
@@ -140,45 +332,550 @@ class GraphAlignRecords(object):
         path to an alignment file.
     alignment_format (str):
         format of the alignment file, must be GAF or SPA-TSV
+    gen_multi_hits_prob (bool):
+        True (default) to calculate the probability of each path
+    min_align_len (int):
+        ...
+    min_identity (int):
+        ...
     parse_cigar (bool):
         parsing CIGARs allows for ... default=False.
-    min_aligned_path_len (int):
-        ...
     """
 
     def __init__(
             self,
             alignment_file,
             alignment_format="GAF",
-            parse_cigar=False,
-            min_aligned_path_len=0,
+            gen_multi_hits_prob=True,
+            # min_aligned_path_len=0,
             min_align_len=0,
             min_identity=0.,
+            parse_cigar=False,
             # trim_overlap_with_graph=False,
-            # assembly_graph=None
+            assembly_graph_obj=None,
+            query_fq_files=None,
+            num_proc=1,
     ):
-
         # store params to self
         self.alignment_file = alignment_file
         assert alignment_format in ("GAF", "SPA-TSV"), "Unsupported format {}!".format(alignment_format)  # currently
         self.alignment_format = alignment_format
         self.parse_cigar = parse_cigar
         self.min_align_len = min_align_len
-        self.min_aligned_path_len = min_aligned_path_len
+        # self.min_aligned_path_len = min_aligned_path_len
         self.min_identity = min_identity
         # no need, it should be already taken into the consideration by graph aligners, at least by GraphAligner
         # self.trim_overlap_with_graph = trim_overlap_with_graph
-        # self.assembly_graph = assembly_graph
+        self.assembly_graph = assembly_graph_obj  # for training model
+        self.query_files = query_fq_files
 
         # destination for parsed results
-        self.records = []
+        self.raw_records = []
+        self.read_records = OrderedDict()
 
         # run the parsing function
-        logger.info("Parsing alignment ({})".format(self.alignment_format))
         self.parse_alignment_file()
+        self.build_read_records()
 
-    def parse_alignment_file(self, n_proc=1):
-        if n_proc == 1:
+        # generate the probabilities of multiple hits for each query
+        self.__path_to_seqs = {}
+        self.transition_counts = {}
+        self.transition_matrix = {}
+        self._equations = None
+        self._symbols = None
+        self._solution = None
+        # if gen_multi_hits_prob:
+        #     self.gen_multi_hits_probabilities(num_proc=num_proc)
+
+    def gen_multi_hits_probabilities(self, num_proc=1):
+        """
+        The probability that a read is sequence from that path and aligned to that path
+        """
+        # TODO: if these takes lots of memory, store them as file
+        self._load_query_seqs()
+        self._cache_path_seqs()
+
+        kmer_s = 5
+        transition_matrix = self.__gen_transition_matrix(kmer_s=kmer_s, num_proc=num_proc)
+
+
+        # clear the memory
+        # self.__path_to_seqs = {}
+        # for read_record in self.read_records:
+        #     read_record.q_seq = None
+
+    # TODO parallelize
+    def __gen_transition_matrix(self, kmer_s, num_proc):
+        """
+
+        """
+        base_scenarios = ["A", "T", "G", "C", "-"]  # "-" for insertion in the query
+        """ 1.generate transition counts """
+        logger.debug("symbolize probs ..")
+        symbols = self.__symbolize_prob()
+        if num_proc > 1:
+            self.__gen_transition_counts_m(kmer_s=kmer_s, base_scenarios=base_scenarios, num_proc=num_proc)
+        else:
+            self.__gen_transition_counts_s(kmer_s=kmer_s)  #
+        """ 2. convert counts to prob """
+        # only count the aligned query bases (ref_k!="?") because "-" in unaligned region cannot be observed
+        logger.debug("generating transition matrix ..")
+        transition_matrix, equations = self.__gen_prob_equations_s(kmer_s=kmer_s, base_scenarios=base_scenarios)
+        self._equations = equations
+        self._symbols = symbols
+        self._solution = sympy.solve(equations, symbols)
+        ...
+        return transition_matrix
+
+    def __gen_prob_equations_s(self, kmer_s, base_scenarios):
+        logger.debug("generating transition_prob_eqs ..")
+        equations = []
+        half_kmer = kmer_s // 2
+        base_counts = {q_b_: sum([ref_k_info.get(q_b_, 0) for ref_k, ref_k_info in self.transition_counts.items()])
+                       for q_b_ in base_scenarios}
+        total_counts = sum(base_counts.values())
+        q_base_frequencies = {base_: count_ / total_counts for base_, count_ in base_counts.items()}
+        transition_matrix = {}
+        for ref_kmer, k_info in self.transition_counts.items():
+            transition_matrix[ref_kmer] = {}
+            ref_k_total = sum(k_info.values())
+            if ref_k_total:
+                for q_base, q_count in k_info.items():
+                    transition_matrix[ref_kmer][q_base] = q_count / ref_k_total
+        # construct equation to solve the prob
+        len_reads = len(self.read_records)
+        echo_freq = max(len_reads // 10, 1)
+        echo_id = 0
+        for read_record in self.read_records.values():
+            read_record.likes = []
+            read_seq = list(read_record.q_seq)
+            # when record query range overlaps, they conflict with each other
+            for cfl_group in read_record.iter_overlapping_groups():
+                go_r = 0
+                if len(cfl_group) == 1:
+                    record = cfl_group[0]
+                    this_like = self.__cal_alignment_likelihood(
+                        record=record,
+                        qry_seq=read_seq[record.q_start: record.q_end + 1],
+                        half_kmer=half_kmer,
+                        transition_matrix=transition_matrix)
+                    read_record.likes.append(this_like)
+                    go_r += 1
+                else:
+                    cfl_q_start = min([rec_.q_start for rec_ in cfl_group])
+                    cfl_q_end = min([rec_.q_end for rec_ in cfl_group])
+                    cfl_qry_seq = read_seq[cfl_q_start: cfl_q_end + 1]
+                    group_size = len(cfl_group)
+                    for record in cfl_group:
+                        q_start_ = record.q_start - cfl_q_start
+                        q_end_ = record.q_end - cfl_q_start
+                        this_like = self.__cal_alignment_likelihood(
+                            record=record,
+                            qry_seq=cfl_qry_seq[q_start_: q_end_ + 1],
+                            half_kmer=half_kmer,
+                            transition_matrix=transition_matrix)
+                        this_like *= self.__cal_unaligned_likelihood(
+                            query_seq=cfl_qry_seq[:q_start_] + cfl_qry_seq[q_end_ + 1:],
+                            query_base_frequencies=q_base_frequencies)
+                        read_record.likes.append(this_like)
+                    for go_g_r in range(group_size - 1):
+                        this_prob, next_prob = read_record.probs[go_r: go_r + 2]
+                        this_like, next_like = read_record.likes[go_r: go_r + 2]
+                        # make the probability proportional to the resulting likelihood
+                        # this_prob: next_prob = this_like : next_like
+                        equations.append(this_prob * next_like - next_prob * this_like)
+                        go_r += 1
+            echo_id += 1
+            if echo_id % echo_freq == 0:
+                print("{}/{} reads".format(echo_id, len_reads))
+        self.transition_matrix = transition_matrix
+        return transition_matrix, equations
+
+    def __symbolize_prob(self):
+        symbols = []
+        for read_record in self.read_records.values():
+            read_record.probs = []
+            # when record query range overlaps, they conflict with each other
+            for cfl_group in read_record.iter_overlapping_groups():
+                if len(cfl_group) == 1:
+                    this_prob = 1.
+                    read_record.probs.append(this_prob)
+                else:
+                    group_size = len(cfl_group)
+                    for go_g_r, record in enumerate(cfl_group):
+                        if go_g_r < group_size - 1:
+                            this_prob = sympy.Symbol("r" + str(len(symbols)), positive=True)
+                            symbols.append(this_prob)
+                            read_record.probs.append(this_prob)
+                        else:
+                            this_prob = 1 - sum(symbols[-group_size:])
+                            read_record.probs.append(this_prob)
+        return symbols
+
+    @staticmethod
+    def __add_alignment_to_transition_counts(
+            _qry_seq, _ref_seq, _q_start, _cigar, _half_kmer, _transition_counts, _this_prob):
+        """
+        """
+        # update the transition matrix
+        qry_ali, ref_ali = _insert_gaps_to_alignment(
+            _q_seq=_qry_seq, _q_start=_q_start, _r_seq=_ref_seq, _r_start=_half_kmer, _cigar=_cigar)
+        _kmer = 2 * _half_kmer + 1
+        for _go_q, query_base in enumerate(qry_ali):
+            ref_kmer = tuple(ref_ali[_go_q: _go_q + _kmer])
+            if set([len(_bases) for _bases in ref_kmer]) == {1}:
+                if ref_kmer not in _transition_counts:
+                    _transition_counts[ref_kmer] = {}
+                if query_base not in _transition_counts[ref_kmer]:
+                    _transition_counts[ref_kmer][query_base] = 0
+                _transition_counts[ref_kmer][query_base] += _this_prob
+            else:
+                # to simplify, assuming even separation of all cases
+                all_ref_cases = list(product(*ref_kmer))
+                # print(ref_kmer, all_ref_cases)
+                new_weight = _this_prob / len(all_ref_cases)
+                for ref_c in all_ref_cases:
+                    if ref_c not in _transition_counts:
+                        _transition_counts[ref_c] = {}
+                    if query_base not in _transition_counts[ref_c]:
+                        _transition_counts[ref_c][query_base] = 0
+                    _transition_counts[ref_c][query_base] += new_weight
+
+    def __gen_transition_counts_s(self, kmer_s):  # , base_scenarios
+        logger.debug("generating transition counts ..")
+        half_kmer = kmer_s // 2
+        # refer_context = product(*([base_scenarios] * kmer_s))
+        # _transition_counts = {tuple(_context): {query_b_: 0 for query_b_ in base_scenarios}
+        #                      for _context in refer_context}
+        transition_counts = {}
+        len_reads = len(self.read_records)
+        echo_freq = max(len_reads // 10, 1)
+        echo_id = 0
+        for read_record in self.read_records.values():
+            read_seq = list(read_record.q_seq)
+            # when record query range overlaps, they conflict with each other
+            count_r = 0
+            for cfl_group in read_record.iter_overlapping_groups():
+                if len(cfl_group) == 1:
+                    record = cfl_group[0]
+                    ref_seq = self.__format_modify_ref_seq(
+                        path=record.path, p_start=record.p_start, p_end=record.p_end + 1, half_kmer=half_kmer)
+                    self.__add_alignment_to_transition_counts(
+                        _qry_seq=read_seq[record.q_start: record.q_end + 1],
+                        _ref_seq=ref_seq,
+                        _q_start=record.q_start,
+                        _cigar=record.cigar,
+                        _half_kmer=half_kmer,
+                        _transition_counts=transition_counts,
+                        _this_prob=read_record.probs[count_r])
+                    count_r += 1
+                else:
+                    cfl_q_start = min([rec_.q_start for rec_ in cfl_group])
+                    cfl_q_end = min([rec_.q_end for rec_ in cfl_group])
+                    cfl_qry_seq = read_seq[cfl_q_start: cfl_q_end + 1]
+                    for go_g_r, record in enumerate(cfl_group):
+                        q_start_ = record.q_start - cfl_q_start
+                        q_end_ = record.q_end - cfl_q_start
+                        ref_seq = self.__format_modify_ref_seq(
+                            path=record.path, p_start=record.p_start, p_end=record.p_end + 1, half_kmer=half_kmer)
+                        self.__add_alignment_to_transition_counts(
+                            _qry_seq=cfl_qry_seq[q_start_: q_end_ + 1],
+                            _ref_seq=ref_seq,
+                            _q_start=record.q_start,
+                            _cigar=record.cigar,
+                            _half_kmer=half_kmer,
+                            _transition_counts=transition_counts,
+                            _this_prob=read_record.probs[count_r])
+                        count_r += 1
+            echo_id += 1
+            if echo_id % echo_freq == 0:
+                print("{}/{} reads".format(echo_id, len_reads))
+        self.transition_counts = transition_counts
+
+    def __gen_transition_counts_m(self, kmer_s, base_scenarios, num_proc):  #
+        logger.debug("generating transition counts ..")
+        half_kmer = kmer_s // 2
+        refer_context = product(*([base_scenarios] * kmer_s))
+        # multiprocess manager to communicate variables
+        transition_counts = []
+        for sub_m in range(int(num_proc * 2)):
+            manager = Manager()
+            transition_counts.append(manager.dict())
+        # transition_counts = manager.dict()  # it takes 0.2~7.4 seconds
+        # for r_context in refer_context:
+        #     transition_counts[tuple(r_context)] = manager.dict()
+            # transition_counts[tuple(r_context)] = {query_b_: 0 for query_b_ in base_scenarios}
+        # lock = manager.Lock()
+        # shared by workers to know the progress
+        pool_obj = Pool(processes=num_proc)
+        # logger.debug("serializing the transition matrix counting for multiprocessing ..")
+        # payload = dill.dumps((_gtc_worker,
+        #                       (_half_kmer, read_names, global_vars, _transition_counts, lock)))
+        logger.debug("pending jobs ..")
+        jobs = []
+        len_reads = len(self.read_records)
+        echo_freq = max(len_reads // 10, 1)
+        echo_id = 0
+        for read_name, read_record in self.read_records.items():
+            read_seq = list(read_record.q_seq)
+            # when record query range overlaps, they conflict with each other
+            count_r = 0
+            for cfl_group in read_record.iter_overlapping_groups():
+                if len(cfl_group) == 1:
+                    record = cfl_group[0]
+                    ref_seq = self.__format_modify_ref_seq(
+                        path=record.path, p_start=record.p_start, p_end=record.p_end + 1, half_kmer=half_kmer)
+                    pool_obj.apply_async(
+                        _add_alignment_to_transition_counts_mp,
+                        (read_seq[record.q_start: record.q_end + 1],
+                         ref_seq,
+                         record.q_start,
+                         record.cigar,
+                         half_kmer,
+                         kmer_s,
+                         (read_name, count_r),
+                         len(transition_counts),
+                         *transition_counts, )
+                    )
+                    count_r += 1
+                else:
+                    cfl_q_start = min([rec_.q_start for rec_ in cfl_group])
+                    cfl_q_end = min([rec_.q_end for rec_ in cfl_group])
+                    cfl_qry_seq = read_seq[cfl_q_start: cfl_q_end + 1]
+                    for go_g_r, record in enumerate(cfl_group):
+                        q_start_ = record.q_start - cfl_q_start
+                        q_end_ = record.q_end - cfl_q_start
+                        ref_seq = self.__format_modify_ref_seq(
+                            path=record.path, p_start=record.p_start, p_end=record.p_end + 1, half_kmer=half_kmer)
+                        pool_obj.apply_async(
+                            _add_alignment_to_transition_counts_mp,
+                            (cfl_qry_seq[q_start_: q_end_ + 1],
+                             ref_seq,
+                             record.q_start,
+                             record.cigar,
+                             half_kmer,
+                             kmer_s,
+                             (read_name, count_r),
+                             len(transition_counts),
+                             *transition_counts,)
+                        )
+                        count_r += 1
+            echo_id += 1
+            if echo_id % echo_freq == 0:
+                print("{}/{} reads".format(echo_id, len_reads))
+        logger.debug("jobs closed.")
+        pool_obj.close()
+        for job in jobs:
+            job.get()  # tracking errors
+        pool_obj.join()
+        logger.debug("summarizing counts from workers ..")
+        self.transition_counts = {}
+        # self.transition_counts = transition_counts
+        for k_info in transition_counts:
+            if bool(dict(k_info)):
+                for (ref_kmer, query_base, (read_n, rec_id)), weight in k_info.items():
+                    if ref_kmer not in self.transition_counts:
+                        self.transition_counts[ref_kmer] = {}
+                    if query_base not in self.transition_counts[ref_kmer]:
+                        self.transition_counts[ref_kmer][query_base] = weight * self.read_records[read_n].probs[rec_id]
+                    else:
+                        self.transition_counts[ref_kmer][query_base] += weight * self.read_records[read_n].probs[rec_id]
+        #
+        # for ref_kmer, k_info in transition_counts.items():
+        #     if bool(dict(k_info)):
+        #         if ref_kmer not in self.transition_counts:
+        #             self.transition_counts[ref_kmer] = {}
+        #         for (query_base, (read_n, rec_id)), weight in k_info.items():
+        #             if query_base not in self.transition_counts[ref_kmer]:
+        #                 self.transition_counts[ref_kmer][query_base] = 0
+        #             self.transition_counts[ref_kmer][query_base] += weight * self.read_records[read_n].probs[rec_id]
+
+    def __cal_unaligned_likelihood(self, query_seq, query_base_frequencies):
+        # The probability of an unaligned base (e.g. A) can be calculated as
+        # the sum of the frequency of each reference kmer times the probability it transit into that base (A)
+        # so in the end the probability of unaligned base is the frequency of that base (A)
+        # However, the deletion in the query can not be observed, so the total probability should times P_adj
+        #     expected_q_gap_len = len_unaligned*query_gap_rate
+        #     P_adj = query_gap_rate^expected_q_gap_len
+        normal_base_lens = {q_b: query_seq.count(q_b) for q_b in set(query_seq)}
+        this_likelihood = 1.
+        for query_base, q_b_len in normal_base_lens.items():
+            this_likelihood *= query_base_frequencies[query_base] ** q_b_len
+        expected_q_gap_len = len(query_seq) * query_base_frequencies["-"]
+        this_likelihood *= query_base_frequencies["-"] ** expected_q_gap_len
+        return this_likelihood
+
+    def __cal_alignment_likelihood(self, record, qry_seq, half_kmer, transition_matrix):
+        this_likelihood = 1.
+        ref_seq = self.__format_modify_ref_seq(
+            path=record.path, p_start=record.p_start, p_end=record.p_end + 1, half_kmer=half_kmer)
+        qry_ali, ref_ali = _insert_gaps_to_alignment(
+            _q_seq=qry_seq, _q_start=record.q_start, _r_seq=ref_seq, _r_start=half_kmer, _cigar=record.cigar)
+        kmer = 2 * half_kmer + 1
+        for go_q, query_base in enumerate(qry_ali):
+            ref_kmer = tuple(ref_ali[go_q: go_q + kmer])
+            if ref_kmer in transition_matrix:
+                this_likelihood *= transition_matrix[ref_kmer][query_base]
+            else:
+                # to simplify, assuming even separation of all cases
+                all_ref_cases = list(product(*ref_kmer))
+                margin_like = 0.
+                for ref_c in all_ref_cases:
+                    margin_like += transition_matrix[ref_c][query_base] / len(all_ref_cases)
+                this_likelihood *= margin_like
+        return this_likelihood
+
+    def __format_modify_ref_seq(self, path, p_start, p_end, half_kmer):
+        """
+        1. extend bases by half kmer
+        2. degenerate base -> list of de-degenerated bases
+        """
+
+        def _expand_seqs(_extra_len, _ref_fix, _seqs):
+            for _go_b in range(_extra_len):
+                _ref_fix.append([])
+                for _seq in _seqs:
+                    # if the extended sequence is degenerate bases
+                    if _seq[_go_b] in REV_DEGENERATE:
+                        _ref_fix[-1].extend(REV_DEGENERATE[_seq[_go_b]])
+                    else:
+                        _ref_fix[-1].append(_seq[_go_b])
+                _tmp_bases = sorted(set(_ref_fix[-1]))
+                if len(_tmp_bases) > 1:
+                    _ref_fix[-1] = tuple(_tmp_bases)
+                else:
+                    _ref_fix[-1] = _tmp_bases[0]
+
+        path_seq_list = list(self.__path_to_seqs[path])
+        if p_start - half_kmer < 0:
+            # extend along the assembly graph to get all possible template
+            extra_len = half_kmer - p_start
+            paths = []
+            for (v_n, v_e), overlap in self.assembly_graph[path[0][0]].connections[not path[0][1]].items():
+                paths.append([(v_n, v_e, overlap)])
+            seqs = []
+            while paths:
+                this_p = paths.pop(0)
+                accumulated_len = sum([self.assembly_graph[_n].len - _o for _n, _e, _o in this_p])
+                if accumulated_len >= extra_len:
+                    cut_len = this_p[-1][2]
+                    pre_seq = self.assembly_graph.export_path_seq_str([(_n, _e) for _n, _e, _o in this_p])[:-cut_len]
+                    seqs.append(pre_seq[-extra_len:])
+                else:
+                    for (v_n, v_e), overlap in self.assembly_graph[this_p[0][0]].connections[not this_p[0][1]].items():
+                        paths.append([(v_n, v_e, overlap)] + this_p)
+            # prefix may be in the form of
+            # [["A", "C"], "A", "T", "C"]
+            if len(seqs) == 1 and set(seqs[0]).issubset(["A", "T", "G", "C"]):
+                ref_prefix = list(seqs[0]) + path_seq_list[0: p_start]
+            else:
+                ref_prefix = []
+                _expand_seqs(_extra_len=extra_len, _ref_fix=ref_prefix, _seqs=seqs)
+                ref_prefix += path_seq_list[0: p_start]
+        else:
+            ref_prefix = path_seq_list[p_start - half_kmer:p_start]
+        if p_end + half_kmer > len(path_seq_list):
+            extra_len = p_end + half_kmer + 1 - len(path_seq_list)
+            paths = []
+            for (v_n, v_e), overlap in self.assembly_graph[path[-1][0]].connections[path[-1][1]].items():
+                paths.append([(v_n, not v_e, overlap)])
+            seqs = []
+            while paths:
+                this_p = paths.pop(0)
+                accumulated_len = sum([self.assembly_graph[_n].len - _o for _n, _e, _o in this_p])
+                if accumulated_len >= extra_len:
+                    cut_len = this_p[0][2]
+                    pre_seq = self.assembly_graph.export_path_seq_str([(_n, _e) for _n, _e, _o in this_p])[cut_len:]
+                    seqs.append(pre_seq[:extra_len])
+                else:
+                    for (v_n, v_e), overlap in self.assembly_graph[this_p[0][0]].connections[this_p[0][1]].items():
+                        paths.append([(v_n, not v_e, overlap)] + this_p)
+            if len(seqs) == 1 and set(seqs[0]).issubset(["A", "T", "G", "C"]):
+                ref_postfix = path_seq_list[p_end:] + list(seqs[0])
+            else:
+                ref_postfix = path_seq_list[p_end:]
+                _expand_seqs(_extra_len=extra_len, _ref_fix=ref_postfix, _seqs=seqs)
+        else:
+            ref_postfix = path_seq_list[p_end: p_end + half_kmer]
+        # correct all other degenerate bases
+        new_ref_seq = ref_prefix + path_seq_list[p_start: p_end] + ref_postfix
+        for go_b, base in enumerate(new_ref_seq):
+            if isinstance(base, str) and base in REV_DEGENERATE:
+                new_ref_seq[go_b] = REV_DEGENERATE[base]
+        return new_ref_seq
+
+    def _cache_path_seqs(self):
+        logger.debug("Caching path sequences ..")
+        assert isinstance(self.assembly_graph, Assembly), \
+            "valid assembly object is required for generating multi-hits probabilities!"
+        self.__path_to_seqs = {}
+        for record in self.raw_records:
+            if record.path not in self.__path_to_seqs:
+                self.__path_to_seqs[record.path] = self.assembly_graph.export_path_seq_str(record.path)
+
+    def _load_query_seqs(self, drop_empty_records=True):
+        """
+        Loading query sequences into ReadRecords,
+        so that self.gen_multi_hits_probabilities() can proceed
+        """
+        logger.debug("Loading query sequences ..")
+        assert isinstance(self.query_files, (tuple, list)), \
+            "valid seq files is required for loading query seqs!"
+        for seq_file in self.query_files:
+            assert os.path.isfile(seq_file), "{} is not available!".format(seq_file)
+            assert seq_file.endswith("fq") or seq_file.endswith("fastq"), "Currently only accept fq/fastq files!"
+        no_seq_found = True
+        for seq_file in self.query_files:
+            # simple fastq parser with sequence extraction embedded
+            with open(seq_file, "r") as input_fh:
+                line_str = input_fh.readline()
+                while line_str:
+                    if line_str.startswith("@"):
+                        if line_str[1:].strip() in self.read_records:
+                            # TODO: seq quality was not taken into consideration yet
+                            self.read_records[line_str[1:].strip()].q_seq = input_fh.readline().strip()
+                            no_seq_found = False
+                        else:
+                            line_str = input_fh.readline()
+                        for foo in range(3):
+                            line_str = input_fh.readline()
+                    else:
+                        line_str = input_fh.readline()
+        if no_seq_found:
+            raise Exception("No matching reads found to load! Please check the input read file or the parse function!")
+        if drop_empty_records:
+            del_raw_ids = []
+            count_d_r = 0
+            for query_name in list(self.read_records):
+                if self.read_records[query_name].q_seq is None:
+                    del_raw_ids.extend(self.read_records[query_name].raw_ids)
+                    del self.read_records[query_name]
+                    count_d_r += 1
+            del_raw_ids.sort(reverse=True)
+            for del_id in del_raw_ids:
+                del self.raw_records[del_id]
+            if len(del_raw_ids):
+                logger.warning(
+                    "{} read records ({} alignments) not found and dropped!".format(count_d_r, len(del_raw_ids)))
+
+    def build_read_records(self):
+        """
+        1. merge self.raw_records into self.read_records (ReadRecords object) by query_name
+        2. within each ReadRecord, sort hits by the query start
+        """
+        logger.debug("Build reads records ..")
+        for go_r, record in enumerate(self.raw_records):
+            if record.query_name not in self.read_records:
+                self.read_records[record.query_name] = ReadRecord()
+            self.read_records[record.query_name].quick_add(go_r, record)
+        for read_record in self:
+            read_record.sort_by()
+
+    def parse_alignment_file(self, num_proc=1):
+        """
+        """
+        logger.info("Parsing alignment ({})".format(self.alignment_format))
+        if num_proc == 1:
             self.parse_alignment_file_single()
         else:
             # TODO
@@ -186,14 +883,13 @@ class GraphAlignRecords(object):
 
     def parse_alignment_file_single(self):
         """
-
         """
         if self.alignment_format == "GAF":
             # store a list of GAFRecord objects made for each line in GAF file.
             with open(self.alignment_file) as input_f:
                 for line_split in csv.reader(input_f, delimiter="\t"):
                     gaf = GAFRecord(line_split, parse_cigar=self.parse_cigar)
-                    self.records.append(gaf)
+                    self.raw_records.append(gaf)
         elif self.alignment_format == "SPA-TSV":
             # store a list of SPAligner SPATSVRecord objects made for each line in TSV file.
             with open(self.alignment_file) as input_f:
@@ -202,101 +898,129 @@ class GraphAlignRecords(object):
                     if "," in line_split[1]:
                         continue
                     tsv = SPATSVRecord(line_split)
-                    self.records.append(tsv)
+                    self.raw_records.append(tsv)
         else:
             raise Exception("unsupported format!")
 
-        # filtering records based on min length
-        if self.min_aligned_path_len:
-            go_r = 0
-            while go_r < len(self.records):
-                if self.records[go_r].p_align_len < self.min_aligned_path_len:
-                    del self.records[go_r]
-                else:
-                    go_r += 1
+        # # filtering raw_records based on min length
+        # if self.min_aligned_path_len:
+        #     del_ids = []
+        #     for go_r, record in enumerate(self.raw_records):
+        #         if record.p_align_len < self.min_aligned_path_len:
+        #             del_ids.append(go_r)
+        #     del_ids.sort(reverse=True)
+        #     for go_r in del_ids:
+        #         del self.raw_records[go_r]
+        #     # go_r = 0
+        #     # while go_r < len(self.raw_records):
+        #     #     if self.raw_records[go_r].p_align_len < self.min_aligned_path_len:
+        #     #         del self.raw_records[go_r]
+        #     #     else:
+        #     #         go_r += 1
 
-        # filtering records based on min length
-        if self.min_align_len > self.min_aligned_path_len:
-            go_r = 0
-            while go_r < len(self.records):
-                if self.records[go_r].align_len < self.min_align_len:
-                    del self.records[go_r]
-                else:
-                    go_r += 1
+        # filtering raw_records based on min length
+        # if self.min_align_len > self.min_aligned_path_len:
+        if self.min_align_len:
+            del_ids = []
+            for go_r, record in enumerate(self.raw_records):
+                if record.align_len < self.min_align_len:
+                    del_ids.append(go_r)
+            del_ids.sort(reverse=True)
+            for go_r in del_ids:
+                del self.raw_records[go_r]
+            # go_r = 0
+            # while go_r < len(self.raw_records):
+            #     if self.raw_records[go_r].align_len < self.min_align_len:
+            #         del self.raw_records[go_r]
+            #     else:
+            #         go_r += 1
 
-        # filtering GAF records by min identity
+        # filtering GAF raw_records by min identity
         if self.alignment_format == "GAF" and self.min_identity:
             go_r = 0
-            while go_r < len(self.records):
-                if self.records[go_r].identity < self.min_identity:
-                    del self.records[go_r]
+            while go_r < len(self.raw_records):
+                if self.raw_records[go_r].identity < self.min_identity:
+                    del self.raw_records[go_r]
                 else:
                     go_r += 1
 
         # no need, it should be already taken into the consideration by graph aligners, at least by GraphAligner
-        # # filtering records by overlap requirement
+        # # filtering raw_records by overlap requirement
         # if self.trim_overlap_with_graph:
         #
-        #     # check that assembly_graph is an Assembly class object
-        #     check1 = isinstance(self.assembly_graph, Assembly)
-        #     check2 = self.assembly_graph.overlap()
+        #     # check that assembly_graph_obj is an Assembly class object
+        #     check1 = isinstance(self.assembly_graph_obj, Assembly)
+        #     check2 = self.assembly_graph_obj.overlap()
         #
         #     # iterate over ... and do ...
         #     if check1 and check2:
-        #         this_overlap = self.assembly_graph.overlap()
+        #         this_overlap = self.assembly_graph_obj.overlap()
         #         go_r = 0
         #
         #         if self.alignment_format == "GAF":
-        #             while go_r < len(self.records):
-        #                 gaf_record = self.records[go_r]
+        #             while go_r < len(self.raw_records):
+        #                 gaf_record = self.raw_records[go_r]
         #                 if len(gaf_record.path) > 1:
         #                     head_v = gaf_record.path[0][0]
         #                     tail_v = gaf_record.path[-1][0]
         #                     # if head_v or tail_v does not appear in the graph, delete current record
-        #                     if head_v in self.assembly_graph.vertex_info and \
-        #                             tail_v in self.assembly_graph.vertex_info:
+        #                     if head_v in self.assembly_graph_obj.vertex_info and \
+        #                             tail_v in self.assembly_graph_obj.vertex_info:
         #                         # if path did not reach out the overlap region between the terminal vertex and
         #                         # the neighboring internal vertex, the terminal vertex should be trimmed from the path
-        #                         head_vertex_len = self.assembly_graph.vertex_info[head_v].len
-        #                         tail_vertex_len = self.assembly_graph.vertex_info[tail_v].len
+        #                         head_vertex_len = self.assembly_graph_obj.vertex_info[head_v].len
+        #                         tail_vertex_len = self.assembly_graph_obj.vertex_info[tail_v].len
         #                         if head_vertex_len - gaf_record.p_start <= this_overlap:
         #                             del gaf_record.path[0]
         #                         if tail_vertex_len - (gaf_record.p_len - gaf_record.p_end - 1) <= this_overlap:
         #                             del gaf_record.path[-1]
         #                         if not gaf_record.path:
-        #                             del self.records[go_r]
+        #                             del self.raw_records[go_r]
         #                         else:
         #                             go_r += 1
         #                     else:
-        #                         del self.records[go_r]
+        #                         del self.raw_records[go_r]
         #                 else:
         #                     go_r += 1
         #         else:
-        #             while go_r < len(self.records):
-        #                 spa_tsv_record = self.records[go_r]
+        #             while go_r < len(self.raw_records):
+        #                 spa_tsv_record = self.raw_records[go_r]
         #                 if len(spa_tsv_record.path) > 1:
         #                     head_v = spa_tsv_record.path[0][0]
         #                     # if head_v does not appear in the graph, delete current record
-        #                     if head_v in self.assembly_graph.vertex_info:
+        #                     if head_v in self.assembly_graph_obj.vertex_info:
         #                         # if path did not reach out the overlap region between the terminal vertex and
         #                         # the neighboring internal vertex, the terminal vertex should be trimmed from the path
-        #                         head_vertex_len = self.assembly_graph.vertex_info[head_v].len
+        #                         head_vertex_len = self.assembly_graph_obj.vertex_info[head_v].len
         #                         if head_vertex_len - spa_tsv_record.p_start <= this_overlap:
         #                             del spa_tsv_record.path[0]
         #                         if spa_tsv_record.path_align_lengths[-1] <= this_overlap:
         #                             del spa_tsv_record.path[-1]
         #                         if not spa_tsv_record.path:
-        #                             del self.records[go_r]
+        #                             del self.raw_records[go_r]
         #                         else:
         #                             go_r += 1
         #                     else:
-        #                         del self.records[go_r]
+        #                         del self.raw_records[go_r]
         #                 else:
         #                     go_r += 1
         #
         # else:
         #     logger.warning("assembly graph not available, overlaps untrimmed")
 
+    def output(self, output_file, output_fmt="gaf"):
+        if output_fmt == "gaf":
+            with open(output_file, "w") as output_fh:
+                for read_record in self.read_records.values():
+                    for raw_id in read_record.raw_ids():
+                        output_fh.write(self.raw_records[raw_id].as_gaf_str() + "\n")
+        else:
+            # TODO
+            pass
+
     def __iter__(self):
-        for record in self.records:
-            yield record
+        for query_name, read_record in self.read_records.items():
+            yield read_record
+
+    def __getitem__(self, query_name: str):
+        return self.read_records[query_name]

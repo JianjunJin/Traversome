@@ -107,7 +107,7 @@ class Traversome(object):
         self.alignment = GraphAlignRecords(
             self.alignment_file,
             alignment_format=self.alignment_format,
-            min_aligned_path_len=self.kwargs.get("min_alignment_len_cutoff", 100),
+            min_align_len=self.kwargs.get("min_alignment_len_cutoff", 100),
             min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.8),
         )
         self.generate_read_paths()
@@ -150,7 +150,7 @@ class Traversome(object):
         return alignment_format
 
     def generate_read_paths(self):
-        for go_record, record in enumerate(self.alignment.records):
+        for go_record, record in enumerate(self.alignment.raw_records):
             this_read_path = self.graph.get_standardized_path(record.path)
             if this_read_path not in self.read_paths:
                 self.read_paths[this_read_path] = []
@@ -177,7 +177,7 @@ class Traversome(object):
         logger.debug("Summarizing alignment length distribution")
 
         # get sorted alignment lengths
-        self.align_len_at_path_sorted = sorted([rec.p_align_len for rec in self.alignment])
+        self.align_len_at_path_sorted = sorted([rec.p_align_len for rec in self.alignment.raw_records])
 
         # optionally save temp files
         if self.keep_temp:
@@ -592,7 +592,7 @@ class Traversome(object):
         # mark2, if include this, better removing code block under mark1
         # leading to nan like?
         # # the other unrecorded observed matches
-        # observations.append(len(self.alignment.records) - sum(observations))
+        # observations.append(len(self.alignment.raw_records) - sum(observations))
         # # the other unrecorded expected matches
         # # Theano may not support sum, use for loop instead
         # other_prob = 1
@@ -608,7 +608,7 @@ class Traversome(object):
 
         # for go_sp, this_sp_info in these_sp_info.items():
         #     for record_id in this_sp_info.mapped_records:
-        #         this_len_sp_xs = self.pal_len_sbp_Xs[self.alignment.records[record_id].p_align_len]
+        #         this_len_sp_xs = self.pal_len_sbp_Xs[self.alignment.raw_records[record_id].p_align_len]
         #         ...
 
         # likelihood
