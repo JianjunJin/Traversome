@@ -4,7 +4,8 @@
 Class objects to store Graph Alignments 
 """
 
-import csv
+# import csv
+import math
 import os.path
 import re
 from loguru import logger
@@ -152,6 +153,38 @@ class SPATSVRecord(object):
 
     def as_gaf_str(self):
         pass
+
+
+def _gaf_parse_worker(csv_lines_gen, _min_align_len, _min_identity, _parse_cigar):
+    """
+    plain function for easier multiprocessing
+    """
+    _gaf_list = []
+    for _line_split in csv_lines_gen:
+        _line_split = _line_split.strip().split("\t")
+        # skip unqualified record quickly
+        if int(_line_split[10]) < _min_align_len:
+            continue
+        gaf = GAFRecord(_line_split, parse_cigar=_parse_cigar)
+        if gaf.identity >= _min_identity:
+            _gaf_list.append(gaf)
+    return _gaf_list
+
+
+def _tsv_parse_worker(csv_lines_gen, _min_align_len):
+    """
+    plain function for easier multiprocessing
+    """
+    _tsv_list = []
+    for _line_split in csv_lines_gen:
+        _line_split = _line_split.strip().split("\t")
+        # skip those alignment with several non-overlapping subpaths
+        if "," in _line_split[1]:
+            continue
+        tsv = SPATSVRecord(_line_split)
+        if tsv.align_len >= _min_align_len:
+            _tsv_list.append(tsv)
+    return _tsv_list
 
 
 class ReadRecord(object):
@@ -355,6 +388,7 @@ class GraphAlignRecords(object):
             assembly_graph_obj=None,
             query_fq_files=None,
             num_proc=1,
+            **kwargs
     ):
         # store params to self
         self.alignment_file = alignment_file
@@ -368,13 +402,14 @@ class GraphAlignRecords(object):
         # self.trim_overlap_with_graph = trim_overlap_with_graph
         self.assembly_graph = assembly_graph_obj  # for training model
         self.query_files = query_fq_files
+        self.num_proc = num_proc
 
         # destination for parsed results
         self.raw_records = []
         self.read_records = OrderedDict()
 
         # run the parsing function
-        self.parse_alignment_file()
+        self.parse_alignment_file(num_proc=num_proc, _num_block_lines=kwargs.get("_num_block_lines", 10000))
         self.build_read_records()
 
         # generate the probabilities of multiple hits for each query
@@ -589,7 +624,7 @@ class GraphAlignRecords(object):
                         count_r += 1
             echo_id += 1
             if echo_id % echo_freq == 0:
-                print("{}/{} reads".format(echo_id, len_reads))
+                logger.debug("{}/{} reads".format(echo_id, len_reads))
         self.transition_counts = transition_counts
 
     def __gen_transition_counts_m(self, kmer_s, base_scenarios, num_proc):  #
@@ -607,7 +642,7 @@ class GraphAlignRecords(object):
             # transition_counts[tuple(r_context)] = {query_b_: 0 for query_b_ in base_scenarios}
         # lock = manager.Lock()
         # shared by workers to know the progress
-        pool_obj = Pool(processes=num_proc)
+        pool_obj = Pool(processes=num_proc - 1)
         # logger.debug("serializing the transition matrix counting for multiprocessing ..")
         # payload = dill.dumps((_gtc_worker,
         #                       (_half_kmer, read_names, global_vars, _transition_counts, lock)))
@@ -625,17 +660,19 @@ class GraphAlignRecords(object):
                     record = cfl_group[0]
                     ref_seq = self.__format_modify_ref_seq(
                         path=record.path, p_start=record.p_start, p_end=record.p_end + 1, half_kmer=half_kmer)
-                    pool_obj.apply_async(
-                        _add_alignment_to_transition_counts_mp,
-                        (read_seq[record.q_start: record.q_end + 1],
-                         ref_seq,
-                         record.q_start,
-                         record.cigar,
-                         half_kmer,
-                         kmer_s,
-                         (read_name, count_r),
-                         len(transition_counts),
-                         *transition_counts, )
+                    jobs.append(
+                        pool_obj.apply_async(
+                            _add_alignment_to_transition_counts_mp,
+                            (read_seq[record.q_start: record.q_end + 1],
+                             ref_seq,
+                             record.q_start,
+                             record.cigar,
+                             half_kmer,
+                             kmer_s,
+                             (read_name, count_r),
+                             len(transition_counts),
+                             *transition_counts, )
+                        )
                     )
                     count_r += 1
                 else:
@@ -647,22 +684,24 @@ class GraphAlignRecords(object):
                         q_end_ = record.q_end - cfl_q_start
                         ref_seq = self.__format_modify_ref_seq(
                             path=record.path, p_start=record.p_start, p_end=record.p_end + 1, half_kmer=half_kmer)
-                        pool_obj.apply_async(
-                            _add_alignment_to_transition_counts_mp,
-                            (cfl_qry_seq[q_start_: q_end_ + 1],
-                             ref_seq,
-                             record.q_start,
-                             record.cigar,
-                             half_kmer,
-                             kmer_s,
-                             (read_name, count_r),
-                             len(transition_counts),
-                             *transition_counts,)
+                        jobs.append(
+                            pool_obj.apply_async(
+                                _add_alignment_to_transition_counts_mp,
+                                (cfl_qry_seq[q_start_: q_end_ + 1],
+                                 ref_seq,
+                                 record.q_start,
+                                 record.cigar,
+                                 half_kmer,
+                                 kmer_s,
+                                 (read_name, count_r),
+                                 len(transition_counts),
+                                 *transition_counts,)
+                            )
                         )
                         count_r += 1
             echo_id += 1
             if echo_id % echo_freq == 0:
-                print("{}/{} reads".format(echo_id, len_reads))
+                logger.debug("{}/{} reads".format(echo_id, len_reads))
         logger.debug("jobs closed.")
         pool_obj.close()
         for job in jobs:
@@ -871,15 +910,64 @@ class GraphAlignRecords(object):
         for read_record in self:
             read_record.sort_by()
 
-    def parse_alignment_file(self, num_proc=1):
+    def parse_alignment_file(self, num_proc=1, _num_block_lines=10000):
         """
         """
         logger.info("Parsing alignment ({})".format(self.alignment_format))
         if num_proc == 1:
             self.parse_alignment_file_single()
         else:
-            # TODO
-            pass
+            self.parse_alignment_file_mul(num_proc=num_proc, num_block_lines=_num_block_lines)
+
+    def parse_alignment_file_mul(self, num_proc, num_block_lines=10000):
+        """
+        multiprocess version of parse_alignment_file_single
+
+        Parameters
+        -----
+        num_proc: empirically 4 is enough, a greater value will not help
+        num_block_lines:
+        """
+        if self.alignment_format not in ("GAF", "SPA-TSV"):
+            raise Exception("unsupported format!")
+        pool_obj = Pool(processes=num_proc - 1)
+        jobs = []
+        cached_lines = []
+        start_block_size = max(math.ceil(num_block_lines/num_proc), 1)
+        step_block = max(math.ceil(num_block_lines/num_proc), 1)
+        if self.alignment_format == "GAF":
+            # store a list of GAFRecord objects made for each line in GAF file.
+            with open(self.alignment_file) as input_f:
+                # for line_str in csv.reader(input_f, delimiter="\t"):
+                for line_str in input_f:
+                    if len(cached_lines) > start_block_size:
+                        jobs.append(
+                            pool_obj.apply_async(
+                                _gaf_parse_worker,
+                                (cached_lines, self.min_align_len, self.min_identity, self.parse_cigar)))
+                        cached_lines = []
+                        start_block_size += min(start_block_size + step_block, num_block_lines)
+                    else:
+                        cached_lines.append(line_str)
+                jobs.append(
+                    pool_obj.apply_async(_gaf_parse_worker,
+                                         (cached_lines, self.min_align_len, self.min_identity, self.parse_cigar))
+                )
+        elif self.alignment_format == "SPA-TSV":
+            # store a list of SPAligner SPATSVRecord objects made for each line in TSV file.
+            with open(self.alignment_file) as input_f:
+                # for line_split in csv.reader(input_f, delimiter="\t"):
+                for line_str in input_f:
+                    if len(cached_lines) > num_block_lines:
+                        jobs.append(pool_obj.apply_async(_tsv_parse_worker, (cached_lines, self.min_align_len)))
+                        cached_lines = []
+                    else:
+                        cached_lines.append(line_str)
+                jobs.append(pool_obj.apply_async(_tsv_parse_worker, (cached_lines, self.min_align_len)))
+        pool_obj.close()
+        for job in jobs:
+            self.raw_records.extend(job.get())
+        pool_obj.join()
 
     def parse_alignment_file_single(self):
         """
@@ -887,18 +975,19 @@ class GraphAlignRecords(object):
         if self.alignment_format == "GAF":
             # store a list of GAFRecord objects made for each line in GAF file.
             with open(self.alignment_file) as input_f:
-                for line_split in csv.reader(input_f, delimiter="\t"):
-                    gaf = GAFRecord(line_split, parse_cigar=self.parse_cigar)
-                    self.raw_records.append(gaf)
+                self.raw_records = _gaf_parse_worker(
+                    # csv_lines_gen=csv.reader(input_f, delimiter="\t"),
+                    csv_lines_gen=input_f,
+                    _min_align_len=self.min_align_len,
+                    _min_identity=self.min_identity,
+                    _parse_cigar=self.parse_cigar)
         elif self.alignment_format == "SPA-TSV":
             # store a list of SPAligner SPATSVRecord objects made for each line in TSV file.
             with open(self.alignment_file) as input_f:
-                for line_split in csv.reader(input_f, delimiter="\t"):
-                    # skip those alignment with several non-overlapping subpaths
-                    if "," in line_split[1]:
-                        continue
-                    tsv = SPATSVRecord(line_split)
-                    self.raw_records.append(tsv)
+                self.raw_records = _tsv_parse_worker(
+                    # csv_lines_gen=csv.reader(input_f, delimiter="\t"),
+                    csv_lines_gen=input_f,
+                    _min_align_len=self.min_align_len)
         else:
             raise Exception("unsupported format!")
 
@@ -920,29 +1009,30 @@ class GraphAlignRecords(object):
 
         # filtering raw_records based on min length
         # if self.min_align_len > self.min_aligned_path_len:
-        if self.min_align_len:
-            del_ids = []
-            for go_r, record in enumerate(self.raw_records):
-                if record.align_len < self.min_align_len:
-                    del_ids.append(go_r)
-            del_ids.sort(reverse=True)
-            for go_r in del_ids:
-                del self.raw_records[go_r]
-            # go_r = 0
-            # while go_r < len(self.raw_records):
-            #     if self.raw_records[go_r].align_len < self.min_align_len:
-            #         del self.raw_records[go_r]
-            #     else:
-            #         go_r += 1
 
-        # filtering GAF raw_records by min identity
-        if self.alignment_format == "GAF" and self.min_identity:
-            go_r = 0
-            while go_r < len(self.raw_records):
-                if self.raw_records[go_r].identity < self.min_identity:
-                    del self.raw_records[go_r]
-                else:
-                    go_r += 1
+        # if self.min_align_len:
+        #     del_ids = []
+        #     for go_r, record in enumerate(self.raw_records):
+        #         if record.align_len < self.min_align_len:
+        #             del_ids.append(go_r)
+        #     del_ids.sort(reverse=True)
+        #     for go_r in del_ids:
+        #         del self.raw_records[go_r]
+        #     # go_r = 0
+        #     # while go_r < len(self.raw_records):
+        #     #     if self.raw_records[go_r].align_len < self.min_align_len:
+        #     #         del self.raw_records[go_r]
+        #     #     else:
+        #     #         go_r += 1
+        #
+        # # filtering GAF raw_records by min identity
+        # if self.alignment_format == "GAF" and self.min_identity:
+        #     go_r = 0
+        #     while go_r < len(self.raw_records):
+        #         if self.raw_records[go_r].identity < self.min_identity:
+        #             del self.raw_records[go_r]
+        #         else:
+        #             go_r += 1
 
         # no need, it should be already taken into the consideration by graph aligners, at least by GraphAligner
         # # filtering raw_records by overlap requirement
