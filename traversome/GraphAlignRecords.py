@@ -379,7 +379,7 @@ class GraphAlignRecords(object):
             self,
             alignment_file,
             alignment_format="GAF",
-            gen_multi_hits_prob=True,
+            gen_multi_hits_prob=False,
             # min_aligned_path_len=0,
             min_align_len=0,
             min_identity=0.,
@@ -419,8 +419,10 @@ class GraphAlignRecords(object):
         self._equations = None
         self._symbols = None
         self._solution = None
-        # if gen_multi_hits_prob:
-        #     self.gen_multi_hits_probabilities(num_proc=num_proc)
+        if gen_multi_hits_prob:
+            logger.warning(
+                "gen_multi_hits_prob cannot be activate because no available graph aligner can generate valid data!")
+            # self.gen_multi_hits_probabilities(num_proc=num_proc)
 
     def gen_multi_hits_probabilities(self, num_proc=1):
         """
@@ -432,7 +434,8 @@ class GraphAlignRecords(object):
 
         kmer_s = 5
         transition_matrix = self.__gen_transition_matrix(kmer_s=kmer_s, num_proc=num_proc)
-
+        # TODO
+        # calculate the probabilities
 
         # clear the memory
         # self.__path_to_seqs = {}
@@ -522,7 +525,7 @@ class GraphAlignRecords(object):
                         go_r += 1
             echo_id += 1
             if echo_id % echo_freq == 0:
-                print("{}/{} reads".format(echo_id, len_reads))
+                logger.debug("{}/{} reads".format(echo_id, len_reads))
         self.transition_matrix = transition_matrix
         return transition_matrix, equations
 
