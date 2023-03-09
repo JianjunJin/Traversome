@@ -106,7 +106,7 @@ class SingleTraversal(object):
                     if self.__cov_inert:
                         cdd_cov = [self.__get_cov_mean(self.read_paths[read_id], exclude_path=path)
                                    for read_id, strand in candidates]
-                        weights = [exp(log(weights[go_c]) - abs(log(cov / current_ave_coverage)))
+                        weights = [exp(log(weights[go_c]) - abs(log(cov / current_ave_coverage))) * self.__cov_inert
                                    for go_c, cov in enumerate(cdd_cov)]
                     read_id, strand = random.choices(candidates, weights=weights)[0]
                     if strand:
@@ -158,7 +158,7 @@ class SingleTraversal(object):
                             # coverage inertia, more likely to extend to contigs with similar depths,
                             # which are more likely to be the same target chromosome / organelle type
                             cdd_cov = [self.contig_coverages[_n_] for _n_, _e_ in candidates_next]
-                            weights = [exp(-abs(log(cov / current_ave_coverage))) for cov in cdd_cov]
+                            weights = [exp(-abs(log(cov / current_ave_coverage))) * self.__cov_inert for cov in cdd_cov]
                             logger.trace("      likes: {}".format(weights))
                             next_name, next_end = random.choices(candidates_next, weights=weights)[0]
                         else:
@@ -999,7 +999,7 @@ class PathGenerator(object):
                         self.variants.append(new_path)
                         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
                             len(self.variants), self.count_valid, self.num_valid_search, self.count_search))
-                    if self.count_valid == self.num_valid_search:
+                    if self.count_valid >= self.num_valid_search:
                         add_search = self.__access_read_path_coverage(
                             growing_variants=self.variants,
                             previous_len_variant=self.__previous_len_variant,
