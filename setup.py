@@ -29,7 +29,7 @@ else:
     install_requires = [
         "dill",
         "numpy",
-        "pandas",
+        # "pandas",
         "scipy",
     	"pymc3",
         "symengine",

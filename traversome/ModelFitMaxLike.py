@@ -45,7 +45,7 @@ class ModelFitMaxLike(object):
         self.variant_percents = [symengine.Symbol("P" + str(variant_id)) if variant_id in chosen_ids else False
                                  for variant_id in range(self.num_put_variants)]
         logger.info("Generating the likelihood function .. ")
-        self.pe_neg_loglike_function = self.get_neg_likelihood_of_iso_freq(
+        self.pe_neg_loglike_function = self.get_neg_likelihood_of_var_freq(
             within_variant_ids=set(chosen_ids))\
             .loglike_func
         logger.info("Maximizing the likelihood function .. ")
@@ -95,22 +95,22 @@ class ModelFitMaxLike(object):
             logger.debug("Trying dropping {} variant(s) ..".format(self.num_put_variants - len(chosen_ids) + 1))
             test_id_res = OrderedDict()
             # chosen_this_round = set()
-            for iso_id in chosen_ids:
-                testing_ids = set(chosen_ids) - {iso_id}
-                if self.traversome.cover_all_observed_sp(testing_ids):
+            for var_id in chosen_ids:
+                testing_ids = set(chosen_ids) - {var_id}
+                if self.traversome.cover_all_observed_subpaths(testing_ids):
                     logger.debug(
                         "Test variants [{}] - {}".
-                        format(", ".join([self.__str_rep_id(_c_i) for _c_i in chosen_ids]), self.__str_rep_id(iso_id)))
+                        format(", ".join([self.__str_rep_id(_c_i) for _c_i in chosen_ids]), self.__str_rep_id(var_id)))
                     res_list = self.__compute_like_and_criteria(chosen_id_set=testing_ids, criteria=criterion)
-                    test_id_res[iso_id] = \
+                    test_id_res[var_id] = \
                         {"prop": res_list[0], "echo": res_list[1], "loglike": res_list[2], criterion: res_list[3]}
                 else:
                     logger.debug(
                         "Test variants [{}] - {}: skipped for necessary subpath(s)"
-                        .format(", ".join([self.__str_rep_id(_c_i) for _c_i in chosen_ids]), self.__str_rep_id(iso_id)))
+                        .format(", ".join([self.__str_rep_id(_c_i) for _c_i in chosen_ids]), self.__str_rep_id(var_id)))
             if test_id_res:
-                best_drop_id, best_val = sorted([[_go_iso_, test_id_res[_go_iso_][criterion]]
-                                                 for _go_iso_ in test_id_res],
+                best_drop_id, best_val = sorted([[_go_var_, test_id_res[_go_var_][criterion]]
+                                                 for _go_var_ in test_id_res],
                                                 key=lambda x: x[1])[0]
                 if best_val < previous_criteria:
                     previous_criteria = best_val
@@ -122,13 +122,13 @@ class ModelFitMaxLike(object):
                     logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
                     logger.info("Log-likelihood: %s" % previous_like)
                     self.__drop_zero_variants(chosen_ids, previous_prop, previous_echo, diff_tolerance)
-                    # for iso_id in list(chosen_ids):
-                    #     if abs(previous_prop[iso_id] - 0.) < diff_tolerance:
-                    #         del chosen_ids[iso_id]
-                    #         for uid_iso_id in self.traversome.merged_variants[iso_id]:
-                    #             del previous_prop[uid_iso_id]
-                    #         del previous_echo[self.__str_rep_id(iso_id)]
-                    #         logger.info("Drop {}".format(self.__str_rep_id(iso_id)))
+                    # for var_id in list(chosen_ids):
+                    #     if abs(previous_prop[var_id] - 0.) < diff_tolerance:
+                    #         del chosen_ids[var_id]
+                    #         for uid_var_id in self.traversome.merged_variants[var_id]:
+                    #             del previous_prop[uid_var_id]
+                    #         del previous_echo[self.__str_rep_id(var_id)]
+                    #         logger.info("Drop {}".format(self.__str_rep_id(var_id)))
                 else:
                     logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
                     logger.info("Log-likelihood: %s" % previous_like)
@@ -142,17 +142,17 @@ class ModelFitMaxLike(object):
         return previous_prop
 
     def __drop_zero_variants(self, chosen_ids, representative_props, echo_props, diff_tolerance):
-        for iso_id in list(chosen_ids):
-            if abs(representative_props[iso_id] - 0.) < diff_tolerance:
-                del chosen_ids[iso_id]
-                for uid_iso_id in self.traversome.merged_variants[iso_id]:
-                    del representative_props[uid_iso_id]
-                del echo_props[self.__str_rep_id(iso_id)]
-                logger.info("Drop id_{}".format(self.__str_rep_id(iso_id)))
+        for var_id in list(chosen_ids):
+            if abs(representative_props[var_id] - 0.) < diff_tolerance:
+                del chosen_ids[var_id]
+                for uid_var_id in self.traversome.merged_variants[var_id]:
+                    del representative_props[uid_var_id]
+                del echo_props[self.__str_rep_id(var_id)]
+                logger.info("Drop id_{}".format(self.__str_rep_id(var_id)))
 
     def __compute_like_and_criteria(self, chosen_id_set, criteria):
         logger.debug("Generating the likelihood function .. ")
-        neg_loglike_func_obj = self.get_neg_likelihood_of_iso_freq(
+        neg_loglike_func_obj = self.get_neg_likelihood_of_var_freq(
             within_variant_ids=chosen_id_set)
         logger.info("Maximizing the likelihood function for {} variants".format(len(chosen_id_set)))
         success_run = self.minimize_neg_likelihood(
@@ -182,26 +182,26 @@ class ModelFitMaxLike(object):
         else:
             raise Exception("Likelihood maximization failed.")
 
-    def __summarize_run_prop(self, success_run, within_iso_ids=None):
+    def __summarize_run_prop(self, success_run, within_var_ids=None):
         prop_dict = {}
-        if within_iso_ids:
-            representatives = [rep_id for rep_id in self.traversome.merged_variants if rep_id in within_iso_ids]
+        if within_var_ids:
+            representatives = [rep_id for rep_id in self.traversome.merged_variants if rep_id in within_var_ids]
         else:
             representatives = list(self.traversome.merged_variants)
         echo_prop = OrderedDict()
         for go, this_prop in enumerate(success_run.x):
             echo_prop[self.__str_rep_id(representatives[go])] = this_prop
-            unidentifiable_iso_ids = self.traversome.merged_variants[representatives[go]]
-            this_prop /= len(unidentifiable_iso_ids)
-            for uid_iso_id in unidentifiable_iso_ids:
-                prop_dict[uid_iso_id] = this_prop
+            unidentifiable_var_ids = self.traversome.merged_variants[representatives[go]]
+            this_prop /= len(unidentifiable_var_ids)
+            for uid_var_id in unidentifiable_var_ids:
+                prop_dict[uid_var_id] = this_prop
         use_prop = OrderedDict([(_id, prop_dict[_id]) for _id in sorted(prop_dict)])
         return use_prop, echo_prop
 
     def __str_rep_id(self, rep_id):
-        return "+".join([str(_uid_iso_id) for _uid_iso_id in self.traversome.merged_variants[rep_id]])
+        return "+".join([str(_uid_var_id) for _uid_var_id in self.traversome.merged_variants[rep_id]])
 
-    def get_neg_likelihood_of_iso_freq(self, within_variant_ids=None, scipy_style=True):
+    def get_neg_likelihood_of_var_freq(self, within_variant_ids=None, scipy_style=True):
         # log_like_formula = self.traversome.get_likelihood_binomial_formula(
         #     self.variant_percents,
         #     log_func=sympy.log,
@@ -213,8 +213,8 @@ class ModelFitMaxLike(object):
             within_variant_ids=within_variant_ids)
         if within_variant_ids is None:
             within_variant_ids = set(range(self.num_put_variants))
-        # neg_likelihood_of_iso_freq = sympy.lambdify(
-        neg_likelihood_of_iso_freq = symengine.lambdify(
+        # neg_likelihood_of_var_freq = sympy.lambdify(
+        neg_likelihood_of_var_freq = symengine.lambdify(
             args=[self.variant_percents[variant_id]
                   for variant_id in range(self.num_put_variants) if variant_id in within_variant_ids],
             # expr=-log_like_formula.loglike_expression)
@@ -223,16 +223,16 @@ class ModelFitMaxLike(object):
         if scipy_style:
             # for compatibility between scipy and sympy
             # positional arguments -> single tuple argument
-            def neg_likelihood_of_iso_freq_single_arg(x):
-                return neg_likelihood_of_iso_freq(*tuple(x))
+            def neg_likelihood_of_variant_freq_single_arg(x):
+                return neg_likelihood_of_var_freq(*tuple(x))
 
             return LogLikeFuncInfo(
-                loglike_func=neg_likelihood_of_iso_freq_single_arg,
+                loglike_func=neg_likelihood_of_variant_freq_single_arg,
                 variable_size=log_like_formula.variable_size,
                 sample_size=log_like_formula.sample_size)
         else:
             return LogLikeFuncInfo(
-                loglike_func=neg_likelihood_of_iso_freq,
+                loglike_func=neg_likelihood_of_var_freq,
                 variable_size=log_like_formula.variable_size,
                 sample_size=log_like_formula.sample_size)
 

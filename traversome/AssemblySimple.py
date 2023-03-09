@@ -269,6 +269,9 @@ class AssemblySimple(object):
         for vertex in sorted(self.vertex_info):
             yield self.vertex_info[vertex]
 
+    def __getitem__(self, item: str):
+        return self.vertex_info[item]
+
     def parse_gfa(self):
         """
         Parse a GFA format file and fill information to self.vertex_info.
@@ -307,7 +310,7 @@ class AssemblySimple(object):
         and .__overlap with the link tag lines.
         """
         # set for storing kmer results
-        kmer_values = set()
+        overlap_values = set()
 
         # iterate over lines in gfa
         for line in gfa_open:
@@ -429,33 +432,39 @@ class AssemblySimple(object):
                     end_2 = {"+": False, "-": True}[end_2]
 
                     # store the kmer values
-                    kmer_values.add(alignment_cigar)
+                    overlap = alignment_cigar.strip("M")
+                    try:
+                        overlap = int(overlap)
+                    except:
+                        raise ValueError(
+                            "Contig overlap information contains characters other than M: " + alignment_cigar)
+                    overlap_values.add(overlap)
 
                     # store the connection (link) between these verts
-                    self.vertex_info[vertex_1].connections[end_1][(vertex_2, end_2)] = None
-                    self.vertex_info[vertex_2].connections[end_2][(vertex_1, end_1)] = None
+                    self.vertex_info[vertex_1].connections[end_1][(vertex_2, end_2)] = overlap
+                    self.vertex_info[vertex_2].connections[end_2][(vertex_1, end_1)] = overlap
 
         # Record the overlap of READS with the contigs.
         # if no kmers data was found then overlap is zero
-        if len(kmer_values) == 0:
+        if len(overlap_values) == 0:
             self.__overlap = None
 
-        # if multiple kmer counts are present then its an error
-        elif len(kmer_values) > 1:
+        # if multiple overlaps counts are present then its an error
+        elif len(overlap_values) > 1:
             raise ProcessingGraphFailed(
                 "Multiple overlap values: {}".format(
-                    ",".join(sorted(kmer_values)))
+                    ",".join([str(ol) for ol in sorted(overlap_values)]))
             )
         
         # only one value is present so let's store it as an int
         else:
-            self.__overlap = int(kmer_values.pop()[:-1])
+            self.__overlap = overlap_values.pop()
 
     def parse_gfa_v2(self, gfa_open):
         "GFA VERSION 2 PARSING"
 
         # set for storing kmer results
-        kmer_values = set()
+        overlap_values = set()
 
         # iterate over lines in gfa
         for line in gfa_open:
@@ -530,17 +539,24 @@ class AssemblySimple(object):
                 if vertex_1 in self.vertex_info and vertex_2 in self.vertex_info:
                     end_1 = {"+": True, "-": False}[end_1]
                     end_2 = {"+": False, "-": True}[end_2]
-                    kmer_values.add(alignment_cigar)
-                    self.vertex_info[vertex_1].connections[end_1][(vertex_2, end_2)] = None
-                    self.vertex_info[vertex_2].connections[end_2][(vertex_1, end_1)] = None
+                    overlap = alignment_cigar.strip("M")
+                    try:
+                        overlap = int(overlap)
+                    except:
+                        raise ValueError(
+                            "Contig overlap information contains characters other than M: " + alignment_cigar)
+                    overlap_values.add(overlap)
+                    self.vertex_info[vertex_1].connections[end_1][(vertex_2, end_2)] = overlap
+                    self.vertex_info[vertex_2].connections[end_2][(vertex_1, end_1)] = overlap
 
         # store overlap score as either None or an int
-        if len(kmer_values) == 0:
+        if len(overlap_values) == 0:
             self.__overlap = None
-        elif len(kmer_values) > 1:
-            raise ProcessingGraphFailed("Multiple overlap values: " + ",".join(sorted(kmer_values)))
+        elif len(overlap_values) > 1:
+            raise ProcessingGraphFailed(
+                "Multiple overlap values: " + ",".join([str(ol) for ol in sorted(overlap_values)]))
         else:
-            self.__overlap = int(kmer_values.pop()[:-1])
+            self.__overlap = overlap_values.pop()
 
     def parse_fastg(self, min_cov=0., max_cov=INF):
         """

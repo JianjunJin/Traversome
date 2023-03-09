@@ -36,9 +36,23 @@ else:
     sys.exit(0)
 
 
-
 def complementary_seqs(input_seq_iter):
     return tuple([complementary_seq(seq) for seq in input_seq_iter])
+
+
+DEGENERATE_PAIRS = [["R", ("A", "G")],
+                    ["Y", ("C", "T")],
+                    ["M", ("A", "C")],
+                    ["K", ("G", "T")],
+                    ["S", ("C", "G")],
+                    ["W", ("A", "T")],
+                    ["H", ("A", "C", "T")],
+                    ["B", ("C", "G", "T")],
+                    ["V", ("A", "C", "G")],
+                    ["D", ("A", "G", "T")],
+                    ["N", ("A", "C", "G", "T")]]
+REV_DEGENERATE = {__degenerated_base: __bases for __degenerated_base, __bases in DEGENERATE_PAIRS}
+TO_DEGENERATE = {__bases: __degenerated_base for __degenerated_base, __bases in DEGENERATE_PAIRS}
 
 
 ########################################################################
@@ -388,8 +402,54 @@ class ProcessingGraphFailed(Exception):
 ###   FUNCTIONS OUTSIDE OF CLASSES
 ########################################################################
 
+# def generate_clusters_from_connections(vertices, connections):
+#     """
+#     :param vertices: list or set
+#     :param connections: symmetric raw_records, e.g.
+#                         {"vertex_1": ["vertex_2", "vertex_3"],
+#                          "vertex_2": ["vertex_1"],
+#                          "vertex_3": ["vertex_1", "vertex_5"],
+#                          "vertex_4": [],
+#                          "vertex_5": ["vertex_3"]}
+#     :return: e.g. [{"vertex_1", "vertex_2", "vertex_3", "vertex_5"}, {"vertex_4"}]
+#     """
+#     # Each cluster is a connected set of vertices.
+#     vertex_clusters = []
+#
+#     # iterate over vertices
+#     for this_vertex in sorted(vertices):
+#
+#         # build a set of connections (edges) from this vertex to established clusters
+#         connecting_those = set()
+#         for next_v in connections.get(this_vertex, []):
+#             # for connected_set in self.vertex_info[this_vertex].connections.values():
+#             #     for next_v, next_d in connected_set:
+#             for go_to_set, cluster in enumerate(vertex_clusters):
+#                 if next_v in cluster:
+#                     connecting_those.add(go_to_set)
+#
+#         # if no edges then store just this one
+#         if not connecting_those:
+#             vertex_clusters.append({this_vertex})
+#
+#         # if 1 then add this one to its cluster.
+#         elif len(connecting_those) == 1:
+#             vertex_clusters[connecting_those.pop()].add(this_vertex)
+#
+#         # if many then ...
+#         else:
+#             sorted_those = sorted(connecting_those, reverse=True)
+#             vertex_clusters[sorted_those[-1]].add(this_vertex)
+#             for go_to_set in sorted_those[:-1]:
+#                 for that_vertex in vertex_clusters[go_to_set]:
+#                     vertex_clusters[sorted_those[-1]].add(that_vertex)
+#                 del vertex_clusters[go_to_set]
+#     return vertex_clusters
+
+
 def generate_clusters_from_connections(vertices, connections):
     """
+    faster than above algorithm. 2022-12-18.
     :param vertices: list or set
     :param connections: symmetric records, e.g.
                         {"vertex_1": ["vertex_2", "vertex_3"],
@@ -399,37 +459,23 @@ def generate_clusters_from_connections(vertices, connections):
                          "vertex_5": ["vertex_3"]}
     :return: e.g. [{"vertex_1", "vertex_2", "vertex_3", "vertex_5"}, {"vertex_4"}]
     """
-    # Each cluster is a connected set of vertices.
     vertex_clusters = []
-
-    # iterate over vertices
-    for this_vertex in sorted(vertices):
-
-        # build a set of connections (edges) from this vertex to established clusters
-        connecting_those = set()
-        for next_v in connections.get(this_vertex, []):
-            # for connected_set in self.vertex_info[this_vertex].connections.values():
-            #     for next_v, next_d in connected_set:
-            for go_to_set, cluster in enumerate(vertex_clusters):
-                if next_v in cluster:
-                    connecting_those.add(go_to_set)
-
-        # if no edges then store just this one
-        if not connecting_those:
-            vertex_clusters.append({this_vertex})
-
-        # if 1 then add this one to its cluster.
-        elif len(connecting_those) == 1:
-            vertex_clusters[connecting_those.pop()].add(this_vertex)
-
-        # if many then ...
-        else:
-            sorted_those = sorted(connecting_those, reverse=True)
-            vertex_clusters[sorted_those[-1]].add(this_vertex)
-            for go_to_set in sorted_those[:-1]:
-                for that_vertex in vertex_clusters[go_to_set]:
-                    vertex_clusters[sorted_those[-1]].add(that_vertex)
-                del vertex_clusters[go_to_set]
+    candidate_vs = set(vertices)
+    while candidate_vs:
+        new_root = candidate_vs.pop()
+        vertex_clusters.append({new_root})
+        waiting_vs = set([next_v
+                          for next_v in connections[new_root]
+                          if next_v in candidate_vs])
+        while candidate_vs and waiting_vs:
+            next_v = waiting_vs.pop()
+            vertex_clusters[-1].add(next_v)
+            candidate_vs.discard(next_v)
+            for n_next_v in connections[next_v]:
+                if n_next_v in candidate_vs:
+                    waiting_vs.add(n_next_v)
+    # for reproducible, not necessary for some cases
+    vertex_clusters.sort(key=lambda x: max(x))
     return vertex_clusters
 
 
@@ -790,3 +836,5 @@ def harmony_weights(raw_weights, diff):
 def run_dill_encoded(payload):
     fun, args = dill.loads(payload)
     return fun(*args)
+
+

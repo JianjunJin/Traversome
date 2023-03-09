@@ -10,573 +10,43 @@ from numpy import log, exp, inf
 from multiprocessing import Manager, Pool
 import warnings
 import dill
-# import random
+import random
 
 
 #suppress numpy warnings at exp()
 warnings.filterwarnings('ignore')
 
 
-class PathGenerator(object):
-    """
-    generate heuristic variants (isomers & sub-chromosomes) from alignments.
-    Here the variants are not necessarily identical in contig composition.
-    TODO automatically estimate num_search using convergence-test like approach
+class SingleTraversal(object):
     """
 
-    def __init__(self,
-                 traversome_obj,
-                 # assembly_graph,
-                 # graph_alignment,
-                 num_search=1000,
-                 num_processes=1,
-                 force_circular=True,
-                 hetero_chromosome=True,
-                 differ_f=1.,
-                 decay_f=20.,
-                 decay_t=1000,
-                 cov_inert=1.,
-                 use_alignment_cov=False,
-                 min_unit_similarity=0.85):
-        """
-        :param traversome_obj: traversome object
-        :param num_search:
-        :param force_circular:
-        :param hetero_chromosome:
-        :param differ_f: difference factor [0, INF)
-            Weighted by which, reads with the same overlap with current path will be used according to their counts.
-            new_weights = (count_weights^differ_f)/sum(count_weights^differ_f)
-            Zero leads to that the read counts play no effect in read choice.
-        :param decay_f: decay factor [0, INF]
-            Chance reduces by which, a read with less overlap with current path will be used to extend current path.
-            probs_(N-m) = probs_(N) * decay_f^(-m)
-            A large value leads to strictly following read paths.
-        :param decay_t: decay threshold for number of reads [100, INF]
-            Number of reads. Only reads that overlap most with current path will be considered in the extension.
-            # also server as a cutoff version of decay_f
-        :param cov_inert: coverage inertia [0, INF)
-            The degree of tendency a path has to extend contigs with similar coverage.
-            weight *= exp(-abs(log(extending_coverage/current_path_coverage)))^cov_inert
-            Designed for the mixture of multiple-sourced genomes, e.g. plastome and mitogenome.
-            Set to zero if the graph is a single-sourced graph.
-        :param use_alignment_cov: use the coverage from assembly graph if False.
-        :param min_unit_similarity: minimum contig-len-weighted path similarity shared among units [0.5, 1]
-            Used to trigger the decomposition of a long path concatenated by multiple units.
-        """
-        assert 1 <= num_processes
-        assert 0 <= differ_f
-        assert 0 <= decay_f
-        assert 100 <= decay_t
-        assert 0 <= cov_inert
-        assert 0.5 <= min_unit_similarity
-        self.graph = traversome_obj.graph
-        self.alignment = traversome_obj.alignment
-        self.tvs = traversome_obj
-        self.num_search = num_search
-        self.num_processes = num_processes
-        self.force_circular = force_circular
-        self.hetero_chromosome = hetero_chromosome
-        self.__differ_f = differ_f
-        self.__decay_f = decay_f
-        self.__decay_t = decay_t
-        self.__cov_inert = cov_inert
-        self.__random = traversome_obj.random
-        self.__use_alignment_cov = use_alignment_cov
-        self.__min_unit_similarity = min_unit_similarity
+    """
 
-        # to be generated
-        self.local_max_alignment_len = None
-        self.read_paths = list()
-        self.__read_paths_counter = dict()
-        # self.__vertex_to_readpath = {vertex: set() for vertex in self.graph.vertex_info}
-        self.__starting_subpath_to_readpaths = {}
-        self.__middle_subpath_to_readpaths = {}
-        self.__read_paths_counter_indexed = False
-        self.contig_coverages = OrderedDict()
-        # self.single_copy_vertices_prob = \
-        #     OrderedDict([(_v, 1.) for _v in single_copy_vertices]) if single_copy_vertices \
-        #         else OrderedDict()
-        self.__candidate_single_copy_vs = set()
-        self.variants = list()
-        self.variants_counts = dict()
+    def __init__(self, path_generator_obj, random_seed):
+        self.graph = path_generator_obj.graph
+        self.read_paths = path_generator_obj.read_paths
+        self.local_max_alignment_len = path_generator_obj.local_max_alignment_len
+        self.contig_coverages = path_generator_obj.contig_coverages
+        self.hetero_chromosome = path_generator_obj.hetero_chromosome
+        self.__starting_subpath_to_readpaths = path_generator_obj.pass_starting_subpath_to_readpaths()
+        self.__middle_subpath_to_readpaths = path_generator_obj.pass_middle_subpath_to_readpaths()
+        self.__read_paths_counter = path_generator_obj.pass_read_paths_counter()
+        self.__differ_f = path_generator_obj.pass_differ_f()
+        self.__cov_inert = path_generator_obj.pass_cov_inert()
+        self.__decay_f = path_generator_obj.pass_decay_f()
+        self.__decay_t = path_generator_obj.pass_decay_t()
+        self.__candidate_single_copy_vs = path_generator_obj.pass_candidate_single_copy_vs()
+        random.seed(random_seed)
+        self.result_path = None
 
-    def generate_heuristic_paths(self, num_processes=None):
-        if num_processes is None:  # use the user input value if provided
-            num_processes = self.num_processes
-        assert num_processes >= 1
-        logger.info("generating heuristic variants .. ")
-        if not self.__read_paths_counter_indexed:
-            self.index_readpaths_subpaths()
-        if self.__use_alignment_cov:
-            logger.debug("estimating contig coverages from read paths ..")
-            self.estimate_contig_coverages_from_read_paths()
-            # TODO: remove low coverage contigs
-        else:
-            self.use_contig_coverage_from_assembly_graph()
-        self.estimate_single_copy_vertices()
-        logger.debug("start traversing ..")
-        if num_processes == 1:
-            self.__gen_heuristic_paths_uni()
-        else:
-            self.__gen_heuristic_paths_mp(num_proc=num_processes)
-
-    # def generate_heuristic_circular_isomers(self):
-    #     # based on alignments
-    #     logger.warning("This function is under testing .. ")
-    #     if not self.__read_paths_counter_indexed:
-    #         self.index_readpaths_subpaths()
-    #
-    ## different from PathGeneratorGraphOnly.get_all_circular_isomers()
-    ## this seaching is within the scope of long reads-supported paths
-    # def generate_all_circular_isomers(self):
-    #     # based on alignments
-
-    def index_readpaths_subpaths(self, filter_by_graph=True):
-        self.__read_paths_counter = dict()
-        alignment_lengths = []
-        if filter_by_graph:
-            for gaf_record in self.alignment:
-                this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
-                # summarize only when the graph contain the path
-                if self.graph.contain_path(this_read_path):
-                    if this_read_path in self.__read_paths_counter:
-                        self.__read_paths_counter[this_read_path] += 1
-                    else:
-                        self.__read_paths_counter[this_read_path] = 1
-                        self.read_paths.append(this_read_path)
-                    # record alignment length
-                    alignment_lengths.append(gaf_record.p_align_len)
-        else:
-            for gaf_record in self.alignment:
-                this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
-                if this_read_path in self.__read_paths_counter:
-                    self.__read_paths_counter[this_read_path] += 1
-                else:
-                    self.__read_paths_counter[this_read_path] = 1
-                    self.read_paths.append(this_read_path)
-                # record alignment length
-                alignment_lengths.append(gaf_record.p_align_len)
-        for read_id, this_read_path in enumerate(self.read_paths):
-            read_contig_num = len(this_read_path)
-            forward_read_path_tuple = tuple(this_read_path)
-            reverse_read_path_tuple = tuple(self.graph.reverse_path(this_read_path))
-            for sub_contig_num in range(1, read_contig_num):
-                # index the starting subpaths
-                self.__index_start_subpath(forward_read_path_tuple[:sub_contig_num], read_id, True)
-                # reverse
-                self.__index_start_subpath(reverse_read_path_tuple[: sub_contig_num], read_id, False)
-                # index the middle subpaths
-                # excluding the start and the end subpaths: range(0 + 1, read_contig_num - sub_contig_num + 1 - 1)
-                for go_sub in range(1, read_contig_num - sub_contig_num):
-                    # forward
-                    self.__index_middle_subpath(
-                        forward_read_path_tuple[go_sub: go_sub + sub_contig_num], read_id, True)
-                    # reverse
-                    self.__index_middle_subpath(
-                        reverse_read_path_tuple[go_sub: go_sub + sub_contig_num], read_id, False)
-        #
-        self.local_max_alignment_len = sorted(alignment_lengths)[-1]
-        self.__read_paths_counter_indexed = True
-
-    def estimate_contig_coverages_from_read_paths(self):
-        """
-        Counting the contig coverage using the occurrences in the read paths.
-        Note: this will proportionally overestimate the coverage values comparing to base coverage values,
-        """
-        self.contig_coverages = OrderedDict([(v_name, 0) for v_name in self.graph.vertex_info])
-        for read_path in self.read_paths:
-            for v_name, v_end in read_path:
-                if v_name in self.contig_coverages:
-                    self.contig_coverages[v_name] += 1
-
-    def use_contig_coverage_from_assembly_graph(self):
-        self.contig_coverages = \
-            OrderedDict([(v_name, self.graph.vertex_info[v_name].cov) for v_name in self.graph.vertex_info])
-
-    def estimate_single_copy_vertices(self):
-        """
-        Currently only use the connection information
-
-        TODO: use estimate variant separation and multiplicity estimation to better estimate this
-        """
-        for go_v, v_name in enumerate(self.graph.vertex_info):
-            if len(self.graph.vertex_info[v_name].connections[True]) < 2 and \
-                    len(self.graph.vertex_info[v_name].connections[False]) < 2:
-                self.__candidate_single_copy_vs.add(v_name)
-
-    #     np.random.seed(self.__random.randint(1, 10000))
-    #     clusters_res = WeightedGMMWithEM(
-    #         data_array=list(self.contig_coverages.values()),
-    #         data_weights=[self.graph.vertex_info[v_name].len for v_name in self.graph.vertex_info]).run()
-    #     mu_list = [params["mu"] for params in clusters_res["parameters"]]
-    #     smallest_label = mu_list.index(min(mu_list))
-    #     # self.contig_coverages[v_name],
-    #     # loc = current_names[v_name] * old_cov_mean,
-    #     # scale = old_cov_std
-    #     if len(mu_list) == 1:
-    #         for go_v, v_name in enumerate(self.graph.vertex_info):
-    #             # looking for smallest vertices
-    #             if clusters_res["labels"][go_v] == smallest_label:
-    #                 if len(self.graph.vertex_info[v_name].connections[True]) < 2 and \
-    #                         len(self.graph.vertex_info[v_name].connections[False]) < 2:
-    #                     self.single_copy_vertices_prob[v_name] #
-    #     else:
-
-    def __gen_heuristic_paths_uni(self):
-        """
-        single-process version of generating heuristic paths
-        """
-        count_search = 0
-        count_valid = 0
-        # logger.info("Start generating candidate paths ..")
-        # v_len = len(self.graph.vertex_info)
-        while count_valid < self.num_search:
-            new_path = self.get_single_traversal()
-            count_search += 1
-            logger.debug("    traversal {}: {}".format(count_search, self.graph.repr_path(new_path)))
-            # logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
-            #     len(self.variants), count_valid, self.num_search, count_search))
-
-            is_circular_p = self.graph.is_circular_path(new_path)
-            invalid_search = (self.force_circular and not is_circular_p) or \
-                             (not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path))
-
-            # Tested to be a bad idea
-            # # the searching has been forced to be running until a circular result was found,
-            # # so self.graph.is_circular_path(new_path)) is no more needed
-            # invalid_search = not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path)
-
-            if invalid_search:
-                continue
-            else:
-                # if len(new_path) >= v_len * 2:  # using path length to guess multiple units is not a good idea
-                if is_circular_p:
-                    new_path_list = self.__decompose_hetero_units(new_path)
-                else:
-                    new_path_list = [new_path]
-                for new_path in new_path_list:
-                    count_valid += 1
-                    if new_path in self.variants_counts:
-                        self.variants_counts[new_path] += 1
-                        logger.debug("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                            len(self.variants), count_valid, self.num_search, count_search))
-                    else:
-                        self.variants_counts[new_path] = 1
-                        self.variants.append(new_path)
-                        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                            len(self.variants), count_valid, self.num_search, count_search))
-                    if count_valid == self.num_search:
-                        break
-        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-            len(self.variants), count_valid, self.num_search, count_search))
-
-    # TODO: modularize each traversal process as an independent run, communicating via files
-    def __heuristic_traversal_worker(self, variant, variants_counts, g_vars, lock, event):
-        """
-        single worker of traversal, called by self.get_heuristic_paths_multiprocessing
-        starting a new process from dill dumped python object: slow
-        """
-        while g_vars.count_valid < self.num_search:
-            # move the parallelizable code block before the lock
-            # <<<
-            new_path = self.get_single_traversal()
-            repr_path = self.graph.repr_path(new_path)
-            is_circular_p = self.graph.is_circular_path(new_path)
-            invalid_search = (self.force_circular and not is_circular_p) or \
-                             (not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path))
-            if not invalid_search:
-                # if len(new_path) >= v_len * 2:  # using path length to guess multiple units is not a good idea
-                if is_circular_p:
-                    new_path_list = self.__decompose_hetero_units(new_path)
-                else:
-                    new_path_list = [new_path]
-            else:
-                new_path_list = []
-            # >>>
-            # locking the counts and variants
-            lock.acquire()
-            g_vars.count_search += 1
-            logger.trace("    traversal {}: {}".format(g_vars.count_search, repr_path))
-            if invalid_search:
-                lock.release()
-                continue
-            else:
-                for new_path in new_path_list:
-                    if g_vars.count_valid >= self.num_search:
-                        # kill all other workers
-                        event.set()
-                        break
-                    else:
-                        g_vars.count_valid += 1
-                        if new_path in variants_counts:
-                            variants_counts[new_path] += 1
-                            logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                                len(variant), g_vars.count_valid, self.num_search, g_vars.count_search))
-                        else:
-                            variants_counts[new_path] = 1
-                            variant.append(new_path)
-                            logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                                len(variant), g_vars.count_valid, self.num_search, g_vars.count_search))
-                lock.release()
-        # TODO: kill all other workers
-
-    def __gen_heuristic_paths_mp(self, num_proc=2):
-        """
-        multiprocess version of generating heuristic paths
-        starting a new process from dill dumped python object: slow
-        """
-        manager = Manager()
-        variants_counts = manager.dict()
-        variants = manager.list()
-        global_vars = manager.Namespace()
-        global_vars.count_search = 0
-        global_vars.count_valid = 0
-        lock = manager.Lock()
-        event = manager.Event()
-        # v_len = len(self.graph.vertex_info)
-        pool_obj = Pool(processes=num_proc)  # the worker processes are daemonic
-        # dump function and args
-        logger.info("Serializing the heuristic searching for multiprocessing ..")
-        payload = dill.dumps((self.__heuristic_traversal_worker,
-                              (variants, variants_counts, global_vars, lock, event)))
-        # logger.info("Start generating candidate paths ..")
-        jobs = []
-        for g_p in range(num_proc):
-            logger.debug("assigning job to worker {}".format(g_p + 1))
-            jobs.append(pool_obj.apply_async(run_dill_encoded, (payload,)))
-            logger.debug("assigned job to worker {}".format(g_p + 1))
-            if global_vars.count_valid >= self.num_search:
-                break
-        for job in jobs:
-            job.get()  # tracking errors
-        pool_obj.close()
-        # logger.info("waiting ..")
-        event.wait()
-        pool_obj.terminate()
-        pool_obj.join()  # maybe no need to join
-        self.variants_counts = dict(variants_counts)
-        self.variants = list(variants)
-        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-            len(self.variants), global_vars.count_valid, self.num_search, global_vars.count_search))
-
-    def __decompose_hetero_units(self, circular_path):
-        """
-        Decompose a path that may be composed of multiple circular paths (units) containing similar variants
-        e.g. 1,2,3,4,5,1,-3,-2,4,5 was composed of 1,2,3,4,5 and 1,-3,-2,4,5,
-             when all contigs were likely to be single copy
-        e.g. 1,2,3,2,3,7,5,1,-3,-2,-3,-2,8,5 was composed of 1,2,3,2,3,7,5 and 1,-3,-2,-3,-2,8,5,
-             when 1,5 were likely to be single copy
-        """
-        len_total = len(circular_path)
-        if len_total < 4:
-            return [circular_path]
-
-        # 1.1 get the multiplicities (copy) information of (v_name, v_end) in the circular path
-        logger.trace("circular_path: {}".format(circular_path))
-        unique_vne_list = sorted(set(circular_path))
-        copy_to_vne = OrderedDict()
-        vne_to_copy = OrderedDict()
-        for v_n_e in unique_vne_list:
-            this_copy = circular_path.count(v_n_e)
-            if this_copy not in copy_to_vne:
-                copy_to_vne[this_copy] = []
-            copy_to_vne[this_copy].append(v_n_e)
-            vne_to_copy[v_n_e] = this_copy
-        # 1.2 store v lengths
-        v_lengths = OrderedDict([(v_n_, self.graph.vertex_info[v_n_].len) for v_n_, v_e_ in unique_vne_list])
-
-        # 2. estimate candidate number of units.
-        # The shared contig-len-weighted path should be larger than self.__min_unit_similarity
-        candidate_sc_vertices = set([_v_n for _v_n, _v_e in vne_to_copy]) & self.__candidate_single_copy_vs
-        logger.trace("      candidate_sc_vertices: {}".format(candidate_sc_vertices))
-        copies = sorted(copy_to_vne)
-        if candidate_sc_vertices:
-            # limit the estimation to the candidate single copy vertices
-            sum_lens = [sum([v_lengths[_v_n]
-                             for _v_n, _v_e in copy_to_vne[copy_num] if _v_n in self.__candidate_single_copy_vs])
-                        for copy_num in copies]
-        else:
-            # no candidate single copy vertices were present in the path, use all vertices (contigs)
-            sum_lens = [sum([v_lengths[_v_n]
-                             for _v_n, _v_e in copy_to_vne[copy_num]])
-                        for copy_num in copies]
-        weights = [_c * _l for _c, _l in zip(copies, sum_lens)]  # contig-len-weights
-        sum_w = float(sum(weights))  # total weights
-        weights = [_w / sum_w for _w in weights]   # percent of each copy-num set of contigs
-        count_weights = len(weights)
-        candidate_num_units = []
-        for go_c, copy_num in enumerate(copies):
-            if copy_num > 1:
-                accumulated_weight = 0
-                for go_w in range(go_c, count_weights):
-                    # e.g. a fourfold contig may potentially contribute to the unit_similarity if the num of units is 2.
-                    if copies[go_w] % copy_num == 0:
-                        accumulated_weight += weights[go_w]
-                if accumulated_weight >= self.__min_unit_similarity:
-                    # append all candidate copy numbers here, no need to do prime factor
-                    candidate_num_units.append(copy_num)
-
-        # 3. try to decompose
-        logger.trace("      candidate_num_units: {}".format(candidate_num_units))
-        if not candidate_num_units:  # or candidate_num_units == [1]:
-            return [circular_path]
-        else:
-            v_lengths = np.array(list(v_lengths.values()))
-            v_copies = np.array(list(vne_to_copy.values()))
-            # not very important TODO account for overlap; mutable overlaps; overlap = self.graph.overlap()
-            total_base_len = float(sum(v_lengths * v_copies))  # ignore overlap effect
-            qualified_schemes = set()
-            for num_units in candidate_num_units:
-                logger.trace("      num_units: {}".format(num_units))
-                unit_sc_vertices = [v_n_e for v_n_e in copy_to_vne[num_units] if v_n_e[0] in candidate_sc_vertices]
-                logger.trace("      unit_sc_vertices: {}".format(unit_sc_vertices))
-                candidate_starts = unit_sc_vertices if unit_sc_vertices else copy_to_vne[num_units]
-                logger.trace("      candidate_starts: {}".format(candidate_starts))
-                # 3.1. only keep the first start_n_e for a series of consecutive start_n_e
-                #      because they generated the same circular units
-                sne_indices = {s_n_e: [] for s_n_e in candidate_starts}
-                for s_id, s_ne in enumerate(circular_path):
-                    if s_ne in sne_indices:
-                        sne_indices[s_ne].append(s_id)
-                sne_indices = [[s_n_e] + sne_indices[s_n_e] for s_n_e in candidate_starts]
-                # for start_n_e in candidate_starts:
-                #     sne_indices.append([start_n_e])
-                #     sne_indices[-1].extend([_id for _id, _ne in enumerate(circular_path) if _ne == start_n_e])
-                sne_indices.sort(key=lambda x: x[1:])  # sort by the indices
-                # 3.1.1 the start
-                for first_id, end_id in zip(sne_indices[0][2:] + sne_indices[0][1:2], sne_indices[-1][1:]):
-                    if (end_id + 1) % len_total != first_id:
-                        consecutive_ends = False
-                        break
-                else:
-                    consecutive_ends = True
-                # 3.1.2
-                go_keep_start = 0
-                go_check_start = 1
-                step = 1
-                while go_check_start < len(sne_indices):
-                    for k_id, c_id in zip(sne_indices[go_keep_start][1:], sne_indices[go_check_start][1:]):
-                        if (k_id + step) % len_total != c_id:
-                            go_keep_start = go_check_start
-                            go_check_start += 1
-                            step = 1
-                            break
-                    else:
-                        del sne_indices[go_check_start]
-                        step += 1
-                if consecutive_ends and len(sne_indices) > 1:
-                    # sne_indices[0] and sne_indices[-1] will decompose the circular_path into the same units
-                    del sne_indices[0]
-                logger.trace("      sne_indices: {}".format(sne_indices))
-
-                # 3.2 try to decompose and calculate the shared variants
-                #     to determine whether those starts are qualified
-                #     to break the original path into units
-                for start_n_e, *s_indices in sne_indices:
-                    units = []
-                    for from_id, to_id in zip(s_indices[:-1], s_indices[1:]):
-                        units.append(circular_path[from_id:to_id])
-                    units.append(circular_path[s_indices[-1]:] + circular_path[:s_indices[0]])
-                    variant_counts = np.array([[_unit.count(v_n_e_)
-                                                for v_n_e_ in unique_vne_list]
-                                                for _unit in units])
-                    # idx_shared = (variant_counts == variant_counts[0]).all(axis=0)
-                    variants_shared = variant_counts.min(axis=0)
-                    # logger.info("idx_shared ({}): {}".format(len(idx_shared), idx_shared))
-                    # logger.info("variant_counts[0] ({}): {}".format(len(variant_counts[0]), variant_counts[0]))
-                    # logger.info("v_lengths ({}): {}".format(len(v_lengths), v_lengths))
-                    shared_len = \
-                        num_units * sum(variants_shared * v_lengths) / total_base_len
-                    logger.trace("      shared_len: {}".format(shared_len))
-                    if shared_len > self.__min_unit_similarity:
-                        this_scheme = tuple(sorted([self.graph.get_standardized_path_circ(self.graph.roll_path(_unit))
-                                                    for _unit in units]))
-                        if this_scheme not in qualified_schemes:
-                            qualified_schemes.add(this_scheme)
-                            logger.trace("new scheme added: {}".format(this_scheme))
-            logger.trace("      qualified_schemes ({}): {}".format(len(qualified_schemes), qualified_schemes))
-
-            # 3.3 calculate the support from read paths
-            circular_units = []
-            original_sub_paths = set(self.tvs.get_variant_sub_paths(circular_path))
-            for this_scheme in qualified_schemes:
-                these_sub_paths = set()
-                for this_unit in this_scheme:
-                    these_sub_paths |= set(self.tvs.get_variant_sub_paths(this_unit))
-                if original_sub_paths - these_sub_paths:
-                    # the original one contains unique subpath(s)
-                    continue
-                else:
-                    for this_unit in this_scheme:
-                        circular_units.append(this_unit)
-                    # calculate the multiplicity-based likelihood will be weird,
-                    # because if we believe the decomposed units are a reasonable scheme,
-                    # the graph itself is a mixture of combination.
-                    # Besides, the multiplicity-based likelihood would definitely prefer the decomposed ones,
-                    # given that the candidate_num_units is generated from self.__candidate_single_copy_vs if available
-            logger.trace("      circular_units ({}): {}".format(len(circular_units), circular_units))
-            if not circular_units:
-                return [circular_path]
-            else:
-                return circular_units
-
-    # def __decompose_hetero_units_old(self, circular_path):
-    #     """
-    #     Decompose a path that may be composed of multiple circular paths (units), which shared the same variants
-    #     e.g. 1,2,3,4,5,1,-3,-2,4,5 was composed of 1,2,3,4,5 and 1,-3,-2,4,5
-    #     """
-    #     def get_v_counts(_path): return [_path.count(_v_name) for _v_name in self.graph.vertex_info]
-    #     v_list = [v_name for v_name, v_end in circular_path]
-    #     v_counts = get_v_counts(v_list)
-    #     gcd = find_greatest_common_divisor(v_counts)
-    #     logger.trace("  checking gcd {} from {}".format(gcd, circular_path))
-    #     if gcd == 1:
-    #         # the greatest common divisor is 1
-    #         return [circular_path]
-    #     else:
-    #         logger.debug("  decompose {}".format(circular_path))
-    #         v_to_id = {v_name: go_id for go_id, v_name in enumerate(self.graph.vertex_info)}
-    #         unit_counts = [int(v_count/gcd) for v_count in v_counts]
-    #         unit_len = int(len(v_list) / gcd)
-    #         reseed_at = self.__random.randint(0, unit_len - 1)
-    #         v_list_shuffled = v_list[len(v_list) - reseed_at:] + v_list + v_list[:unit_len]
-    #         counts_check = get_v_counts(v_list_shuffled[:unit_len])
-    #         find_start = False
-    #         try_start = 0
-    #         for try_start in range(unit_len):
-    #             # if each unit has the same composition
-    #             if counts_check == unit_counts and \
-    #                     set([get_v_counts(v_list_shuffled[try_start+unit_len*go_u:try_start + unit_len*(go_u + 1)])
-    #                          == unit_counts
-    #                          for go_u in range(1, gcd)]) \
-    #                     == {True}:
-    #                 find_start = True
-    #                 break
-    #             else:
-    #                 counts_check[v_to_id[v_list_shuffled[try_start]]] -= 1
-    #                 counts_check[v_to_id[v_list_shuffled[try_start + unit_len]]] += 1
-    #         if find_start:
-    #             path_shuffled = circular_path[len(v_list) - reseed_at:] + circular_path + circular_path[:unit_len]
-    #             unit_seq_len = self.graph.get_path_length(path_shuffled[try_start: try_start + unit_len])
-    #             unit_copy_num = min(max(int((self.local_max_alignment_len - 2) / unit_seq_len), 1), gcd)
-    #             return_list = []
-    #             for go_unit in range(int(gcd/unit_copy_num)):
-    #                 go_from__ = try_start + unit_len * unit_copy_num * go_unit
-    #                 go_to__ = try_start + unit_len * unit_copy_num * (go_unit + 1)
-    #                 variant_path = path_shuffled[go_from__: go_to__]
-    #                 if self.graph.is_circular_path(variant_path):
-    #                     return_list.append(self.graph.get_standardized_path_circ(variant_path))
-    #             return return_list
-    #         else:
-    #             return [circular_path]
-
-    def get_single_traversal(self):
-        return self.graph.get_standardized_path_circ(self.graph.roll_path(self.__heuristic_extend_path([])))
+    def run(self, start_path=None):
+        start_path = [] if start_path is None else start_path
+        self.result_path = \
+            self.graph.get_standardized_path_circ(self.graph.roll_path(self.__heuristic_extend_path(start_path)))
 
     def __heuristic_extend_path(
             self, path, not_do_reverse=False):
         """
-        TODO minimum requirement: make sure all read paths have been covered
         improvement needed
         :param path: empty path like [] or starting path like [("v1", True), ("v2", False)]
         :param not_do_reverse: mainly for iteration, a mark to stop searching from the reverse end
@@ -584,10 +54,11 @@ class PathGenerator(object):
         """
         if not path:
             # randomly choose the read path and the direction
-            # change the weight (-~ depth) to flatten the search
-            read_p_freq_reciprocal = [1. / self.__read_paths_counter[r_p] for r_p in self.read_paths]
-            read_path = self.__random.choices(self.read_paths, weights=read_p_freq_reciprocal)[0]
-            if self.__random.random() > 0.5:
+            # # change the weight (-~ depth) to flatten the search
+            # read_p_freq_reciprocal = [1. / self.__read_paths_counter[r_p] for r_p in self.read_paths]
+            # read_path = random.choices(self.read_paths, weights=read_p_freq_reciprocal)[0]
+            read_path = random.choices(self.read_paths)[0]
+            if random.random() > 0.5:
                 read_path = self.graph.reverse_path(read_path)
             path = list(read_path)
             logger.trace("      starting path(" + str(len(path)) + "): " + str(path))
@@ -599,6 +70,8 @@ class PathGenerator(object):
             # keep going in a circle util the path length reaches beyond the longest read alignment
             # stay within what data can tell
             repeating_unit = self.graph.roll_path(path)
+            # TODO: relax the length limits and return immediately, redundant small models shall be rejected later.
+            #       test it.
             if len(path) > len(repeating_unit) and \
                     self.graph.get_path_internal_length(path) >= self.local_max_alignment_len:
                 logger.trace("      traversal ended within a circle unit.")
@@ -608,7 +81,7 @@ class PathGenerator(object):
             # generate the extending candidates
             candidate_ls_list = []
             candidates_list_overlap_c_nums = []
-            for overlap_c_num in range(1, len(path) + 1):
+            for overlap_c_num in range(1, len(path) + 1):  # TODO: set start to be 2 because 1 is like next_connections
                 overlap_path = path[-overlap_c_num:]
                 # stop adding extending candidate when the overlap is longer than our longest read alignment
                 # stay within what data can tell
@@ -633,9 +106,9 @@ class PathGenerator(object):
                     if self.__cov_inert:
                         cdd_cov = [self.__get_cov_mean(self.read_paths[read_id], exclude_path=path)
                                    for read_id, strand in candidates]
-                        weights = [exp(log(weights[go_c])-abs(log(cov/current_ave_coverage)))
+                        weights = [exp(log(weights[go_c]) - abs(log(cov / current_ave_coverage))) * self.__cov_inert
                                    for go_c, cov in enumerate(cdd_cov)]
-                    read_id, strand = self.__random.choices(candidates, weights=weights)[0]
+                    read_id, strand = random.choices(candidates, weights=weights)[0]
                     if strand:
                         path = list(self.read_paths[read_id])
                     else:
@@ -677,7 +150,7 @@ class PathGenerator(object):
                                 weights.append(loglike_ls[0])
                             logger.trace("      likes: {}".format(weights))
                             weights = exp(np.array(weights) - max(weights))
-                            chosen_cdd_id = self.__random.choices(range(len(candidates_next)), weights=weights)[0]
+                            chosen_cdd_id = random.choices(range(len(candidates_next)), weights=weights)[0]
                             next_name, next_end = candidates_next[chosen_cdd_id]
                             like_ls_cached = like_ls_cached[chosen_cdd_id]
                         elif self.__cov_inert:
@@ -685,11 +158,11 @@ class PathGenerator(object):
                             # coverage inertia, more likely to extend to contigs with similar depths,
                             # which are more likely to be the same target chromosome / organelle type
                             cdd_cov = [self.contig_coverages[_n_] for _n_, _e_ in candidates_next]
-                            weights = [exp(-abs(log(cov/current_ave_coverage))) for cov in cdd_cov]
+                            weights = [exp(-abs(log(cov / current_ave_coverage))) * self.__cov_inert for cov in cdd_cov]
                             logger.trace("      likes: {}".format(weights))
-                            next_name, next_end = self.__random.choices(candidates_next, weights=weights)[0]
+                            next_name, next_end = random.choices(candidates_next, weights=weights)[0]
                         else:
-                            next_name, next_end = self.__random.choice(candidates_next)
+                            next_name, next_end = random.choice(candidates_next)
                     else:
                         next_name, next_end = list(next_connections)[0]
                         logger.trace("      single next: ({}, {})".format(next_name, next_end))
@@ -700,7 +173,7 @@ class PathGenerator(object):
                         proposed_extension=[(next_name, not next_end)],
                         not_do_reverse=not_do_reverse,
                         cached_like_ls=like_ls_cached
-                        )
+                    )
                 else:
                     if not_do_reverse:
                         logger.trace("      traversal ended without next vertex.")
@@ -750,7 +223,7 @@ class PathGenerator(object):
                         # then, re-weighting candidates by the likelihood change of adding the extension
                         ######
                         pool_size = 10  # arbitrary pool size for re-weighting
-                        pool_ids = self.__random.choices(range(len(candidates)), weights=weights, k=pool_size)
+                        pool_ids = random.choices(range(len(candidates)), weights=weights, k=pool_size)
                         pool_ids_set = set(pool_ids)
                         if len(pool_ids_set) == 1:
                             remaining_id = pool_ids_set.pop()
@@ -802,9 +275,9 @@ class PathGenerator(object):
                         # logger.debug(candidates_ovl_n)
                         cdd_cov = [self.__get_cov_mean(self.read_paths[r_id][candidates_ovl_n[go_c]:])
                                    for go_c, (r_id, r_strand) in enumerate(candidates)]
-                        weights = exp(np.array([log(weights[go_c])-abs(log(cov / current_ave_coverage))
+                        weights = exp(np.array([log(weights[go_c]) - abs(log(cov / current_ave_coverage))
                                                 for go_c, cov in enumerate(cdd_cov)], dtype=np.float128))
-                    chosen_cdd_id = self.__random.choices(range(len(candidates)), weights=weights)[0]
+                    chosen_cdd_id = random.choices(range(len(candidates)), weights=weights)[0]
                     if like_ls_cached:
                         like_ls_cached = like_ls_cached[chosen_cdd_id]
                     else:
@@ -990,7 +463,7 @@ class PathGenerator(object):
             draw_prob = (like_ratio - previous_like) / (1. - previous_like)
             previous_like = like_ratio
             logger.trace("      draw prob:{}".format(draw_prob))
-            if draw_prob > self.__random.random():
+            if draw_prob > random.random():
                 logger.trace("      draw accepted:{}".format(proposed_extension[:proposed_end]))
                 return self.__heuristic_extend_path(
                     list(deepcopy(path)) + list(proposed_extension[:proposed_end]),
@@ -1019,31 +492,6 @@ class PathGenerator(object):
                 return self.__heuristic_extend_path(
                     list(self.graph.reverse_path(list(deepcopy(path)))),
                     not_do_reverse=True)
-
-    def __index_start_subpath(self, subpath, read_id, strand):
-        """
-        :param subpath: tuple
-        :param read_id: int, read id in self.read_paths
-        :param strand: bool
-        :return:
-        """
-        if subpath in self.__starting_subpath_to_readpaths:
-            self.__starting_subpath_to_readpaths[subpath].add((read_id, strand))
-        else:
-            self.__starting_subpath_to_readpaths[subpath] = {(read_id, strand)}
-
-    def __index_middle_subpath(self, subpath, read_id, strand):
-        """
-        :param subpath: tuple
-        :param read_id: int, read id in self.read_paths
-        :param strand: bool
-        :param subpath_loc: int, the location of the subpath in a read
-        :return:
-        """
-        if subpath in self.__middle_subpath_to_readpaths:
-            self.__middle_subpath_to_readpaths[subpath].add((read_id, strand))
-        else:
-            self.__middle_subpath_to_readpaths[subpath] = {(read_id, strand)}
 
     def __check_path(self, path):
         assert len(path)
@@ -1257,4 +705,701 @@ class PathGenerator(object):
     #                 self.__circular_directed_graph_solver(new_path, new_connections, new_left, check_all_kinds,
     #                                                       palindromic_repeat_vertices)
 
+
+class PathGenerator(object):
+    """
+    generate heuristic variants (isomers & sub-chromosomes) from alignments.
+    Here the variants are not necessarily identical in contig composition.
+    TODO automatically estimate num_valid_search using convergence-test like approach
+    """
+
+    def __init__(self,
+                 traversome_obj,
+                 min_num_valid_search=1000,
+                 num_processes=1,
+                 force_circular=True,
+                 hetero_chromosome=True,
+                 differ_f=1.,
+                 decay_f=20.,
+                 decay_t=1000,
+                 cov_inert=1.,
+                 use_alignment_cov=False,
+                 min_unit_similarity=0.85):
+        """
+        :param traversome_obj: traversome object
+        :param min_num_valid_search: minimum number of valid searches
+        :param force_circular: force the generated variant topology to be circular
+        :param hetero_chromosome: a variant is allowed to only traverse part of the graph.
+            Different variants must be composed of identical set of contigs if hetero_chromosome=False.
+        :param differ_f: difference factor [0, INF)
+            Weighted by which, reads with the same overlap with current path will be used according to their counts.
+            new_weights = (count_weights^differ_f)/sum(count_weights^differ_f)
+            Zero leads to that the read counts play no effect in read choice.
+        :param decay_f: decay factor [0, INF]
+            Chance reduces by which, a read with less overlap with current path will be used to extend current path.
+            probs_(N-m) = probs_(N) * decay_f^(-m)
+            A large value leads to strictly following read paths.
+        :param decay_t: decay threshold for number of reads [100, INF]
+            Number of reads. Only reads that overlap most with current path will be considered in the extension.
+            # also server as a cutoff version of decay_f
+        :param cov_inert: coverage inertia [0, INF)
+            The degree of tendency a path has to extend contigs with similar coverage.
+            weight *= exp(-abs(log(extending_coverage/current_path_coverage)))^cov_inert
+            Designed for the mixture of multiple-sourced genomes, e.g. plastome and mitogenome.
+            Set to zero if the graph is a single-sourced graph.
+        :param use_alignment_cov: use the coverage from assembly graph if False.
+        :param min_unit_similarity: minimum contig-len-weighted path similarity shared among units [0.5, 1]
+            Used to trigger the decomposition of a long path concatenated by multiple units.
+        """
+        assert 1 <= num_processes
+        assert 0 <= differ_f
+        assert 0 <= decay_f
+        assert 100 <= decay_t
+        assert 0 <= cov_inert
+        assert 0.5 <= min_unit_similarity
+        self.graph = traversome_obj.graph
+        self.alignment = traversome_obj.alignment
+        self.tvs = traversome_obj
+        self.num_valid_search = min_num_valid_search
+        self.num_processes = num_processes
+        self.force_circular = force_circular
+        self.hetero_chromosome = hetero_chromosome
+        self.__differ_f = differ_f
+        self.__decay_f = decay_f
+        self.__decay_t = decay_t
+        self.__cov_inert = cov_inert
+        self.__random = traversome_obj.random
+        self.__use_alignment_cov = use_alignment_cov
+        self.__min_unit_similarity = min_unit_similarity
+
+        # to be generated
+        self.local_max_alignment_len = None
+        self.read_paths = list()
+        self.__read_paths_counter = dict()
+        # self.__vertex_to_readpath = {vertex: set() for vertex in self.graph.vertex_info}
+        self.__starting_subpath_to_readpaths = {}
+        self.__middle_subpath_to_readpaths = {}
+        self.__read_paths_not_in_variants = {}
+        self.__read_paths_counter_indexed = False
+        self.contig_coverages = OrderedDict()
+        # self.single_copy_vertices_prob = \
+        #     OrderedDict([(_v, 1.) for _v in single_copy_vertices]) if single_copy_vertices \
+        #         else OrderedDict()
+        self.__candidate_single_copy_vs = set()
+        self.__previous_len_variant = 0
+        self.count_valid = 0
+        self.count_search = 0
+        self.variants = list()
+        self.variants_counts = dict()
+
+    def generate_heuristic_paths(self, num_processes=None):
+        if num_processes is None:  # use the user input value if provided
+            num_processes = self.num_processes
+        assert num_processes >= 1
+        logger.info("Generating heuristic variants .. ")
+        if not self.__read_paths_counter_indexed:
+            self.index_readpaths_subpaths()
+        if self.__use_alignment_cov:
+            logger.debug("estimating contig coverages from read paths ..")
+            self.estimate_contig_coverages_from_read_paths()
+            # TODO: how to remove low coverage contigs
+        else:
+            self.use_contig_coverage_from_assembly_graph()
+        self.estimate_single_copy_vertices()
+        logger.debug("start traversing ..")
+        self.__previous_len_variant = 0
+        while True:
+            if num_processes == 1:
+                self.__gen_heuristic_paths_uni()
+            else:
+                self.__gen_heuristic_paths_mp(num_proc=num_processes)
+    # def generate_heuristic_circular_isomers(self):
+    #     # based on alignments
+    #     logger.warning("This function is under testing .. ")
+    #     if not self.__read_paths_counter_indexed:
+    #         self.index_readpaths_subpaths()
+    #
+    ## different from PathGeneratorGraphOnly.get_all_circular_isomers()
+    ## this seaching is within the scope of long reads-supported paths
+    # def generate_all_circular_isomers(self):
+    #     # based on alignments
+
+    def __access_read_path_coverage(self, growing_variants, previous_len_variant, num_valid_search, path_not_traversed):
+        logger.info("assessing read path coverage ..")
+        logger.debug(str(path_not_traversed))
+        logger.debug(bool(path_not_traversed))
+        """The minimum requirement is that all observed read_paths were covered"""
+        if not path_not_traversed:
+            return 0
+        else:
+            logger.debug(str([str(_rp) + ";  " for _rp in path_not_traversed]))
+            logger.debug(str(growing_variants))
+            logger.debug(str(previous_len_variant))
+            for variant_path in growing_variants[previous_len_variant:]:
+                logger.debug("check variant_path " + str(variant_path))
+                for sub_path in self.tvs.get_variant_sub_paths(variant_path):
+                    # logger.debug("check subpath", sub_path)
+                    if sub_path in path_not_traversed:
+                        del path_not_traversed[sub_path]
+                # the current get_variant_sub_paths function only consider subpaths with length > 1
+                # TODO: get subpath adaptive to length=1, more general and less restrictions
+                # after which the following block can be removed
+                for single_v, single_e in variant_path:
+                    single_sbp = ((single_v, False),)
+                    if single_sbp in path_not_traversed:
+                        del path_not_traversed[single_sbp]
+                if not path_not_traversed:
+                    return 0
+            if not path_not_traversed:
+                return 0
+            # the distribution of sampled subpaths are complex due to graph-based heuristic extension
+            # here we just approximate it as Poisson distribution
+            # similar to the lander-waterman model in genome sequencing,
+            # our hypothesized coverage (a=N*factor, where N is num_valid_search) and fraction in gaps (p) is
+            #     a==-log(p)
+            # we want the fraction in gaps to be smaller than 1/len(self.read_paths), e.g. 0.5/len(self.read_paths)
+            current_ratio = len(path_not_traversed) / len(self.read_paths)
+            logger.info("uncovered_paths/all_paths = %i/%i = %.4f" %
+                        (len(path_not_traversed), len(self.read_paths), current_ratio))
+            new_num_valid_search = num_valid_search * log(0.5 / len(self.read_paths)) / log(current_ratio)
+            new_num_valid_search = int(new_num_valid_search)
+            logger.info("resetting num_valid_search={}".format(new_num_valid_search))
+            return new_num_valid_search - num_valid_search
+            # TODO this process will never stop if the graph cannot generate a circular path on forced circular
+
+    def index_readpaths_subpaths(self, filter_by_graph=True):
+        self.__read_paths_counter = dict()
+        alignment_lengths = []
+        if filter_by_graph:
+            for gaf_record in self.alignment.raw_records:
+                this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
+                # summarize only when the graph contain the path
+                if self.graph.contain_path(this_read_path):
+                    if this_read_path in self.__read_paths_counter:
+                        self.__read_paths_counter[this_read_path] += 1
+                    else:
+                        self.__read_paths_counter[this_read_path] = 1
+                        self.read_paths.append(this_read_path)
+                    # record alignment length
+                    alignment_lengths.append(gaf_record.p_align_len)
+        else:
+            for gaf_record in self.alignment.raw_records:
+                this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
+                if this_read_path in self.__read_paths_counter:
+                    self.__read_paths_counter[this_read_path] += 1
+                else:
+                    self.__read_paths_counter[this_read_path] = 1
+                    self.read_paths.append(this_read_path)
+                # record alignment length
+                alignment_lengths.append(gaf_record.p_align_len)
+        for read_id, this_read_path in enumerate(self.read_paths):
+            read_contig_num = len(this_read_path)
+            forward_read_path_tuple = tuple(this_read_path)
+            reverse_read_path_tuple = tuple(self.graph.reverse_path(this_read_path))
+            for sub_contig_num in range(1, read_contig_num):
+                # index the starting subpaths
+                self.__index_start_subpath(forward_read_path_tuple[:sub_contig_num], read_id, True)
+                # reverse
+                self.__index_start_subpath(reverse_read_path_tuple[: sub_contig_num], read_id, False)
+                # index the middle subpaths
+                # excluding the start and the end subpaths: range(0 + 1, read_contig_num - sub_contig_num + 1 - 1)
+                for go_sub in range(1, read_contig_num - sub_contig_num):
+                    # forward
+                    self.__index_middle_subpath(
+                        forward_read_path_tuple[go_sub: go_sub + sub_contig_num], read_id, True)
+                    # reverse
+                    self.__index_middle_subpath(
+                        reverse_read_path_tuple[go_sub: go_sub + sub_contig_num], read_id, False)
+        #
+        self.local_max_alignment_len = sorted(alignment_lengths)[-1]
+        self.__read_paths_not_in_variants = {_rp: None for _rp in self.__read_paths_counter}
+        self.__read_paths_counter_indexed = True
+
+    def estimate_contig_coverages_from_read_paths(self):
+        """
+        Counting the contig coverage using the occurrences in the read paths.
+        Note: this will proportionally overestimate the coverage values comparing to base coverage values,
+        """
+        self.contig_coverages = OrderedDict([(v_name, 0) for v_name in self.graph.vertex_info])
+        for read_path in self.read_paths:
+            for v_name, v_end in read_path:
+                if v_name in self.contig_coverages:
+                    self.contig_coverages[v_name] += 1
+
+    def use_contig_coverage_from_assembly_graph(self):
+        self.contig_coverages = \
+            OrderedDict([(v_name, self.graph.vertex_info[v_name].cov) for v_name in self.graph.vertex_info])
+
+    def estimate_single_copy_vertices(self):
+        """
+        Currently only use the connection information
+
+        TODO: use estimate variant separation and multiplicity estimation to better estimate this
+        """
+        for go_v, v_name in enumerate(self.graph.vertex_info):
+            if len(self.graph.vertex_info[v_name].connections[True]) < 2 and \
+                    len(self.graph.vertex_info[v_name].connections[False]) < 2:
+                self.__candidate_single_copy_vs.add(v_name)
+
+    #     np.random.seed(self.__random.randint(1, 10000))
+    #     clusters_res = WeightedGMMWithEM(
+    #         data_array=list(self.contig_coverages.values()),
+    #         data_weights=[self.graph.vertex_info[v_name].len for v_name in self.graph.vertex_info]).run()
+    #     mu_list = [params["mu"] for params in clusters_res["parameters"]]
+    #     smallest_label = mu_list.index(min(mu_list))
+    #     # self.contig_coverages[v_name],
+    #     # loc = current_names[v_name] * old_cov_mean,
+    #     # scale = old_cov_std
+    #     if len(mu_list) == 1:
+    #         for go_v, v_name in enumerate(self.graph.vertex_info):
+    #             # looking for smallest vertices
+    #             if clusters_res["labels"][go_v] == smallest_label:
+    #                 if len(self.graph.vertex_info[v_name].connections[True]) < 2 and \
+    #                         len(self.graph.vertex_info[v_name].connections[False]) < 2:
+    #                     self.single_copy_vertices_prob[v_name] #
+    #     else:
+
+    def __gen_heuristic_paths_uni(self):
+        """
+        single-process version of generating heuristic paths
+        """
+        # logger.info("Start generating candidate paths ..")
+        # v_len = len(self.graph.vertex_info)
+        # while self.count_valid < self.num_valid_search:
+        while True:
+            single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
+            single_traversal.run()
+            new_path = single_traversal.result_path
+            self.count_search += 1
+            logger.debug("    traversal {}: {}".format(self.count_search, self.graph.repr_path(new_path)))
+            # logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
+            #     len(self.variants), count_valid, self.num_valid_search, count_search))
+            is_circular_p = self.graph.is_circular_path(new_path)
+            invalid_search = (self.force_circular and not is_circular_p) or \
+                             (not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path))
+
+            # forcing the searching to be running until a circular result was found, was tested to be a bad idea
+            # switch back to the post searching judge
+            if invalid_search:
+                continue
+            else:
+                # if len(new_path) >= v_len * 2:  # using path length to guess multiple units is not a good idea
+                if is_circular_p:
+                    new_path_list = self.__decompose_hetero_units(new_path)
+                else:
+                    new_path_list = [new_path]
+                for new_path in new_path_list:
+                    self.count_valid += 1
+                    if new_path in self.variants_counts:
+                        self.variants_counts[new_path] += 1
+                        logger.debug("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                            len(self.variants), self.count_valid, self.num_valid_search, self.count_search))
+                    else:
+                        self.variants_counts[new_path] = 1
+                        self.variants.append(new_path)
+                        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                            len(self.variants), self.count_valid, self.num_valid_search, self.count_search))
+                    if self.count_valid >= self.num_valid_search:
+                        add_search = self.__access_read_path_coverage(
+                            growing_variants=self.variants,
+                            previous_len_variant=self.__previous_len_variant,
+                            num_valid_search=self.num_valid_search,
+                            path_not_traversed=self.__read_paths_not_in_variants)
+                        if add_search:
+                            self.__previous_len_variant = len(self.variants)
+                            self.num_valid_search += add_search
+                        else:
+                            break
+        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
+            len(self.variants), self.count_valid, self.num_valid_search, self.count_search))
+
+    def __heuristic_traversal_worker(self, variant, variants_counts, path_not_traversed, g_vars, lock, event):
+        """
+        single worker of traversal, called by self.get_heuristic_paths_multiprocessing
+        starting a new process from dill dumped python object: slow
+        """
+        while g_vars.count_valid < g_vars.num_valid_search:
+            # move the parallelizable code block before the lock
+            # <<<
+            # TODO to cover all subpaths
+            #      setting start path for traversal, simultaneously solve the random problem
+            single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
+            single_traversal.run()
+            new_path = single_traversal.result_path
+            repr_path = self.graph.repr_path(new_path)
+            is_circular_p = self.graph.is_circular_path(new_path)
+            invalid_search = (self.force_circular and not is_circular_p) or \
+                             (not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path))
+            if not invalid_search:
+                # if len(new_path) >= v_len * 2:  # using path length to guess multiple units is not a good idea
+                if is_circular_p:
+                    new_path_list = self.__decompose_hetero_units(new_path)
+                else:
+                    new_path_list = [new_path]
+            else:
+                new_path_list = []
+            # >>>
+            # locking the counts and variants
+            lock.acquire()
+            g_vars.count_search += 1
+            logger.trace("    traversal {}: {}".format(g_vars.count_search, repr_path))
+            if invalid_search:
+                lock.release()
+                continue
+            else:
+                for new_path in new_path_list:
+                    g_vars.count_valid += 1
+                    if new_path in variants_counts:
+                        variants_counts[new_path] += 1
+                        logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                            len(variant), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
+                    else:
+                        variants_counts[new_path] = 1
+                        variant.append(new_path)
+                        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                            len(variant), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
+                    if g_vars.count_valid >= g_vars.num_valid_search:
+                        add_search = self.__access_read_path_coverage(
+                            growing_variants=variant,
+                            previous_len_variant=g_vars.previous_len_variant,
+                            num_valid_search=g_vars.num_valid_search,
+                            path_not_traversed=path_not_traversed)
+                        logger.info("adding searches by " + str(add_search))
+                        if add_search:
+                            g_vars.previous_len_variant = len(variant)
+                            g_vars.num_valid_search += add_search
+                        else:
+                            # kill all other workers
+                            lock.release()
+                            event.set()
+                            break
+                lock.release()
+
+    def __gen_heuristic_paths_mp(self, num_proc=2):
+        """
+        multiprocess version of generating heuristic paths
+        starting a new process from dill dumped python object: slow
+        """
+        manager = Manager()
+        variants_counts = manager.dict()
+        variants = manager.list()
+        path_not_traversed = manager.dict()
+        if self.variants_counts:
+            variants_counts.update(self.variants_counts)
+            variants.extend(self.variants)
+        for rp_not_in_v in self.__read_paths_not_in_variants:
+            path_not_traversed[rp_not_in_v] = None
+        global_vars = manager.Namespace()
+        global_vars.count_search = self.count_search
+        global_vars.count_valid = self.count_valid
+        global_vars.num_valid_search = self.num_valid_search
+        global_vars.previous_len_variant = self.__previous_len_variant
+        lock = manager.Lock()
+        event = manager.Event()
+        # v_len = len(self.graph.vertex_info)
+        pool_obj = Pool(processes=num_proc)  # the worker processes are daemonic
+        # dump function and args
+        logger.info("Serializing the heuristic searching for multiprocessing ..")
+        payload = dill.dumps((self.__heuristic_traversal_worker,
+                              (variants, variants_counts, path_not_traversed, global_vars, lock, event)))
+        # logger.info("Start generating candidate paths ..")
+        jobs = []
+        for g_p in range(num_proc):
+            logger.debug("assigning job to worker {}".format(g_p + 1))
+            jobs.append(pool_obj.apply_async(run_dill_encoded, (payload,)))
+            logger.debug("assigned job to worker {}".format(g_p + 1))
+            if global_vars.count_valid >= global_vars.num_valid_search:
+                lock.acquire()
+                add_search = self.__access_read_path_coverage(
+                    growing_variants=variants,
+                    previous_len_variant=global_vars.previous_len_variant,
+                    num_valid_search=global_vars.num_valid_search,
+                    path_not_traversed=path_not_traversed)
+                if not add_search:
+                    lock.release()
+                    break
+                else:
+                    global_vars.num_valid_search += add_search
+                    lock.release()
+        for job in jobs:
+            job.get()  # tracking errors
+        pool_obj.close()
+        # logger.info("waiting ..")
+        event.wait()
+        pool_obj.terminate()
+        pool_obj.join()  # maybe no need to join
+        # if self.variants_counts:
+        #     for unique_var, count_var in self.variants_counts.items():
+        #         if unique_var not in self.variants_counts:
+        #             self.variants_counts[unique_var] = count_var
+        #         else:
+        #             self.variants_counts[unique_var] += count_var
+        #     self.variants.extend(variants)
+        # else:
+        self.variants_counts = dict(variants_counts)
+        self.variants = list(variants)
+        self.count_valid += global_vars.count_valid
+        self.count_search += global_vars.count_search
+        logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
+            len(self.variants), global_vars.count_valid, self.num_valid_search, global_vars.count_search))
+
+    def __decompose_hetero_units(self, circular_path):
+        """
+        Decompose a path that may be composed of multiple circular paths (units) containing similar variants
+        e.g. 1,2,3,4,5,1,-3,-2,4,5 was composed of 1,2,3,4,5 and 1,-3,-2,4,5,
+             when all contigs were likely to be single copy
+        e.g. 1,2,3,2,3,7,5,1,-3,-2,-3,-2,8,5 was composed of 1,2,3,2,3,7,5 and 1,-3,-2,-3,-2,8,5,
+             when 1,5 were likely to be single copy
+        """
+        len_total = len(circular_path)
+        if len_total < 4:
+            return [circular_path]
+
+        # 1.1 get the multiplicities (copy) information of (v_name, v_end) in the circular path
+        logger.trace("circular_path: {}".format(circular_path))
+        unique_vne_list = sorted(set(circular_path))
+        copy_to_vne = OrderedDict()
+        vne_to_copy = OrderedDict()
+        for v_n_e in unique_vne_list:
+            this_copy = circular_path.count(v_n_e)
+            if this_copy not in copy_to_vne:
+                copy_to_vne[this_copy] = []
+            copy_to_vne[this_copy].append(v_n_e)
+            vne_to_copy[v_n_e] = this_copy
+        # 1.2 store v lengths
+        v_lengths = OrderedDict([(v_n_, self.graph.vertex_info[v_n_].len) for v_n_, v_e_ in unique_vne_list])
+
+        # 2. estimate candidate number of units.
+        # The shared contig-len-weighted path should be larger than self.__min_unit_similarity
+        candidate_sc_vertices = set([_v_n for _v_n, _v_e in vne_to_copy]) & self.__candidate_single_copy_vs
+        logger.trace("      candidate_sc_vertices: {}".format(candidate_sc_vertices))
+        copies = sorted(copy_to_vne)
+        if candidate_sc_vertices:
+            # limit the estimation to the candidate single copy vertices
+            sum_lens = [sum([v_lengths[_v_n]
+                             for _v_n, _v_e in copy_to_vne[copy_num] if _v_n in self.__candidate_single_copy_vs])
+                        for copy_num in copies]
+        else:
+            # no candidate single copy vertices were present in the path, use all vertices (contigs)
+            sum_lens = [sum([v_lengths[_v_n]
+                             for _v_n, _v_e in copy_to_vne[copy_num]])
+                        for copy_num in copies]
+        weights = [_c * _l for _c, _l in zip(copies, sum_lens)]  # contig-len-weights
+        sum_w = float(sum(weights))  # total weights
+        weights = [_w / sum_w for _w in weights]   # percent of each copy-num set of contigs
+        count_weights = len(weights)
+        candidate_num_units = []
+        for go_c, copy_num in enumerate(copies):
+            if copy_num > 1:
+                accumulated_weight = 0
+                for go_w in range(go_c, count_weights):
+                    # e.g. a fourfold contig may potentially contribute to the unit_similarity if the num of units is 2.
+                    if copies[go_w] % copy_num == 0:
+                        accumulated_weight += weights[go_w]
+                if accumulated_weight >= self.__min_unit_similarity:
+                    # append all candidate copy numbers here, no need to do prime factor
+                    candidate_num_units.append(copy_num)
+
+        # 3. try to decompose
+        logger.trace("      candidate_num_units: {}".format(candidate_num_units))
+        if not candidate_num_units:  # or candidate_num_units == [1]:
+            return [circular_path]
+        else:
+            v_lengths = np.array(list(v_lengths.values()))
+            v_copies = np.array(list(vne_to_copy.values()))
+            # not very important TODO account for overlap; mutable overlaps; overlap = self.graph.overlap()
+            total_base_len = float(sum(v_lengths * v_copies))  # ignore overlap effect
+            qualified_schemes = set()
+            for num_units in candidate_num_units:
+                logger.trace("      num_units: {}".format(num_units))
+                unit_sc_vertices = [v_n_e for v_n_e in copy_to_vne[num_units] if v_n_e[0] in candidate_sc_vertices]
+                logger.trace("      unit_sc_vertices: {}".format(unit_sc_vertices))
+                candidate_starts = unit_sc_vertices if unit_sc_vertices else copy_to_vne[num_units]
+                logger.trace("      candidate_starts: {}".format(candidate_starts))
+                # 3.1. only keep the first start_n_e for a series of consecutive start_n_e
+                #      because they generated the same circular units
+                sne_indices = {s_n_e: [] for s_n_e in candidate_starts}
+                for s_id, s_ne in enumerate(circular_path):
+                    if s_ne in sne_indices:
+                        sne_indices[s_ne].append(s_id)
+                sne_indices = [[s_n_e] + sne_indices[s_n_e] for s_n_e in candidate_starts]
+                # for start_n_e in candidate_starts:
+                #     sne_indices.append([start_n_e])
+                #     sne_indices[-1].extend([_id for _id, _ne in enumerate(circular_path) if _ne == start_n_e])
+                sne_indices.sort(key=lambda x: x[1:])  # sort by the indices
+                # 3.1.1 the start
+                for first_id, end_id in zip(sne_indices[0][2:] + sne_indices[0][1:2], sne_indices[-1][1:]):
+                    if (end_id + 1) % len_total != first_id:
+                        consecutive_ends = False
+                        break
+                else:
+                    consecutive_ends = True
+                # 3.1.2
+                go_keep_start = 0
+                go_check_start = 1
+                step = 1
+                while go_check_start < len(sne_indices):
+                    for k_id, c_id in zip(sne_indices[go_keep_start][1:], sne_indices[go_check_start][1:]):
+                        if (k_id + step) % len_total != c_id:
+                            go_keep_start = go_check_start
+                            go_check_start += 1
+                            step = 1
+                            break
+                    else:
+                        del sne_indices[go_check_start]
+                        step += 1
+                if consecutive_ends and len(sne_indices) > 1:
+                    # sne_indices[0] and sne_indices[-1] will decompose the circular_path into the same units
+                    del sne_indices[0]
+                logger.trace("      sne_indices: {}".format(sne_indices))
+
+                # 3.2 try to decompose and calculate the shared variants
+                #     to determine whether those starts are qualified
+                #     to break the original path into units
+                for start_n_e, *s_indices in sne_indices:
+                    units = []
+                    for from_id, to_id in zip(s_indices[:-1], s_indices[1:]):
+                        units.append(circular_path[from_id:to_id])
+                    units.append(circular_path[s_indices[-1]:] + circular_path[:s_indices[0]])
+                    variant_counts = np.array([[_unit.count(v_n_e_)
+                                                for v_n_e_ in unique_vne_list]
+                                                for _unit in units])
+                    # idx_shared = (variant_counts == variant_counts[0]).all(axis=0)
+                    variants_shared = variant_counts.min(axis=0)
+                    # logger.info("idx_shared ({}): {}".format(len(idx_shared), idx_shared))
+                    # logger.info("variant_counts[0] ({}): {}".format(len(variant_counts[0]), variant_counts[0]))
+                    # logger.info("v_lengths ({}): {}".format(len(v_lengths), v_lengths))
+                    shared_len = \
+                        num_units * sum(variants_shared * v_lengths) / total_base_len
+                    logger.trace("      shared_len: {}".format(shared_len))
+                    if shared_len > self.__min_unit_similarity:
+                        this_scheme = tuple(sorted([self.graph.get_standardized_path_circ(self.graph.roll_path(_unit))
+                                                    for _unit in units]))
+                        if this_scheme not in qualified_schemes:
+                            qualified_schemes.add(this_scheme)
+                            logger.trace("new scheme added: {}".format(this_scheme))
+            logger.trace("      qualified_schemes ({}): {}".format(len(qualified_schemes), qualified_schemes))
+
+            # 3.3 calculate the support from read paths
+            circular_units = []
+            original_sub_paths = set(self.tvs.get_variant_sub_paths(circular_path))
+            for this_scheme in qualified_schemes:
+                these_sub_paths = set()
+                for this_unit in this_scheme:
+                    these_sub_paths |= set(self.tvs.get_variant_sub_paths(this_unit))
+                if original_sub_paths - these_sub_paths:
+                    # the original one contains unique subpath(s)
+                    continue
+                else:
+                    for this_unit in this_scheme:
+                        circular_units.append(this_unit)
+                    # calculate the multiplicity-based likelihood will be weird,
+                    # because if we believe the decomposed units are a reasonable scheme,
+                    # the graph itself is a mixture of combination.
+                    # Besides, the multiplicity-based likelihood would definitely prefer the decomposed ones,
+                    # given that the candidate_num_units is generated from self.__candidate_single_copy_vs if available
+            logger.trace("      circular_units ({}): {}".format(len(circular_units), circular_units))
+            if not circular_units:
+                return [circular_path]
+            else:
+                return circular_units
+
+    # def __decompose_hetero_units_old(self, circular_path):
+    #     """
+    #     Decompose a path that may be composed of multiple circular paths (units), which shared the same variants
+    #     e.g. 1,2,3,4,5,1,-3,-2,4,5 was composed of 1,2,3,4,5 and 1,-3,-2,4,5
+    #     """
+    #     def get_v_counts(_path): return [_path.count(_v_name) for _v_name in self.graph.vertex_info]
+    #     v_list = [v_name for v_name, v_end in circular_path]
+    #     v_counts = get_v_counts(v_list)
+    #     gcd = find_greatest_common_divisor(v_counts)
+    #     logger.trace("  checking gcd {} from {}".format(gcd, circular_path))
+    #     if gcd == 1:
+    #         # the greatest common divisor is 1
+    #         return [circular_path]
+    #     else:
+    #         logger.debug("  decompose {}".format(circular_path))
+    #         v_to_id = {v_name: go_id for go_id, v_name in enumerate(self.graph.vertex_info)}
+    #         unit_counts = [int(v_count/gcd) for v_count in v_counts]
+    #         unit_len = int(len(v_list) / gcd)
+    #         reseed_at = self.__random.randint(0, unit_len - 1)
+    #         v_list_shuffled = v_list[len(v_list) - reseed_at:] + v_list + v_list[:unit_len]
+    #         counts_check = get_v_counts(v_list_shuffled[:unit_len])
+    #         find_start = False
+    #         try_start = 0
+    #         for try_start in range(unit_len):
+    #             # if each unit has the same composition
+    #             if counts_check == unit_counts and \
+    #                     set([get_v_counts(v_list_shuffled[try_start+unit_len*go_u:try_start + unit_len*(go_u + 1)])
+    #                          == unit_counts
+    #                          for go_u in range(1, gcd)]) \
+    #                     == {True}:
+    #                 find_start = True
+    #                 break
+    #             else:
+    #                 counts_check[v_to_id[v_list_shuffled[try_start]]] -= 1
+    #                 counts_check[v_to_id[v_list_shuffled[try_start + unit_len]]] += 1
+    #         if find_start:
+    #             path_shuffled = circular_path[len(v_list) - reseed_at:] + circular_path + circular_path[:unit_len]
+    #             unit_seq_len = self.graph.get_path_length(path_shuffled[try_start: try_start + unit_len])
+    #             unit_copy_num = min(max(int((self.local_max_alignment_len - 2) / unit_seq_len), 1), gcd)
+    #             return_list = []
+    #             for go_unit in range(int(gcd/unit_copy_num)):
+    #                 go_from__ = try_start + unit_len * unit_copy_num * go_unit
+    #                 go_to__ = try_start + unit_len * unit_copy_num * (go_unit + 1)
+    #                 variant_path = path_shuffled[go_from__: go_to__]
+    #                 if self.graph.is_circular_path(variant_path):
+    #                     return_list.append(self.graph.get_standardized_path_circ(variant_path))
+    #             return return_list
+    #         else:
+    #             return [circular_path]
+
+    def __index_start_subpath(self, subpath, read_id, strand):
+        """
+        :param subpath: tuple
+        :param read_id: int, read id in self.read_paths
+        :param strand: bool
+        :return:
+        """
+        if subpath in self.__starting_subpath_to_readpaths:
+            self.__starting_subpath_to_readpaths[subpath].add((read_id, strand))
+        else:
+            self.__starting_subpath_to_readpaths[subpath] = {(read_id, strand)}
+
+    def __index_middle_subpath(self, subpath, read_id, strand):
+        """
+        :param subpath: tuple
+        :param read_id: int, read id in self.read_paths
+        :param strand: bool
+        :param subpath_loc: int, the location of the subpath in a read
+        :return:
+        """
+        if subpath in self.__middle_subpath_to_readpaths:
+            self.__middle_subpath_to_readpaths[subpath].add((read_id, strand))
+        else:
+            self.__middle_subpath_to_readpaths[subpath] = {(read_id, strand)}
+
+    def pass_starting_subpath_to_readpaths(self):
+        return self.__starting_subpath_to_readpaths
+
+    def pass_middle_subpath_to_readpaths(self):
+        return self.__middle_subpath_to_readpaths
+
+    def pass_read_paths_counter(self):
+        return self.__read_paths_counter
+
+    def pass_candidate_single_copy_vs(self):
+        return self.__candidate_single_copy_vs
+
+    def pass_differ_f(self):
+        return self.__differ_f
+
+    def pass_cov_inert(self):
+        return self.__cov_inert
+
+    def pass_decay_f(self):
+        return self.__decay_f
+
+    def pass_decay_t(self):
+        return self.__decay_t
 
