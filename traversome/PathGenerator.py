@@ -808,11 +808,10 @@ class PathGenerator(object):
         self.estimate_single_copy_vertices()
         logger.debug("start traversing ..")
         self.__previous_len_variant = 0
-        while True:
-            if num_processes == 1:
-                self.__gen_heuristic_paths_uni()
-            else:
-                self.__gen_heuristic_paths_mp(num_proc=num_processes)
+        if num_processes == 1:
+            self.__gen_heuristic_paths_uni()
+        else:
+            self.__gen_heuristic_paths_mp(num_proc=num_processes)
     # def generate_heuristic_circular_isomers(self):
     #     # based on alignments
     #     logger.warning("This function is under testing .. ")
@@ -966,6 +965,7 @@ class PathGenerator(object):
         # logger.info("Start generating candidate paths ..")
         # v_len = len(self.graph.vertex_info)
         # while self.count_valid < self.num_valid_search:
+        break_traverse = False
         while True:
             single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
             single_traversal.run()
@@ -1009,7 +1009,10 @@ class PathGenerator(object):
                             self.__previous_len_variant = len(self.variants)
                             self.num_valid_search += add_search
                         else:
+                            break_traverse = True
                             break
+            if break_traverse:
+                break
         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
             len(self.variants), self.count_valid, self.num_valid_search, self.count_search))
 
@@ -1018,6 +1021,7 @@ class PathGenerator(object):
         single worker of traversal, called by self.get_heuristic_paths_multiprocessing
         starting a new process from dill dumped python object: slow
         """
+        break_traverse = False
         while g_vars.count_valid < g_vars.num_valid_search:
             # move the parallelizable code block before the lock
             # <<<
@@ -1069,11 +1073,14 @@ class PathGenerator(object):
                             g_vars.previous_len_variant = len(variant)
                             g_vars.num_valid_search += add_search
                         else:
+                            break_traverse = True
                             # kill all other workers
                             lock.release()
                             event.set()
                             break
                 lock.release()
+            if break_traverse:
+                break
 
     def __gen_heuristic_paths_mp(self, num_proc=2):
         """
@@ -1207,7 +1214,7 @@ class PathGenerator(object):
         else:
             v_lengths = np.array(list(v_lengths.values()))
             v_copies = np.array(list(vne_to_copy.values()))
-            # not very important TODO account for overlap; mutable overlaps; overlap = self.graph.overlap()
+            # not very important TODO account for uni_overlap; mutable overlaps; uni_overlap = self.graph.uni_overlap()
             total_base_len = float(sum(v_lengths * v_copies))  # ignore overlap effect
             qualified_schemes = set()
             for num_units in candidate_num_units:
