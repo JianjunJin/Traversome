@@ -214,7 +214,7 @@ class Traversome(object):
         self.__update_params_for_variants()
 
     def __update_params_for_variants(self):
-        self.variant_sizes = [self.graph.get_path_length(variant_p)
+        self.variant_sizes = [self.graph.get_path_length(variant_p, check_valid=False, adjust_for_cyclic=True)
                               for variant_p in self.variant_paths]
         self.num_put_variants = len(self.variant_paths)
 
@@ -232,13 +232,13 @@ class Traversome(object):
             logger.warning("Only one genomic configuration found for the input assembly graph.")
 
     # TODO get subpath adaptive to length=1, more general and less restrictions
-    def get_variant_sub_paths(self, variant_path, this_overlap=None, return_sub_paths=True):
+    def get_variant_sub_paths(self, variant_path, return_sub_paths=True):
         if variant_path in self.variant_subpath_counters:
             if return_sub_paths:
                 return self.variant_subpath_counters[variant_path]
         else:
-            if this_overlap is None:
-                this_overlap = self.graph.overlap()
+            # if this_overlap is None:
+            #     this_overlap = self.graph.uni_overlap()
             these_sub_paths = dict()
             num_seg = len(variant_path)
             # print("run get")
@@ -250,9 +250,12 @@ class Traversome(object):
                     this_internal_path_len = 0
                     go_next = (go_start_v + 1) % num_seg
                     while this_internal_path_len < self.max_alignment_length:
-                        next_segment = variant_path[go_next]
-                        this_longest_sub_path.append(next_segment)
-                        this_internal_path_len += self.graph.vertex_info[next_segment[0]].len - this_overlap
+                        next_n, next_e = variant_path[go_next]
+                        next_v_info = self.graph.vertex_info[next_n]
+                        pre_n, pre_e = this_longest_sub_path[-1]
+                        this_overlap = next_v_info.connections[not next_e][(pre_n, pre_e)]
+                        this_longest_sub_path.append((next_n, next_e))
+                        this_internal_path_len += next_v_info.len - this_overlap
                         go_next = (go_next + 1) % num_seg
                     # print("this_longest_sub_path", this_longest_sub_path)
                     # print(self.graph.get_path_internal_length(this_longest_sub_path), self.min_alignment_length)
@@ -262,6 +265,7 @@ class Traversome(object):
                     # if len(this_longest_sub_path) < 2 \
                     #         or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_length:
                     #     continue
+                    # TODO size of 1 can also be included
                     if len(this_longest_sub_path) < 2:
                         continue
                     # print("this_longest_sub_path", this_longest_sub_path, "passed")
@@ -275,7 +279,7 @@ class Traversome(object):
                         if this_sub_path not in self.read_paths:
                             continue
                         # print("checking subpath existence", this_sub_path, "passed")
-                        # when the overlap is long and the contig is short,
+                        # when the uni_overlap is long and the contig is short,
                         # the path with internal_length shorter than tha alignment length can still help
                         # so remove the condition for min_alignment_length
                         # if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_length:
@@ -291,9 +295,12 @@ class Traversome(object):
                     this_internal_path_len = 0
                     go_next = go_start_v + 1
                     while go_next < num_seg and this_internal_path_len < self.max_alignment_length:
-                        next_segment = variant_path[go_next]
-                        this_longest_sub_path.append(next_segment)
-                        this_internal_path_len += self.graph.vertex_info[next_segment[0]].len - this_overlap
+                        next_n, next_e = variant_path[go_next]
+                        next_v_info = self.graph.vertex_info[next_n]
+                        pre_n, pre_e = this_longest_sub_path[-1]
+                        this_overlap = next_v_info.connections[not next_e][(pre_n, pre_e)]
+                        this_longest_sub_path.append((next_n, next_e))
+                        this_internal_path_len += next_v_info.len - this_overlap
                         go_next += 1
                     if len(this_longest_sub_path) < 2 \
                             or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_length:
@@ -319,10 +326,10 @@ class Traversome(object):
         generate all sub paths and their occurrences for each candidate variant
         """
         # count sub path occurrences for each candidate variant and recorded in self.variant_subpath_counters
-        this_overlap = self.graph.overlap()
+        # this_overlap = self.graph.uni_overlap()
         # self.variant_subpath_counters = OrderedDict()
         for this_var_p in self.variant_paths:
-            self.get_variant_sub_paths(this_var_p, this_overlap=this_overlap)
+            self.get_variant_sub_paths(this_var_p)
 
         # create unidentifiable table
         self.be_unidentifiable_to = OrderedDict()
@@ -365,7 +372,7 @@ class Traversome(object):
 
         if not self.all_sub_paths:
             logger.error("No valid subpath found!")
-            exit()
+            sys.exit(0)
 
         # match graph alignments to all_sub_paths
         for read_path, record_ids in self.read_paths.items():
@@ -408,14 +415,19 @@ class Traversome(object):
             # 0.2308657169342041
             internal_len = self.graph.get_path_internal_length(this_sub_path)
             # 0.18595576286315918
-            # read_paths with overlaps should be and were already trimmed, so we should proceed without overlaps
-            external_len_without_overlap = self.graph.get_path_len_without_terminal_overlaps(this_sub_path)
+            # # read_paths with overlaps should be and were already trimmed, so we should proceed without overlaps
+            # external_len_without_overlap = self.graph.get_path_len_without_terminal_overlaps(this_sub_path)
+
+            # 2023-03-09: get_path_len_without_terminal_overlaps -> get_path_length
+            # Because the end of the alignment can still stretch to the overlapped region
+            # and will not be recorded in the path.
+            # Thus, the start point can be the path length not the uni_overlap-trimmed one.
+            external_len = self.graph.get_path_length(this_sub_path, check_valid=False, adjust_for_cyclic=False)
             # 0.15802343183582341
             # left_id, right_id = get_id_range_in_increasing_values(
             #     min_num=internal_len + 2, max_num=external_len_without_overlap,
             #     increasing_numbers=self.align_len_at_path_sorted)
-            left_id, right_id = self.__get_id_range_in_increasing_values(
-                min_num=internal_len + 2, max_num=external_len_without_overlap)
+            left_id, right_id = self.__get_id_range_in_increasing_values(min_num=internal_len + 2, max_num=external_len)
             if left_id > right_id:
                 # no read found within this scope
                 logger.trace("Remove {} after pruning contig overlap ..".format(this_sub_path))
@@ -429,7 +441,7 @@ class Traversome(object):
                     median_len = (self.align_len_at_path_sorted[int((left_id + right_id) / 2)] +
                                   self.align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
                 this_sub_path_info.num_possible_X = self.graph.get_num_of_possible_alignment_start_points(
-                    read_len=median_len, align_to_path=this_sub_path, path_internal_len=internal_len)
+                    read_len_aligned=median_len, align_to_path=this_sub_path, path_internal_len=internal_len)
             else:
                 # 7.611977815628052
                 # maybe slightly precise than above, assessed
@@ -439,7 +451,7 @@ class Traversome(object):
                 while align_len_id <= right_id:
                     this_len = self.align_len_at_path_sorted[align_len_id]
                     this_x = self.graph.get_num_of_possible_alignment_start_points(
-                        read_len=this_len, align_to_path=this_sub_path, path_internal_len=internal_len)
+                        read_len_aligned=this_len, align_to_path=this_sub_path, path_internal_len=internal_len)
                     if this_len not in num_possible_Xs:
                         num_possible_Xs[this_len] = 0
                     num_possible_Xs[this_len] += this_x
@@ -746,7 +758,7 @@ class Traversome(object):
                     freq_mark = "@{}.".format(count_seq + 1) if len_un_id > 1 else ""
                     lengths = []
                     for go_ss, comp_id in enumerate(unidentifiable_ids):
-                        this_seq = self.graph.export_path(self.variant_paths[comp_id])
+                        this_seq = self.graph.export_path(self.variant_paths[comp_id], check_valid=False)
                         this_len = len(this_seq.seq)
                         lengths.append(this_len)
                         if freq_mark:

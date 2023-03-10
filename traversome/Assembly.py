@@ -33,7 +33,7 @@ class Assembly(AssemblySimple):
             graph_file=None,
             min_cov=0.,
             max_cov=INF,
-            overlap=None,
+            uni_overlap=None,
             record_reversed_paths=True):
         """
         :param graph_file:
@@ -41,10 +41,10 @@ class Assembly(AssemblySimple):
         :param max_cov:
         """
         # inherit values from base class
-        super().__init__(graph_file, min_cov, max_cov, overlap)
-        self.__overlap = self.overlap()
-        # super(Assembly, self).__init__(graph_file=graph_file, min_cov=min_cov, max_cov=max_cov, overlap=overlap)
-        # self.__overlap = super(Assembly, self).overlap()
+        super().__init__(graph_file, min_cov, max_cov, uni_overlap)
+        self.__uni_overlap = self.uni_overlap()
+        # super(Assembly, self).__init__(graph_file=graph_file, min_cov=min_cov, max_cov=max_cov, uni_overlap=uni_overlap)
+        # self.__uni_overlap = super(Assembly, self).uni_overlap()
 
         # get an initial set of clusters of connected vertices
         self.vertex_clusters = []
@@ -79,7 +79,7 @@ class Assembly(AssemblySimple):
         :param fill_fastg_form_name:
         :return:
         """
-        new_graph = Assembly(overlap=self.__overlap)
+        new_graph = Assembly(uni_overlap=self.__uni_overlap)
         if not those_vertices:
             those_vertices = sorted(self.vertex_info)
         for old_name in sorted(those_vertices):
@@ -311,7 +311,7 @@ class Assembly(AssemblySimple):
             # transfer vertices in the new_sub_graph back to the original graph.
             # This design makes duplication/renaming easier.
             # 1. create a new_sub_graph and assign the depths to vertices
-            new_sub_graph = Assembly(overlap=self.__overlap)
+            new_sub_graph = Assembly(uni_overlap=self.__uni_overlap)
             for v_name in vertices:
                 assert v_name in self.vertex_info, "Vertex {} not found in the graph!".format(v_name)
                 new_sub_graph.vertex_info[v_name] = deepcopy(self.vertex_info[v_name])
@@ -449,9 +449,10 @@ class Assembly(AssemblySimple):
         else:
             limited_vertices = sorted(limited_vertices)
 
-        # initially merged is False and overlap in True or False
+        # initially merged is False
         merged = False
-        overlap = (self.__overlap if self.__overlap else 0)
+        # uni_overlap in INTEGER
+        # uni_overlap = (self.__uni_overlap if self.__uni_overlap else 0)
 
         # iterate over the sorted list of vertices popping items 
         while limited_vertices:
@@ -469,7 +470,7 @@ class Assembly(AssemblySimple):
                 if len(connected_dict) == 1:
                     
                     # select first connected vertex
-                    next_vertex, next_end = list(connected_dict)[0]
+                    (next_vertex, next_end), overlap_x = list(connected_dict.items())[0]
 
                     # ...
                     if len(self.vertex_info[next_vertex].connections[next_end]) == 1 and this_vertex != next_vertex:
@@ -494,9 +495,9 @@ class Assembly(AssemblySimple):
 
                         if (this_vertex, not this_end) in self.vertex_info[new_vertex].connections[this_end]:
                             # forms a circle
-                            overlap_x = self.vertex_info[new_vertex].connections[this_end][(this_vertex, not this_end)]
+                            overlap_y = self.vertex_info[new_vertex].connections[this_end][(this_vertex, not this_end)]
                             del self.vertex_info[new_vertex].connections[this_end][(this_vertex, not this_end)]
-                            self.vertex_info[new_vertex].connections[this_end][(new_vertex, not this_end)] = overlap_x
+                            self.vertex_info[new_vertex].connections[this_end][(new_vertex, not this_end)] = overlap_y
                         for new_end in (True, False):
                             for n_n_v, n_n_e in self.vertex_info[new_vertex].connections[new_end]:
                                 self.vertex_info[n_n_v].connections[n_n_e][(new_vertex, new_end)] = \
@@ -507,14 +508,14 @@ class Assembly(AssemblySimple):
                         next_len = self.vertex_info[next_vertex].len
                         this_cov = self.vertex_info[this_vertex].cov
                         next_cov = self.vertex_info[next_vertex].cov
-                        self.vertex_info[new_vertex].len = this_len + next_len - overlap
+                        self.vertex_info[new_vertex].len = this_len + next_len - overlap_x
                         self.vertex_info[new_vertex].cov = \
-                            ((this_len - overlap + 1) * this_cov + (next_len - overlap + 1) * next_cov) \
-                            / ((this_len - overlap + 1) + (next_len - overlap + 1))
+                            ((this_len - overlap_x + 1) * this_cov + (next_len - overlap_x + 1) * next_cov) \
+                            / ((this_len - overlap_x + 1) + (next_len - overlap_x + 1))
                         self.vertex_info[new_vertex].seq[this_end] \
-                            += self.vertex_info[next_vertex].seq[not next_end][overlap:]
+                            += self.vertex_info[next_vertex].seq[not next_end][overlap_x:]
                         self.vertex_info[new_vertex].seq[not this_end] \
-                            = self.vertex_info[next_vertex].seq[next_end][:next_len - overlap] \
+                            = self.vertex_info[next_vertex].seq[next_end][:next_len - overlap_x] \
                               + self.vertex_info[this_vertex].seq[not this_end]
                         
                         # tags
@@ -724,7 +725,11 @@ class Assembly(AssemblySimple):
                     else:
                         go_to_v += 1
 
-    def parse_tab_file(self, tab_file, database_name, type_factor, log_handler=None):
+    def parse_tab_file(self, tab_file, database_name, type_factor):
+        """
+        currently not used, but will be helpful if the graph has a concomitant csv file that
+        marks the information of contigs, this may potentially be replace by optional fields in gfa, though
+        """
         # parse_csv, every locus only occur in one vertex (removing locations with smaller weight)
         tag_loci = {}
         tab_matrix = [line.strip("\n").split("\t") for line in open(tab_file)][1:]
@@ -743,8 +748,11 @@ class Assembly(AssemblySimple):
                         locus_start, locus_end = int(locus_start), int(locus_end)
                         locus_len = locus_end - locus_start + 1
                         # skip those tags concerning only the overlapping sites
+                        largest_ovl = max([_ovl
+                                           for this_e in (True, False)
+                                           for (_n, _e), _ovl in self.vertex_info[vertex_name].connections[this_e]])
                         if (locus_start == 1 or locus_end == self.vertex_info[vertex_name].len) \
-                                and self.__overlap and locus_len <= self.__overlap:
+                                and largest_ovl and locus_len <= largest_ovl:
                             continue
                         if locus_name in tag_loci[locus_type]:
                             new_weight = locus_len * self.vertex_info[vertex_name].cov
@@ -790,27 +798,18 @@ class Assembly(AssemblySimple):
         if database_name not in self.tagged_vertices or len(self.tagged_vertices[database_name]) == 0:
             raise ProcessingGraphFailed("No available " + database_name + " information found in " + tab_file)
 
-    def exclude_other_hits(self, database_n):
-        vertices_to_exclude = []
-        for vertex_name in self.vertex_info:
-            if "tags" in self.vertex_info[vertex_name].other_attr:
-                if database_n in self.vertex_info[vertex_name].other_attr["tags"]:
-                    pass
-                elif self.vertex_info[vertex_name].other_attr["tags"]:
-                    vertices_to_exclude.append(vertex_name)
-        if vertices_to_exclude:
-            self.remove_vertex(vertices_to_exclude)
-            return True
-        else:
-            return False
-
-    # TODO problematic
-    def reduce_to_subgraph(self, bait_vertices, bait_offsets=None,  limit_extending_len=None,  extending_len_weighted_by_depth=False):
+    def reduce_to_subgraph(self,
+                           bait_vertices,
+                           bait_offsets=None,
+                           limit_extending_len=None,
+                           extending_len_weighted_by_depth=False):
         """
+        This function can be used to slim a give graph to a focal region.
+        This can be useful in an interactive manipulation of the graph.
+
         :param bait_vertices:
         :param bait_offsets:
         :param limit_extending_len:
-        :param limit_offset_current_vertex:
         :param extending_len_weighted_by_depth:
         :return:
         """
@@ -818,7 +817,7 @@ class Assembly(AssemblySimple):
             bait_offsets = {}
         rm_contigs = set()
         rm_sub_ids = []
-        # overlap = self.__overlap if self.__overlap else 0
+        # uni_overlap = self.__uni_overlap if self.__uni_overlap else 0
         for go_sub, vertices in enumerate(self.vertex_clusters):
             for vertex in sorted(vertices):
                 if vertex in bait_vertices:
@@ -952,27 +951,49 @@ class Assembly(AssemblySimple):
             len(graph_set), len(path_set), sorted(set(self.vertex_info) - set([_n_ for _n_, _e_ in input_path]))))
         return graph_set == path_set
 
-    def get_path_length(self, input_path):
-        overlap = self.__overlap if self.__overlap else 0
-        circular_len = sum([self.vertex_info[name].len - overlap for name, strand in input_path])
-        return circular_len + overlap * int(self.is_circular_path(input_path))
+    def get_path_length(self, input_path, check_valid=True, adjust_for_cyclic=False):
+        # uni_overlap = self.__uni_overlap if self.__uni_overlap else 0
+        # circular_len = sum([self.vertex_info[name].len - uni_overlap for name, strand in input_path])
+        # return circular_len + uni_overlap * int(self.is_circular_path(input_path))
+        if check_valid:
+            assert self.contain_path(input_path), str(input_path) + " not found in the graph!"
+        accumulated_lens = []
+        for (_n1, _e1), (_n2, _e2) in zip(input_path[:-1], input_path[1:]):
+            v1_info = self.vertex_info[_n1]
+            accumulated_lens.append(v1_info.len - v1_info.connections[_e1][(_n2, not _e2)])
+        last_v_info = self.vertex_info[input_path[-1][0]]
+        if adjust_for_cyclic and self.is_circular_path(input_path):
+            # remove the uni_overlap between the last and the first
+            first_n, first_e = input_path[0]
+            return sum(accumulated_lens) + last_v_info.len - last_v_info.connections[(first_n, not first_e)]
+        else:
+            return sum(accumulated_lens) + last_v_info.len
 
-    def get_path_internal_length(self, input_path):
+    def get_path_internal_length(self, input_path, keep_terminal_overlaps=True):
         assert len(input_path) > 1, f"input path len cannot be <= 1, this path is {input_path}"
-        overlap = self.__overlap if self.__overlap else 0
         # internal_len is allowed to be negative when this_overlap > 0 and len(the_repeat_path) == 2
-        internal_len = -overlap
-        for seg_name, seg_strand in input_path[1:-1]:
-            internal_len += self.vertex_info[seg_name].len - overlap
-        return internal_len
+        if keep_terminal_overlaps:
+            ovl_list = [self.vertex_info[_n1].connections[_e1][(_n2, not _e2)]
+                        for (_n1, _e1), (_n2, _e2) in zip(input_path[1:-2], input_path[2:-1])]
+        else:
+            ovl_list = [self.vertex_info[_n1].connections[_e1][(_n2, not _e2)]
+                        for (_n1, _e1), (_n2, _e2) in zip(input_path[:-1], input_path[1:])]
+        inter_ls = [self.vertex_info[_n1].len
+                    for (_n1, _e1) in input_path[1:-1]]
+        return sum(inter_ls) - sum(ovl_list)
+        # uni_overlap = self.__uni_overlap if self.__uni_overlap else 0
+        # internal_len = -uni_overlap
+        # for seg_name, seg_strand in input_path[1:-1]:
+        #     internal_len += self.vertex_info[seg_name].len - uni_overlap
+        # return internal_len
 
-    def get_path_len_without_terminal_overlaps(self, input_path):
-        assert len(input_path) > 1
-        overlap = self.__overlap if self.__overlap else 0
-        path_len = -overlap
-        for seg_name, seg_strand in input_path:
-            path_len += self.vertex_info[seg_name].len - overlap
-        return path_len
+    # def get_path_len_without_terminal_overlaps(self, input_path):
+    #     assert len(input_path) > 1
+    #     uni_overlap = self.__uni_overlap if self.__uni_overlap else 0
+    #     path_len = -uni_overlap
+    #     for seg_name, seg_strand in input_path:
+    #         path_len += self.vertex_info[seg_name].len - uni_overlap
+    #     return path_len
 
     def repr_path(self, in_path):
         # Bandage style
@@ -983,17 +1004,36 @@ class Assembly(AssemblySimple):
             seq_names[-1] += "(circular)"
         return ",".join(seq_names)
 
-    def export_path_seq_str(self, in_path):
-        overlap = self.__overlap if self.__overlap else 0
+    def export_path_seq_str(self, input_path, check_valid=True):
+        # uni_overlap = self.__uni_overlap if self.__uni_overlap else 0
+        # seq_segments = []
+        # for this_vertex, this_end in input_path:
+        #     seq_segments.append(self.vertex_info[this_vertex].seq[this_end][uni_overlap:])
+        # if not self.is_circular_path(input_path):
+        #     seq_segments[0] = self.vertex_info[input_path[0][0]].seq[input_path[0][1]][:uni_overlap] + seq_segments[0]
+        # return "".join(seq_segments)
+        if check_valid:
+            assert self.contain_path(input_path), str(input_path) + " not found in the graph!"
         seq_segments = []
-        for this_vertex, this_end in in_path:
-            seq_segments.append(self.vertex_info[this_vertex].seq[this_end][overlap:])
-        if not self.is_circular_path(in_path):
-            seq_segments[0] = self.vertex_info[in_path[0][0]].seq[in_path[0][1]][:overlap] + seq_segments[0]
+        for (_n1, _e1), (_n2, _e2) in zip(input_path[:-1], input_path[1:]):
+            # get the vertex information for vertex _n1
+            v1_info = self.vertex_info[_n1]
+            # get the uni_overlap between vertices _n1 and _n2
+            this_overlap = v1_info.connections[_e1][(_n2, not _e2)]
+            # append the sequence with uni_overlap trimmed
+            seq_segments.append(v1_info.seq[_e1][:-this_overlap])
+        last_n, last_e = input_path[-1]
+        last_v_info = self.vertex_info[last_n]
+        if self.is_circular_path(input_path):
+            first_n, first_e = input_path[0]
+            # append the sequence with uni_overlap trimmed
+            seq_segments.append(last_v_info.seq[last_e][:-last_v_info.connections[(first_n, not first_e)]])
+        else:
+            seq_segments.append(last_v_info.seq[last_e])
         return "".join(seq_segments)
 
-    def export_path(self, in_path):
-        return Sequence(self.repr_path(in_path), self.export_path_seq_str(in_path))
+    def export_path(self, in_path, check_valid=True):
+        return Sequence(self.repr_path(in_path), self.export_path_seq_str(in_path, check_valid=check_valid))
 
     def reverse_path(self, raw_path):
         tuple_path = tuple(raw_path)
@@ -1156,9 +1196,9 @@ class Assembly(AssemblySimple):
 
         return corrected_variant, tuple(sorted(here_standardized_variant))  # , key=lambda x: smart_trans_for_sort(x)
 
-    def get_num_of_possible_alignment_start_points(self, read_len, align_to_path, path_internal_len):
+    def get_num_of_possible_alignment_start_points(self, read_len_aligned, align_to_path, path_internal_len):
         """
-        If a read with certain length (i.e. median length of all candidate reads) could be aligned to a path,
+        If a read with certain length could be aligned to a path,
         calculate how many possible start points could this alignment happen.
 
         Example:
@@ -1175,15 +1215,25 @@ class Assembly(AssemblySimple):
         for graph(a=2,b=3,c=4,d=5,e=6), if read has length of 11 and be aligned to b->e->d,
         then there could be 3 possible alignment start points
 
-        :param read_len: we use median read length to approximate
+        :param read_len_aligned:
         :param align_to_path:
         :param path_internal_len:
         :return:
         """
-        overlap = self.__overlap if self.__overlap else 0
-        maximum_num_cat = read_len - path_internal_len - 2
-        left_trim = max(maximum_num_cat - self.vertex_info[align_to_path[0][0]].len - overlap, 0)
-        right_trim = max(maximum_num_cat - self.vertex_info[align_to_path[-1][0]].len - overlap, 0)
+        # uni_overlap = self.__uni_overlap if self.__uni_overlap else 0
+        maximum_num_cat = read_len_aligned - path_internal_len - 2
+        # trim left
+        left_n1, left_e1 = align_to_path[0]
+        left_n2, left_e2 = align_to_path[1]
+        left_info = self.vertex_info[left_n1]
+        left_overlap = left_info.connections[left_e1][(left_n2, not left_e2)]
+        left_trim = max(maximum_num_cat - left_info.len - left_overlap, 0)
+        # trim right
+        right_n1, right_e1 = align_to_path[-1]
+        right_n2, right_e2 = align_to_path[-2]
+        right_info = self.vertex_info[right_n1]
+        right_overlap = right_info.connections[not right_e1][(right_n2, right_e2)]
+        right_trim = max(maximum_num_cat - right_info.len - right_overlap, 0)
         return maximum_num_cat - left_trim - right_trim
 
     def get_branching_ends(self):

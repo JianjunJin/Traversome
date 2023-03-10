@@ -214,24 +214,24 @@ class AssemblySimple(object):
     vertex_info (VertexInfo):
         Class object for storing Vertex info.
 
-    __overlap (bool):
+    __uni_overlap (bool):
         None
   
 
     Functions:
     ----------
-    parse_gfa: parse GFA files to fill vertex_info and __overlap.
-    parse_fastg: parse fastg to fill vertex_info and __overlap.
-    overlap: return __overlap
+    parse_gfa: parse GFA files to fill vertex_info and __uni_overlap.
+    parse_fastg: parse fastg to fill vertex_info and __uni_overlap.
+    uni_overlap: return __uni_overlap
     write_to_fasta: writes
     """
-    def __init__(self, graph_file=None, min_cov=0., max_cov=INF, overlap=None):
+    def __init__(self, graph_file=None, min_cov=0., max_cov=INF, uni_overlap=None):
 
         # base attributes       
         self.graph_file = graph_file
         self.min_cov = min_cov
         self.max_cov = max_cov
-        self.__overlap = overlap
+        self.__uni_overlap = uni_overlap
 
         # destination to be filled with parsed GFA data.
         self.vertex_info = VertexInfo()
@@ -296,7 +296,7 @@ class AssemblySimple(object):
             gfa_open.seek(0)
 
             # parse differently dependong on version. 
-            # Fills .vertex_info list, and self.__overlap int
+            # Fills .vertex_info list, and self.__uni_overlap int
             if gfa_version_number == "1.0":
                 self.parse_gfa_v1(gfa_open)
             elif gfa_version_number == "2.0":
@@ -307,7 +307,7 @@ class AssemblySimple(object):
     def parse_gfa_v1(self, gfa_open):
         """
         Fills .vertex_info with the sequence tag lines and 
-        and .__overlap with the link tag lines.
+        and .__uni_overlap with the link tag lines.
         """
         # set for storing kmer results
         overlap_values = set()
@@ -432,33 +432,33 @@ class AssemblySimple(object):
                     end_2 = {"+": False, "-": True}[end_2]
 
                     # store the kmer values
-                    overlap = alignment_cigar.strip("M")
+                    this_overlap = alignment_cigar.strip("M")
                     try:
-                        overlap = int(overlap)
+                        this_overlap = int(this_overlap)
                     except:
                         raise ValueError(
-                            "Contig overlap information contains characters other than M: " + alignment_cigar)
-                    overlap_values.add(overlap)
+                            "Contig uni_overlap cigar contains characters other than M: " + alignment_cigar)
+                    overlap_values.add(this_overlap)
 
                     # store the connection (link) between these verts
-                    self.vertex_info[vertex_1].connections[end_1][(vertex_2, end_2)] = overlap
-                    self.vertex_info[vertex_2].connections[end_2][(vertex_1, end_1)] = overlap
+                    self.vertex_info[vertex_1].connections[end_1][(vertex_2, end_2)] = this_overlap
+                    self.vertex_info[vertex_2].connections[end_2][(vertex_1, end_1)] = this_overlap
 
-        # Record the overlap of READS with the contigs.
-        # if no kmers data was found then overlap is zero
+        # Record the uni_overlap of READS with the contigs.
+        # if no kmers data was found then uni_overlap is zero
         if len(overlap_values) == 0:
-            self.__overlap = None
+            self.__uni_overlap = None
 
-        # if multiple overlaps counts are present then its an error
-        elif len(overlap_values) > 1:
-            raise ProcessingGraphFailed(
-                "Multiple overlap values: {}".format(
-                    ",".join([str(ol) for ol in sorted(overlap_values)]))
-            )
-        
+        # # if multiple overlaps counts are present then its an error
+        # elif len(overlap_values) > 1:
+        #     raise ProcessingGraphFailed(
+        #         "Multiple uni_overlap values: {}".format(
+        #             ",".join([str(ol) for ol in sorted(overlap_values)]))
+        #     )
+
         # only one value is present so let's store it as an int
         else:
-            self.__overlap = overlap_values.pop()
+            self.__uni_overlap = overlap_values.pop()
 
     def parse_gfa_v2(self, gfa_open):
         "GFA VERSION 2 PARSING"
@@ -539,24 +539,24 @@ class AssemblySimple(object):
                 if vertex_1 in self.vertex_info and vertex_2 in self.vertex_info:
                     end_1 = {"+": True, "-": False}[end_1]
                     end_2 = {"+": False, "-": True}[end_2]
-                    overlap = alignment_cigar.strip("M")
+                    this_overlap = alignment_cigar.strip("M")
                     try:
-                        overlap = int(overlap)
+                        this_overlap = int(this_overlap)
                     except:
                         raise ValueError(
-                            "Contig overlap information contains characters other than M: " + alignment_cigar)
-                    overlap_values.add(overlap)
-                    self.vertex_info[vertex_1].connections[end_1][(vertex_2, end_2)] = overlap
-                    self.vertex_info[vertex_2].connections[end_2][(vertex_1, end_1)] = overlap
+                            "Contig uni_overlap cigar contains characters other than M: " + alignment_cigar)
+                    overlap_values.add(this_overlap)
+                    self.vertex_info[vertex_1].connections[end_1][(vertex_2, end_2)] = this_overlap
+                    self.vertex_info[vertex_2].connections[end_2][(vertex_1, end_1)] = this_overlap
 
-        # store overlap score as either None or an int
+        # store uni_overlap score as either None or an int
         if len(overlap_values) == 0:
-            self.__overlap = None
-        elif len(overlap_values) > 1:
-            raise ProcessingGraphFailed(
-                "Multiple overlap values: " + ",".join([str(ol) for ol in sorted(overlap_values)]))
+            self.__uni_overlap = None
+        # elif len(overlap_values) > 1:
+        #     raise ProcessingGraphFailed(
+        #         "Multiple uni_overlap values: " + ",".join([str(ol) for ol in sorted(overlap_values)]))
         else:
-            self.__overlap = overlap_values.pop()
+            self.__uni_overlap = overlap_values.pop()
 
     def parse_fastg(self, min_cov=0., max_cov=INF):
         """
@@ -595,6 +595,7 @@ class AssemblySimple(object):
                             next_end = next_vertex_str.endswith("'")
                             # Adding connection information (edge) to both of the related vertices
                             # even it is only mentioned once in some SPAdes output files
+                            # assign uni_overlap info latter
                             self.vertex_info[vertex_name].connections[this_end][(next_name, next_end)] = None
                             self.vertex_info[next_name].connections[next_end][(vertex_name, this_end)] = None
                 # sequence
@@ -627,7 +628,7 @@ class AssemblySimple(object):
             if initial_kmer:
                 break
         if no_connection_at_all:
-            self.__overlap = 0
+            self.__uni_overlap = 0
         else:
             ## check all edges
             testing_vertices = set(self.vertex_info)
@@ -641,21 +642,21 @@ class AssemblySimple(object):
                             if this_seq != next_seq:
                                 initial_kmer.discard(test_k)
             if len(initial_kmer) >= 1:
-                self.__overlap = max(initial_kmer)
+                self.__uni_overlap = max(initial_kmer)
             else:
-                self.__overlap = 0
+                self.__uni_overlap = 0
                 # raise ProcessingGraphFailed("No kmer detected!")
         # assign general kmer to all edges
         for vertex_name in self.vertex_info:
             for this_end in (True, False):
                 for next_tuple in self.vertex_info[vertex_name].connections[this_end]:
-                    self.vertex_info[vertex_name].connections[this_end][next_tuple] = self.__overlap
+                    self.vertex_info[vertex_name].connections[this_end][next_tuple] = self.__uni_overlap
 
-    def overlap(self):
-        if self.__overlap is None:
+    def uni_overlap(self):
+        if self.__uni_overlap is None:
             return None
         else:
-            return int(self.__overlap)
+            return int(self.__uni_overlap)
 
     def write_to_fasta(self, out_file, interleaved=None, check_postfix=True):
         if check_postfix and not out_file.endswith(".fasta"):

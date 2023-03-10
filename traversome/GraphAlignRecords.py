@@ -801,7 +801,8 @@ class GraphAlignRecords(object):
                 accumulated_len = sum([self.assembly_graph[_n].len - _o for _n, _e, _o in this_p])
                 if accumulated_len >= extra_len:
                     cut_len = this_p[-1][2]
-                    pre_seq = self.assembly_graph.export_path_seq_str([(_n, _e) for _n, _e, _o in this_p])[:-cut_len]
+                    pre_seq = self.assembly_graph.export_path_seq_str(
+                        [(_n, _e) for _n, _e, _o in this_p], check_valid=False)[:-cut_len]
                     seqs.append(pre_seq[-extra_len:])
                 else:
                     for (v_n, v_e), overlap in self.assembly_graph[this_p[0][0]].connections[not this_p[0][1]].items():
@@ -827,7 +828,8 @@ class GraphAlignRecords(object):
                 accumulated_len = sum([self.assembly_graph[_n].len - _o for _n, _e, _o in this_p])
                 if accumulated_len >= extra_len:
                     cut_len = this_p[0][2]
-                    pre_seq = self.assembly_graph.export_path_seq_str([(_n, _e) for _n, _e, _o in this_p])[cut_len:]
+                    pre_seq = self.assembly_graph.export_path_seq_str(
+                        [(_n, _e) for _n, _e, _o in this_p], check_valid=False)[cut_len:]
                     seqs.append(pre_seq[:extra_len])
                 else:
                     for (v_n, v_e), overlap in self.assembly_graph[this_p[0][0]].connections[this_p[0][1]].items():
@@ -853,7 +855,8 @@ class GraphAlignRecords(object):
         self.__path_to_seqs = {}
         for record in self.raw_records:
             if record.path not in self.__path_to_seqs:
-                self.__path_to_seqs[record.path] = self.assembly_graph.export_path_seq_str(record.path)
+                self.__path_to_seqs[record.path] = \
+                    self.assembly_graph.export_path_seq_str(record.path, check_valid=False)
 
     def _load_query_seqs(self, drop_empty_records=True):
         """
@@ -1037,17 +1040,19 @@ class GraphAlignRecords(object):
         #         else:
         #             go_r += 1
 
-        # no need, it should be already taken into the consideration by graph aligners, at least by GraphAligner
-        # # filtering raw_records by overlap requirement
+        # no need, it should be already taken into the consideration by graph aligners,
+        # meaning that the overlapped region will not be recorded in the path at least by GraphAligner
+
+        # # filtering raw_records by uni_overlap requirement
         # if self.trim_overlap_with_graph:
         #
         #     # check that assembly_graph_obj is an Assembly class object
         #     check1 = isinstance(self.assembly_graph_obj, Assembly)
-        #     check2 = self.assembly_graph_obj.overlap()
+        #     check2 = self.assembly_graph_obj.uni_overlap()
         #
         #     # iterate over ... and do ...
         #     if check1 and check2:
-        #         this_overlap = self.assembly_graph_obj.overlap()
+        #         uni_overlap = self.assembly_graph_obj.uni_overlap()
         #         go_r = 0
         #
         #         if self.alignment_format == "GAF":
@@ -1059,13 +1064,13 @@ class GraphAlignRecords(object):
         #                     # if head_v or tail_v does not appear in the graph, delete current record
         #                     if head_v in self.assembly_graph_obj.vertex_info and \
         #                             tail_v in self.assembly_graph_obj.vertex_info:
-        #                         # if path did not reach out the overlap region between the terminal vertex and
+        #                         # if path did not reach out the uni_overlap region between the terminal vertex and
         #                         # the neighboring internal vertex, the terminal vertex should be trimmed from the path
         #                         head_vertex_len = self.assembly_graph_obj.vertex_info[head_v].len
         #                         tail_vertex_len = self.assembly_graph_obj.vertex_info[tail_v].len
-        #                         if head_vertex_len - gaf_record.p_start <= this_overlap:
+        #                         if head_vertex_len - gaf_record.p_start <= uni_overlap:
         #                             del gaf_record.path[0]
-        #                         if tail_vertex_len - (gaf_record.p_len - gaf_record.p_end - 1) <= this_overlap:
+        #                         if tail_vertex_len - (gaf_record.p_len - gaf_record.p_end - 1) <= uni_overlap:
         #                             del gaf_record.path[-1]
         #                         if not gaf_record.path:
         #                             del self.raw_records[go_r]
@@ -1082,12 +1087,12 @@ class GraphAlignRecords(object):
         #                     head_v = spa_tsv_record.path[0][0]
         #                     # if head_v does not appear in the graph, delete current record
         #                     if head_v in self.assembly_graph_obj.vertex_info:
-        #                         # if path did not reach out the overlap region between the terminal vertex and
+        #                         # if path did not reach out the uni_overlap region between the terminal vertex and
         #                         # the neighboring internal vertex, the terminal vertex should be trimmed from the path
         #                         head_vertex_len = self.assembly_graph_obj.vertex_info[head_v].len
-        #                         if head_vertex_len - spa_tsv_record.p_start <= this_overlap:
+        #                         if head_vertex_len - spa_tsv_record.p_start <= uni_overlap:
         #                             del spa_tsv_record.path[0]
-        #                         if spa_tsv_record.path_align_lengths[-1] <= this_overlap:
+        #                         if spa_tsv_record.path_align_lengths[-1] <= uni_overlap:
         #                             del spa_tsv_record.path[-1]
         #                         if not spa_tsv_record.path:
         #                             del self.raw_records[go_r]
