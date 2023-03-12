@@ -823,17 +823,22 @@ class PathGenerator(object):
     # def generate_all_circular_isomers(self):
     #     # based on alignments
 
-    def __access_read_path_coverage(self, growing_variants, previous_len_variant, num_valid_search, path_not_traversed):
+    def __access_read_path_coverage(self,
+                                    growing_variants,
+                                    previous_len_variant,
+                                    num_valid_search,
+                                    path_not_traversed,
+                                    previous_un_traversed_ratio,
+                                    report_detailed_warning=True):
+        """
+        Return: (expected_num_searches_to_add, un_traversed_path_ratio)
+        """
         logger.info("assessing read path coverage ..")
-        logger.debug(str(path_not_traversed))
-        logger.debug(bool(path_not_traversed))
         """The minimum requirement is that all observed read_paths were covered"""
         if not path_not_traversed:
-            return 0
+            return 0, 0
         else:
             logger.debug(str([str(_rp) + ";  " for _rp in path_not_traversed]))
-            logger.debug(str(growing_variants))
-            logger.debug(str(previous_len_variant))
             for variant_path in growing_variants[previous_len_variant:]:
                 logger.debug("check variant_path " + str(variant_path))
                 for sub_path in self.tvs.get_variant_sub_paths(variant_path):
@@ -848,9 +853,9 @@ class PathGenerator(object):
                     if single_sbp in path_not_traversed:
                         del path_not_traversed[single_sbp]
                 if not path_not_traversed:
-                    return 0
+                    return 0, 0
             if not path_not_traversed:
-                return 0
+                return 0, 0
             # the distribution of sampled subpaths are complex due to graph-based heuristic extension
             # here we just approximate it as Poisson distribution
             # similar to the lander-waterman model in genome sequencing,
@@ -860,11 +865,20 @@ class PathGenerator(object):
             current_ratio = len(path_not_traversed) / len(self.read_paths)
             logger.info("uncovered_paths/all_paths = %i/%i = %.4f" %
                         (len(path_not_traversed), len(self.read_paths), current_ratio))
-            new_num_valid_search = num_valid_search * log(0.5 / len(self.read_paths)) / log(current_ratio)
-            new_num_valid_search = int(new_num_valid_search)
-            logger.info("resetting num_valid_search={}".format(new_num_valid_search))
-            return new_num_valid_search - num_valid_search
-            # TODO this process will never stop if the graph cannot generate a circular path on forced circular
+            if current_ratio == previous_un_traversed_ratio:
+                logger.warning("{} read paths not traversed: ".format(len(path_not_traversed)))
+                if report_detailed_warning:
+                    for go_p, p_n_t in enumerate(path_not_traversed):
+                        logger.warning("read path %i (len=%i, counts=%i): %s" %
+                                       (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
+                logger.warning("This may due to the unrealistic constraints on the genome topology or chimeric reads.")
+                return 0, current_ratio
+            else:
+                new_num_valid_search = num_valid_search * log(0.5 / len(self.read_paths)) / log(current_ratio)
+                new_num_valid_search = int(new_num_valid_search)
+                logger.info("resetting num_valid_search={}".format(new_num_valid_search))
+                return new_num_valid_search - num_valid_search, current_ratio
+                # TODO this process will never stop if the graph cannot generate a circular path on forced circular
 
     def index_readpaths_subpaths(self, filter_by_graph=True):
         self.__read_paths_counter = dict()
@@ -966,6 +980,7 @@ class PathGenerator(object):
         # v_len = len(self.graph.vertex_info)
         # while self.count_valid < self.num_valid_search:
         break_traverse = False
+        previous_ratio = 1.
         while True:
             single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
             single_traversal.run()
@@ -1000,11 +1015,12 @@ class PathGenerator(object):
                         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
                             len(self.variants), self.count_valid, self.num_valid_search, self.count_search))
                     if self.count_valid >= self.num_valid_search:
-                        add_search = self.__access_read_path_coverage(
+                        add_search, previous_ratio = self.__access_read_path_coverage(
                             growing_variants=self.variants,
                             previous_len_variant=self.__previous_len_variant,
                             num_valid_search=self.num_valid_search,
-                            path_not_traversed=self.__read_paths_not_in_variants)
+                            path_not_traversed=self.__read_paths_not_in_variants,
+                            previous_un_traversed_ratio=previous_ratio)
                         if add_search:
                             self.__previous_len_variant = len(self.variants)
                             self.num_valid_search += add_search
@@ -1063,11 +1079,12 @@ class PathGenerator(object):
                         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
                             len(variant), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
                     if g_vars.count_valid >= g_vars.num_valid_search:
-                        add_search = self.__access_read_path_coverage(
+                        add_search, g_vars.previous_ratio = self.__access_read_path_coverage(
                             growing_variants=variant,
                             previous_len_variant=g_vars.previous_len_variant,
                             num_valid_search=g_vars.num_valid_search,
-                            path_not_traversed=path_not_traversed)
+                            path_not_traversed=path_not_traversed,
+                            previous_un_traversed_ratio=g_vars.previous_ratio)
                         logger.info("adding searches by " + str(add_search))
                         if add_search:
                             g_vars.previous_len_variant = len(variant)
@@ -1101,6 +1118,7 @@ class PathGenerator(object):
         global_vars.count_valid = self.count_valid
         global_vars.num_valid_search = self.num_valid_search
         global_vars.previous_len_variant = self.__previous_len_variant
+        global_vars.previous_ratio = 1.  # initialize the shared variable for recording the ratio of un-traversed reads
         lock = manager.Lock()
         event = manager.Event()
         # v_len = len(self.graph.vertex_info)
@@ -1117,11 +1135,12 @@ class PathGenerator(object):
             logger.debug("assigned job to worker {}".format(g_p + 1))
             if global_vars.count_valid >= global_vars.num_valid_search:
                 lock.acquire()
-                add_search = self.__access_read_path_coverage(
+                add_search, global_vars.previous_ratio = self.__access_read_path_coverage(
                     growing_variants=variants,
                     previous_len_variant=global_vars.previous_len_variant,
                     num_valid_search=global_vars.num_valid_search,
-                    path_not_traversed=path_not_traversed)
+                    path_not_traversed=path_not_traversed,
+                    previous_un_traversed_ratio=global_vars.previous_ratio)
                 if not add_search:
                     lock.release()
                     break

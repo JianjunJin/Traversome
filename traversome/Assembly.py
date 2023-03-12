@@ -961,11 +961,12 @@ class Assembly(AssemblySimple):
         for (_n1, _e1), (_n2, _e2) in zip(input_path[:-1], input_path[1:]):
             v1_info = self.vertex_info[_n1]
             accumulated_lens.append(v1_info.len - v1_info.connections[_e1][(_n2, not _e2)])
-        last_v_info = self.vertex_info[input_path[-1][0]]
+        last_n, last_e = input_path[-1]
+        last_v_info = self.vertex_info[last_n]
         if adjust_for_cyclic and self.is_circular_path(input_path):
             # remove the uni_overlap between the last and the first
             first_n, first_e = input_path[0]
-            return sum(accumulated_lens) + last_v_info.len - last_v_info.connections[(first_n, not first_e)]
+            return sum(accumulated_lens) + last_v_info.len - last_v_info.connections[last_e][(first_n, not first_e)]
         else:
             return sum(accumulated_lens) + last_v_info.len
 
