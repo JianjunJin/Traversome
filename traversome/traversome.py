@@ -111,6 +111,9 @@ class Traversome(object):
             min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.8),
         )
         self.generate_read_paths()
+        logger.info("#reads aligned: %i" % len(self.alignment.read_records))
+        logger.info("#records aligned: %i" % len(self.alignment.raw_records))
+        logger.info("#read paths: %i" % len(self.read_paths))
         self.get_align_len_dist()
         # logger.debug("Cleaning graph ...")
         # self.clean_graph()
@@ -372,7 +375,8 @@ class Traversome(object):
 
         if not self.all_sub_paths:
             logger.error("No valid subpath found!")
-            sys.exit(0)
+            # TODO how to exit quietly
+            sys.exit(1)
 
         # match graph alignments to all_sub_paths
         for read_path, record_ids in self.read_paths.items():
