@@ -894,7 +894,7 @@ class Assembly(AssemblySimple):
     #         self,
     #         graph_alignment,
     #         random_obj,
-    #         num_valid_search,
+    #         min_valid_search,
     #         num_processes=1,
     #         force_circular=True,
     #         hetero_chromosome=True):
@@ -902,7 +902,7 @@ class Assembly(AssemblySimple):
     #     :param graph_alignment:
     #     :param random_obj: random
     #         passed from traversome.random [or from import random]
-    #     :param num_valid_search
+    #     :param min_valid_search
     #     :param num_processes
     #     :param force_circular
     #     :param hetero_chromosome
@@ -910,7 +910,7 @@ class Assembly(AssemblySimple):
     #     generator = PathGenerator(
     #         assembly_graph_obj=self,
     #         graph_alignment=graph_alignment,
-    #         num_valid_search=num_valid_search,
+    #         min_valid_search=min_valid_search,
     #         num_processes=num_processes,
     #         force_circular=force_circular,
     #         hetero_chromosome=hetero_chromosome,
@@ -1028,7 +1028,7 @@ class Assembly(AssemblySimple):
         if self.is_circular_path(input_path):
             first_n, first_e = input_path[0]
             # append the sequence with uni_overlap trimmed
-            seq_segments.append(last_v_info.seq[last_e][:-last_v_info.connections[(first_n, not first_e)]])
+            seq_segments.append(last_v_info.seq[last_e][:-last_v_info.connections[last_e][(first_n, not first_e)]])
         else:
             seq_segments.append(last_v_info.seq[last_e])
         return "".join(seq_segments)
