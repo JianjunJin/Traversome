@@ -124,13 +124,14 @@ class Traversome(object):
         logger.debug("Generating candidate variant paths ...")
         self.gen_candidate_paths(
             path_generator=path_generator,
-            num_search=self.kwargs.get("num_valid_search", 1000),
+            min_num_search=self.kwargs.get("min_valid_search", 1000),
+            max_num_search=self.kwargs.get("max_valid_search", 100000),
             num_processes=self.num_processes,
             hetero_chromosomes=hetero_chromosomes
         )
         logger.info("======== VARIANTS SEARCHING ENDS ========\n")
 
-        logger.info("======== MODEL SELECTION & FITTING STARTS ========\n")
+        logger.info("======== MODEL SELECTION & FITTING STARTS ========")
         if self.num_put_variants == 0:
             raise Exception("No candidate variants found!")
         elif self.num_put_variants == 1:
@@ -207,7 +208,8 @@ class Traversome(object):
     def gen_candidate_paths(
             self,
             path_generator="H",
-            num_search=1000,
+            min_num_search=1000,
+            max_num_search=100000,
             num_processes=1,
             hetero_chromosomes=True):
         """
@@ -216,7 +218,8 @@ class Traversome(object):
         if path_generator == "H":
             generator = PathGenerator(
                 traversome_obj=self,
-                min_num_valid_search=num_search,
+                min_num_valid_search=min_num_search,
+                max_num_valid_search=max_num_search,
                 num_processes=num_processes,
                 force_circular=self.force_circular,
                 hetero_chromosome=hetero_chromosomes)
