@@ -107,7 +107,7 @@ class ChComposition(str, Enum):
 #     path_generator: PathGen = typer.Option(
 #         PathGen.Heuristic, "-P",
 #         help="Path generator: H (Heuristic)/U (User-provided)"),
-#     num_valid_search: int = typer.Option(
+#     min_valid_search: int = typer.Option(
 #         1000, "-N", "--num-search",
 #         help="Num of valid traversals for heuristic searching."),
 #     num_processes: int = typer.Option(
@@ -157,7 +157,7 @@ class ChComposition(str, Enum):
 #             function=function,
 #             out_prob_threshold=out_seq_threshold,
 #             force_circular=topology == "c",
-#             num_valid_search=num_valid_search,
+#             min_valid_search=min_valid_search,
 #             num_processes=num_processes,
 #             random_seed=random_seed,
 #             keep_temp=keep_temp,
@@ -190,9 +190,12 @@ def thorough(
     path_generator: PathGen = typer.Option(
         PathGen.Heuristic, "-P",
         help="Path generator: H (Heuristic)/U (User-provided)"),
-    num_valid_search: int = typer.Option(
-        1000, "-N", "--num-search",
-        help="Num of valid traversals for heuristic searching."),
+    min_valid_search: int = typer.Option(
+        1000, "-n", "--min-val-search",
+        help="Minimum num of valid traversals for heuristic searching."),
+    max_valid_search: int = typer.Option(
+        100000, "-N", "--max-val-search",
+        help="Maximum num of valid traversals for heuristic searching."),
     criterion: ModelSelectionMode = typer.Option(
         ModelSelectionMode.AIC, "-F", "--func",
         help="aic (reverse model selection using stepwise AIC, default)\n"
@@ -248,6 +251,7 @@ def thorough(
         overwrite=overwrite)
     try:
         assert path_generator != "U", "User-provided is under developing, please use heuristic instead!"
+        assert max_valid_search >= min_valid_search, ""
         from traversome.traversome import Traversome
         traverser = Traversome(
             graph=str(graph_file),
@@ -255,7 +259,7 @@ def thorough(
             outdir=str(output_dir),
             model_criterion=criterion,
             out_prob_threshold=out_seq_threshold,
-            num_valid_search=num_valid_search,
+            min_valid_search=min_valid_search,
             num_processes=num_processes,
             force_circular=topology == "c",
             n_generations=n_generations,
