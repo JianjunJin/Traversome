@@ -97,12 +97,13 @@ class Traversome(object):
         """
         Parse the assembly graph files ...
         """
+        logger.info("======== DIGESTING DATA STARTS ========")
         self.graph = Assembly(self.graph_gfa)
         self.graph.update_vertex_clusters()
         if self.kwargs.get("graph_component_selection", 0):
             self.graph.reduce_graph_by_weight(cutoff=self.kwargs["graph_component_selection"])
-        logger.info("#contigs in total: {}".format(len(self.graph.vertex_info)))
-        logger.info("#contigs in each component: {}".format(sorted([len(cls) for cls in self.graph.vertex_clusters])))
+        logger.info("  #contigs in total: {}".format(len(self.graph.vertex_info)))
+        logger.info("  #contigs in each component: {}".format(sorted([len(cls) for cls in self.graph.vertex_clusters])))
 
         self.alignment = GraphAlignRecords(
             self.alignment_file,
@@ -111,10 +112,13 @@ class Traversome(object):
             min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.8),
         )
         self.generate_read_paths()
-        logger.info("#reads aligned: %i" % len(self.alignment.read_records))
-        logger.info("#records aligned: %i" % len(self.alignment.raw_records))
-        logger.info("#read paths: %i" % len(self.read_paths))
+        logger.info("  #reads aligned: %i" % len(self.alignment.read_records))
+        logger.info("  #records aligned: %i" % len(self.alignment.raw_records))
+        logger.info("  #read paths: %i" % len(self.read_paths))
         self.get_align_len_dist()
+        logger.info("======== DIGESTING DATA ENDS ========\n")
+
+        logger.info("======== VARIANTS SEARCHING STARTS ========")
         # logger.debug("Cleaning graph ...")
         # self.clean_graph()
         logger.debug("Generating candidate variant paths ...")
@@ -124,6 +128,9 @@ class Traversome(object):
             num_processes=self.num_processes,
             hetero_chromosomes=hetero_chromosomes
         )
+        logger.info("======== VARIANTS SEARCHING ENDS ========\n")
+
+        logger.info("======== MODEL SELECTION & FITTING STARTS ========\n")
         if self.num_put_variants == 0:
             raise Exception("No candidate variants found!")
         elif self.num_put_variants == 1:
@@ -140,6 +147,7 @@ class Traversome(object):
             if len(self.variant_proportions) > 1:
                 logger.debug("Estimating candidate variant frequencies using Bayesian MCMC ...")
                 self.variant_proportions = self.fit_model_using_bayesian_mcmc(chosen_ids=self.variant_proportions)
+        logger.info("======== MODEL SELECTION & FITTING ENDS ========\n")
 
         self.output_seqs()
 
@@ -712,7 +720,8 @@ class Traversome(object):
                                                 criterion=Criterion.AIC,
                                                 chosen_ids: typingODict[int, bool] = None):
         self.max_like_fit = ModelFitMaxLike(self)
-        return self.max_like_fit.reverse_model_selection(criterion=criterion, chosen_ids=chosen_ids)
+        return self.max_like_fit.reverse_model_selection(
+            n_proc=self.num_processes, criterion=criterion, chosen_ids=chosen_ids)
 
     # def update_candidate_info(self, ext_component_proportions: typingODict[int, float] = None):
     #     """
