@@ -35,6 +35,11 @@ else:
     sys.stdout.write("Python version have to be 2.7+ or 3.5+")
     sys.exit(0)
 
+if MAJOR_VERSION == 3 and MINOR_VERSION >= 9:
+    from functools import cache
+else:
+    from functools import lru_cache as cache
+
 
 def complementary_seqs(input_seq_iter):
     return tuple([complementary_seq(seq) for seq in input_seq_iter])
@@ -390,12 +395,119 @@ class WeightedGMMWithEM:
         return parameters
 
 
+# TODO get subpath adaptive to length=1, more general and less restrictions
+class VariantSubPathsGenerator:
+    def __init__(self, graph, force_circular, min_alignment_len, max_alignment_len, read_paths_hashed):
+        self.graph = graph
+        self.force_circular = force_circular
+        self.min_alignment_len = min_alignment_len
+        self.max_alignment_len = max_alignment_len
+        self.read_paths_hashed = read_paths_hashed
+        self.variant_subpath_counters = {}
+
+    @cache
+    def gen_subpaths(self, variant_path):
+        if variant_path in self.variant_subpath_counters:
+            return self.variant_subpath_counters[variant_path]
+        else:
+            # if this_overlap is None:
+            #     this_overlap = self.graph.uni_overlap()
+            these_sub_paths = dict()
+            num_seg = len(variant_path)
+            # print("run get")
+            if self.force_circular:
+                for go_start_v, start_segment in enumerate(variant_path):
+                    # find the longest sub_path,
+                    # that begins with start_segment and be in the range of alignment length
+                    this_longest_sub_path = [start_segment]
+                    this_internal_path_len = 0
+                    go_next = (go_start_v + 1) % num_seg
+                    while this_internal_path_len < self.max_alignment_len:
+                        next_n, next_e = variant_path[go_next]
+                        next_v_info = self.graph.vertex_info[next_n]
+                        pre_n, pre_e = this_longest_sub_path[-1]
+                        this_overlap = next_v_info.connections[not next_e][(pre_n, pre_e)]
+                        this_longest_sub_path.append((next_n, next_e))
+                        this_internal_path_len += next_v_info.len - this_overlap
+                        go_next = (go_next + 1) % num_seg
+                    # print("this_longest_sub_path", this_longest_sub_path)
+                    # print(self.graph.get_path_internal_length(this_longest_sub_path), self.min_alignment_len)
+                    # when the overlap is long and the contig is short,
+                    # the path with internal_length shorter than tha alignment length can still help
+                    # so remove the condition for min_alignment_len
+                    # if len(this_longest_sub_path) < 2 \
+                    #         or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_len:
+                    #     continue
+                    # TODO size of 1 can also be included
+                    if len(this_longest_sub_path) < 2:
+                        continue
+                    # print("this_longest_sub_path", this_longest_sub_path, "passed")
+
+                    # record shorter sub_paths starting from start_segment
+                    len_this_sub_p = len(this_longest_sub_path)
+                    for skip_tail in range(len_this_sub_p - 1):
+                        this_sub_path = \
+                            self.graph.get_standardized_path(this_longest_sub_path[:len_this_sub_p - skip_tail])
+                        # print("checking subpath existence", this_sub_path)
+                        if this_sub_path not in self.read_paths_hashed:
+                            continue
+                        # print("checking subpath existence", this_sub_path, "passed")
+                        # when the uni_overlap is long and the contig is short,
+                        # the path with internal_length shorter than tha alignment length can still help
+                        # so remove the condition for min_alignment_len
+                        # if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_len:
+                        #     break
+                        if this_sub_path not in these_sub_paths:
+                            these_sub_paths[this_sub_path] = 0
+                        these_sub_paths[this_sub_path] += 1
+            else:
+                for go_start_v, start_segment in enumerate(variant_path):
+                    # find the longest sub_path,
+                    # that begins with start_segment and be in the range of alignment length
+                    this_longest_sub_path = [start_segment]
+                    this_internal_path_len = 0
+                    go_next = go_start_v + 1
+                    while go_next < num_seg and this_internal_path_len < self.max_alignment_len:
+                        next_n, next_e = variant_path[go_next]
+                        next_v_info = self.graph.vertex_info[next_n]
+                        pre_n, pre_e = this_longest_sub_path[-1]
+                        this_overlap = next_v_info.connections[not next_e][(pre_n, pre_e)]
+                        this_longest_sub_path.append((next_n, next_e))
+                        this_internal_path_len += next_v_info.len - this_overlap
+                        go_next += 1
+                    if len(this_longest_sub_path) < 2 \
+                            or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_len:
+                        continue
+                    # record shorter sub_paths starting from start_segment
+                    len_this_sub_p = len(this_longest_sub_path)
+                    for skip_tail in range(len_this_sub_p - 1):
+                        this_sub_path = \
+                            self.graph.get_standardized_path_circ(this_longest_sub_path[:len_this_sub_p - skip_tail])
+                        if this_sub_path not in self.read_paths_hashed:
+                            continue
+                        if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_len:
+                            break
+                        if this_sub_path not in these_sub_paths:
+                            these_sub_paths[this_sub_path] = 0
+                        these_sub_paths[this_sub_path] += 1
+            self.variant_subpath_counters[variant_path] = these_sub_paths
+            return these_sub_paths
+
+
 class ProcessingGraphFailed(Exception):
     def __init__(self, value=""):
         self.value = value
 
     def __str__(self):
         return repr(self.value)
+
+
+# class MaxTraversalReached(Exception):
+#     def __init__(self, value=""):
+#         self.value = value
+#
+#     def __str__(self):
+#         return repr(self.value)
 
 
 ########################################################################
@@ -711,7 +823,6 @@ def weighted_gmm_with_em_aic(
     return best_scheme
 
 
-
 def generate_index_combinations(index_list):
     if not index_list:
         yield []
@@ -836,5 +947,4 @@ def harmony_weights(raw_weights, diff):
 def run_dill_encoded(payload):
     fun, args = dill.loads(payload)
     return fun(*args)
-
 

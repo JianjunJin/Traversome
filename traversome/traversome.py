@@ -14,13 +14,16 @@ from collections import OrderedDict
 from traversome.Assembly import Assembly
 from traversome.GraphAlignRecords import GraphAlignRecords
 from traversome.utils import \
-    SubPathInfo, LogLikeFormulaInfo, Criterion  # ProcessingGraphFailed,
+    SubPathInfo, Criterion, VariantSubPathsGenerator  # ProcessingGraphFailed,
 from traversome.ModelFitMaxLike import ModelFitMaxLike
 from traversome.ModelFitBayesian import ModelFitBayesian
 from traversome.PathGenerator import PathGenerator
+from traversome.ModelGenerator import PathMultinomialModel
 # from traversome.CleanGraph import CleanGraph
 from typing import OrderedDict as typingODict
 from typing import Set
+from multiprocessing import Manager, Pool
+import gc
 # import time
 
 
@@ -61,13 +64,14 @@ class Traversome(object):
 
         # alignment and graph values
         self.graph = None
-        self.alignment = None
+        # self.alignment = None
         self.align_len_at_path_sorted = None
         self.__align_len_lookup_table = {}
         self.max_alignment_length = None
         self.min_alignment_length = None
         self.read_paths = OrderedDict()
         self.max_read_path_size = None
+        self.subpath_generator = None
 
         # variant model to be generated
         self.variant_paths = []  # each element is a tuple(path)
@@ -90,32 +94,50 @@ class Traversome(object):
 
         self.max_like_fit = None
         self.bayesian_fit = None
+        self.model = None
         self.random = random
         self.random.seed(random_seed)
 
-    def run(self, path_generator="H", hetero_chromosomes=True):
+    def run(self, path_gen_scheme="H", hetero_chromosomes=True):
         """
         Parse the assembly graph files ...
         """
         logger.info("======== DIGESTING DATA STARTS ========")
         self.graph = Assembly(self.graph_gfa)
         self.graph.update_vertex_clusters()
-        if self.kwargs.get("graph_component_selection", 0):
-            self.graph.reduce_graph_by_weight(cutoff=self.kwargs["graph_component_selection"])
+        graph_component_selection = self.kwargs.get("graph_component_selection", 0)
+        if isinstance(graph_component_selection, int) or isinstance(graph_component_selection, slice):
+            self.graph.reduce_graph_by_weight(component_ids=graph_component_selection)
+        elif isinstance(graph_component_selection, float):
+            self.graph.reduce_graph_by_weight(cutoff_to_total=graph_component_selection)
         logger.info("  #contigs in total: {}".format(len(self.graph.vertex_info)))
         logger.info("  #contigs in each component: {}".format(sorted([len(cls) for cls in self.graph.vertex_clusters])))
 
-        self.alignment = GraphAlignRecords(
+        alignment = GraphAlignRecords(
             self.alignment_file,
             alignment_format=self.alignment_format,
             min_align_len=self.kwargs.get("min_alignment_len_cutoff", 100),
             min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.8),
         )
-        self.generate_read_paths()
-        logger.info("  #reads aligned: %i" % len(self.alignment.read_records))
-        logger.info("  #records aligned: %i" % len(self.alignment.raw_records))
+        self.generate_read_paths(
+            graph_alignment=alignment,
+            filter_by_graph=True)
+        self.subpath_generator = VariantSubPathsGenerator(
+            graph=self.graph,
+            force_circular=self.force_circular,
+            min_alignment_len=self.min_alignment_length,
+            max_alignment_len=self.max_alignment_length,
+            read_paths_hashed=set(self.read_paths))
+        logger.info("  #reads aligned: %i" % len(alignment.read_records))
+        logger.info("  #records aligned: %i" % len(alignment.raw_records))
         logger.info("  #read paths: %i" % len(self.read_paths))
-        self.get_align_len_dist()
+        # self.get_align_len_dist(graph_alignment=alignment)
+        logger.info(
+            "Alignment length range at path: [{}, {}]".format(self.min_alignment_length, self.max_alignment_length))
+        logger.info("Alignment max size at path: {}".format(self.max_read_path_size))
+        # free memory to reduce the burden for potential downstream parallelization
+        del alignment
+        gc.collect()
         logger.info("======== DIGESTING DATA ENDS ========\n")
 
         logger.info("======== VARIANTS SEARCHING STARTS ========")
@@ -123,7 +145,7 @@ class Traversome(object):
         # self.clean_graph()
         logger.debug("Generating candidate variant paths ...")
         self.gen_candidate_paths(
-            path_generator=path_generator,
+            path_generator=path_gen_scheme,
             min_num_search=self.kwargs.get("min_valid_search", 1000),
             max_num_search=self.kwargs.get("max_valid_search", 100000),
             num_processes=self.num_processes,
@@ -133,7 +155,8 @@ class Traversome(object):
 
         logger.info("======== MODEL SELECTION & FITTING STARTS ========")
         if self.num_put_variants == 0:
-            raise Exception("No candidate variants found!")
+            logger.error("No candidate variants found!")
+            raise SystemExit(0)
         elif self.num_put_variants == 1:
             self.variant_proportions[0] = 1.
         else:
@@ -142,6 +165,7 @@ class Traversome(object):
             #     # single point estimate
             #     self.ext_variant_proportions = self.fit_model_using_point_maximum_likelihood()
             # else:
+            self.model = PathMultinomialModel(variant_sizes=self.variant_sizes, all_sub_paths=self.all_sub_paths)
             self.variant_proportions = self.fit_model_using_reverse_model_selection(
                 criterion=self.kwargs["model_criterion"])
             # update candidate info according to the result of reverse model selection
@@ -161,17 +185,37 @@ class Traversome(object):
             raise Exception("Please denote the alignment format using adequate postfix (.gaf/.tsv)")
         return alignment_format
 
-    def generate_read_paths(self):
-        for go_record, record in enumerate(self.alignment.raw_records):
-            this_read_path = self.graph.get_standardized_path(record.path)
-            if this_read_path not in self.read_paths:
-                self.read_paths[this_read_path] = []
-            self.read_paths[this_read_path].append(go_record)
-        self.generate_maximum_read_path_size()
+    def generate_read_paths(self, graph_alignment, filter_by_graph=True):
+        align_len_at_path = []
+        if filter_by_graph:
+            for go_record, record in enumerate(graph_alignment.raw_records):
+                this_path = self.graph.get_standardized_path(record.path)
+                if this_path not in self.read_paths:
+                    if self.graph.contain_path(this_path):
+                        self.read_paths[this_path] = [go_record]
+                        align_len_at_path.append(record.p_align_len)
+                else:
+                    self.read_paths[this_path].append(go_record)
+                    align_len_at_path.append(record.p_align_len)
+        else:
+            for go_record, record in enumerate(graph_alignment.raw_records):
+                this_path = self.graph.get_standardized_path(record.path)
+                if this_path not in self.read_paths:
+                    self.read_paths[this_path] = []
+                self.read_paths[this_path].append(go_record)
+                align_len_at_path.append(record.p_align_len)
+        if not align_len_at_path:
+            logger.error("No valid alignment records remains after filtering!")
+            raise SystemExit(0)
+        self.align_len_at_path_sorted = sorted(align_len_at_path)
+        # store min/max value
+        self.min_alignment_length = self.align_len_at_path_sorted[0]
+        self.max_alignment_length = self.align_len_at_path_sorted[-1]
+        self.generate_maximum_read_path_size(graph_alignment)
 
-    def generate_maximum_read_path_size(self):
+    def generate_maximum_read_path_size(self, graph_alignment):
         if not self.read_paths:
-            self.generate_read_paths()
+            self.generate_read_paths(graph_alignment=graph_alignment)
         self.max_read_path_size = 0
         for this_read_path in self.read_paths:
             self.max_read_path_size = max(self.max_read_path_size, len(this_read_path))
@@ -181,29 +225,29 @@ class Traversome(object):
     #     clean_graph_obj = CleanGraph(self)
     #     clean_graph_obj.run(min_effective_count=min_effective_count, ignore_ratio=ignore_ratio)
 
-    def get_align_len_dist(self):
-        """
-        Get sorted alignment lengths, optionally save to file 
-        and store longest to self.
-        """
-        logger.debug("Summarizing alignment length distribution")
-
-        # get sorted alignment lengths
-        self.align_len_at_path_sorted = sorted([rec.p_align_len for rec in self.alignment.raw_records])
-
-        # optionally save temp files
-        if self.keep_temp:
-            opath = os.path.join(self.outdir, "align_len_at_path_sorted.txt")
-            with open(opath, "w") as out:
-                out.write("\n".join(map(str, self.align_len_at_path_sorted)))
-
-        # store max value 
-        self.min_alignment_length = self.align_len_at_path_sorted[0]
-        self.max_alignment_length = self.align_len_at_path_sorted[-1]
-
-        # report result
-        logger.info(
-            "Alignment length range at path: [{}, {}]".format(self.min_alignment_length, self.max_alignment_length))
+    # def get_align_len_dist(self, graph_alignment):
+    #     """
+    #     Get sorted alignment lengths, optionally save to file
+    #     and store longest to self.
+    #     """
+    #     logger.debug("Summarizing alignment length distribution")
+    #
+    #     # get sorted alignment lengths
+    #     self.align_len_at_path_sorted = sorted([rec.p_align_len for rec in graph_alignment.raw_records])
+    #
+    #     # optionally save temp files
+    #     if self.keep_temp:
+    #         opath = os.path.join(self.outdir, "align_len_at_path_sorted.txt")
+    #         with open(opath, "w") as out:
+    #             out.write("\n".join(map(str, self.align_len_at_path_sorted)))
+    #
+    #     # store max value
+    #     self.min_alignment_len = self.align_len_at_path_sorted[0]
+    #     self.max_alignment_len = self.align_len_at_path_sorted[-1]
+    #
+    #     # report result
+    #     logger.info(
+    #         "Alignment length range at path: [{}, {}]".format(self.min_alignment_len, self.max_alignment_len))
 
     def gen_candidate_paths(
             self,
@@ -246,94 +290,8 @@ class Traversome(object):
             logger.warning("Only one genomic configuration found for the input assembly graph.")
 
     # TODO get subpath adaptive to length=1, more general and less restrictions
-    def get_variant_sub_paths(self, variant_path, return_sub_paths=True):
-        if variant_path in self.variant_subpath_counters:
-            if return_sub_paths:
-                return self.variant_subpath_counters[variant_path]
-        else:
-            # if this_overlap is None:
-            #     this_overlap = self.graph.uni_overlap()
-            these_sub_paths = dict()
-            num_seg = len(variant_path)
-            # print("run get")
-            if self.force_circular:
-                for go_start_v, start_segment in enumerate(variant_path):
-                    # find the longest sub_path,
-                    # that begins with start_segment and be in the range of alignment length
-                    this_longest_sub_path = [start_segment]
-                    this_internal_path_len = 0
-                    go_next = (go_start_v + 1) % num_seg
-                    while this_internal_path_len < self.max_alignment_length:
-                        next_n, next_e = variant_path[go_next]
-                        next_v_info = self.graph.vertex_info[next_n]
-                        pre_n, pre_e = this_longest_sub_path[-1]
-                        this_overlap = next_v_info.connections[not next_e][(pre_n, pre_e)]
-                        this_longest_sub_path.append((next_n, next_e))
-                        this_internal_path_len += next_v_info.len - this_overlap
-                        go_next = (go_next + 1) % num_seg
-                    # print("this_longest_sub_path", this_longest_sub_path)
-                    # print(self.graph.get_path_internal_length(this_longest_sub_path), self.min_alignment_length)
-                    # when the overlap is long and the contig is short,
-                    # the path with internal_length shorter than tha alignment length can still help
-                    # so remove the condition for min_alignment_length
-                    # if len(this_longest_sub_path) < 2 \
-                    #         or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_length:
-                    #     continue
-                    # TODO size of 1 can also be included
-                    if len(this_longest_sub_path) < 2:
-                        continue
-                    # print("this_longest_sub_path", this_longest_sub_path, "passed")
-
-                    # record shorter sub_paths starting from start_segment
-                    len_this_sub_p = len(this_longest_sub_path)
-                    for skip_tail in range(len_this_sub_p - 1):
-                        this_sub_path = \
-                            self.graph.get_standardized_path(this_longest_sub_path[:len_this_sub_p - skip_tail])
-                        # print("checking subpath existence", this_sub_path)
-                        if this_sub_path not in self.read_paths:
-                            continue
-                        # print("checking subpath existence", this_sub_path, "passed")
-                        # when the uni_overlap is long and the contig is short,
-                        # the path with internal_length shorter than tha alignment length can still help
-                        # so remove the condition for min_alignment_length
-                        # if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_length:
-                        #     break
-                        if this_sub_path not in these_sub_paths:
-                            these_sub_paths[this_sub_path] = 0
-                        these_sub_paths[this_sub_path] += 1
-            else:
-                for go_start_v, start_segment in enumerate(variant_path):
-                    # find the longest sub_path,
-                    # that begins with start_segment and be in the range of alignment length
-                    this_longest_sub_path = [start_segment]
-                    this_internal_path_len = 0
-                    go_next = go_start_v + 1
-                    while go_next < num_seg and this_internal_path_len < self.max_alignment_length:
-                        next_n, next_e = variant_path[go_next]
-                        next_v_info = self.graph.vertex_info[next_n]
-                        pre_n, pre_e = this_longest_sub_path[-1]
-                        this_overlap = next_v_info.connections[not next_e][(pre_n, pre_e)]
-                        this_longest_sub_path.append((next_n, next_e))
-                        this_internal_path_len += next_v_info.len - this_overlap
-                        go_next += 1
-                    if len(this_longest_sub_path) < 2 \
-                            or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_length:
-                        continue
-                    # record shorter sub_paths starting from start_segment
-                    len_this_sub_p = len(this_longest_sub_path)
-                    for skip_tail in range(len_this_sub_p - 1):
-                        this_sub_path = \
-                            self.graph.get_standardized_path_circ(this_longest_sub_path[:len_this_sub_p - skip_tail])
-                        if this_sub_path not in self.read_paths:
-                            continue
-                        if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_length:
-                            break
-                        if this_sub_path not in these_sub_paths:
-                            these_sub_paths[this_sub_path] = 0
-                        these_sub_paths[this_sub_path] += 1
-            self.variant_subpath_counters[variant_path] = these_sub_paths
-            if return_sub_paths:
-                return these_sub_paths
+    def get_variant_sub_paths(self, variant_path):
+        return self.subpath_generator.gen_subpaths(variant_path)
 
     def gen_all_informative_sub_paths(self):
         """
@@ -343,7 +301,8 @@ class Traversome(object):
         # this_overlap = self.graph.uni_overlap()
         # self.variant_subpath_counters = OrderedDict()
         for this_var_p in self.variant_paths:
-            self.get_variant_sub_paths(this_var_p)
+            foo = self.get_variant_sub_paths(this_var_p)
+        self.variant_subpath_counters = self.subpath_generator.variant_subpath_counters
 
         # create unidentifiable table
         self.be_unidentifiable_to = OrderedDict()
@@ -386,8 +345,8 @@ class Traversome(object):
 
         if not self.all_sub_paths:
             logger.error("No valid subpath found!")
-            # TODO how to exit quietly
-            sys.exit(1)
+            raise SystemExit(0)
+            # sys.exit(1)
 
         # match graph alignments to all_sub_paths
         for read_path, record_ids in self.read_paths.items():
@@ -416,79 +375,129 @@ class Traversome(object):
         logger.debug("Generating sub-path statistics ..")
         # It is not proper to use the median, because both ends lead to a small estimation,
         # while the median may lead to the maximum, use quarter may be a solution;
-        # or TODO use parallelization to be precise and fast
         # if len(self.all_sub_paths) > 1e5:
         #     # to seed up
         #     use_median = True
         # else:
         #     # maybe slightly precise than above, not assessed yet
         #     use_median = False
-        use_median = False
+        # use_median = False
+
         self.__generate_align_len_lookup_table()
 
-        for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
-            # 0.2308657169342041
-            internal_len = self.graph.get_path_internal_length(this_sub_path)
-            # 0.18595576286315918
-            # # read_paths with overlaps should be and were already trimmed, so we should proceed without overlaps
-            # external_len_without_overlap = self.graph.get_path_len_without_terminal_overlaps(this_sub_path)
-
-            # 2023-03-09: get_path_len_without_terminal_overlaps -> get_path_length
-            # Because the end of the alignment can still stretch to the overlapped region
-            # and will not be recorded in the path.
-            # Thus, the start point can be the path length not the uni_overlap-trimmed one.
-            external_len = self.graph.get_path_length(this_sub_path, check_valid=False, adjust_for_cyclic=False)
-            # 0.15802343183582341
-            # left_id, right_id = get_id_range_in_increasing_values(
-            #     min_num=internal_len + 2, max_num=external_len_without_overlap,
-            #     increasing_numbers=self.align_len_at_path_sorted)
-            left_id, right_id = self.__get_id_range_in_increasing_values(min_num=internal_len + 2, max_num=external_len)
-            if left_id > right_id:
-                # no read found within this scope
-                logger.trace("Remove {} after pruning contig overlap ..".format(this_sub_path))
-                del self.all_sub_paths[this_sub_path]
-                continue
-            if use_median:
-                # 0.12435293197631836
-                if int((left_id + right_id) / 2) == (left_id + right_id) / 2.:
-                    median_len = self.align_len_at_path_sorted[int((left_id + right_id) / 2)]
+        if self.num_processes == 1:
+            for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
+                num_in_range, sum_Xs = self.__subpath_info_filler(this_sub_path)
+                if num_in_range:
+                    this_sub_path_info.num_in_range = num_in_range
+                    this_sub_path_info.num_possible_X = sum_Xs / num_in_range
+                    this_sub_path_info.num_matched = len(this_sub_path_info.mapped_records)
                 else:
-                    median_len = (self.align_len_at_path_sorted[int((left_id + right_id) / 2)] +
-                                  self.align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
-                this_sub_path_info.num_possible_X = self.graph.get_num_of_possible_alignment_start_points(
-                    read_len_aligned=median_len, align_to_path=this_sub_path, path_internal_len=internal_len)
-            else:
-                # 7.611977815628052
-                # maybe slightly precise than above, assessed
-                # this can be super time consuming in case of many subpaths, e.g.
-                num_possible_Xs = {}
-                align_len_id = left_id
-                while align_len_id <= right_id:
-                    this_len = self.align_len_at_path_sorted[align_len_id]
-                    this_x = self.graph.get_num_of_possible_alignment_start_points(
-                        read_len_aligned=this_len, align_to_path=this_sub_path, path_internal_len=internal_len)
-                    if this_len not in num_possible_Xs:
-                        num_possible_Xs[this_len] = 0
-                    num_possible_Xs[this_len] += this_x
-                    align_len_id += 1
-                    while align_len_id <= right_id and self.align_len_at_path_sorted[align_len_id] == this_len:
-                        num_possible_Xs[this_len] += this_x
-                        align_len_id += 1
-                this_sub_path_info.num_possible_X = sum(num_possible_Xs.values()) / (right_id - left_id + 1)
-            this_sub_path_info.num_in_range = right_id + 1 - left_id
-            this_sub_path_info.num_matched = len(this_sub_path_info.mapped_records)
-        # if for_multinomial:
-        #     # generate path alignment length occurrences at sub paths
-        #     # could largely be simplified
-        #     logger.debug("Counting path-alignment-length occurrences at sub paths ..")
-        #     self.sbp_Xs = []
-        #     self.pal_len_sbp_Xs = OrderedDict([(pa_len, {}) for pa_len in sorted(set(self.align_len_at_path_sorted))])
-        #     for go_sp, (this_sub_path, this_sub_path_info) in enumerate(self.all_sub_paths.items()):
-        #         # may be useless
-        #         # for this_len, this_x in this_sub_path_info.num_possible_Xs.items():
-        #         #     self.pal_len_sbp_Xs[this_len][go_sp] = this_x
-        #         # try this
-        #         self.sbp_Xs.append(sum(this_sub_path_info.num_possible_Xs.values()))
+                    del self.all_sub_paths[this_sub_path]
+        else:
+            # TODO multiprocess
+            # it took 2 minutes 1,511 read paths represented by 177,869 records
+            # manager = Manager()
+            # pool_obj = Pool(processes=self.num_processes)
+            for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
+                num_in_range, sum_Xs = self.__subpath_info_filler(this_sub_path)
+                if num_in_range:
+                    this_sub_path_info.num_in_range = num_in_range
+                    this_sub_path_info.num_possible_X = sum_Xs / num_in_range
+                    this_sub_path_info.num_matched = len(this_sub_path_info.mapped_records)
+                else:
+                    del self.all_sub_paths[this_sub_path]
+
+        # clear memory
+        self.__align_len_lookup_table = {}
+
+        # 2023-03-14 commented out
+        # for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
+        #     # 0.2308657169342041
+        #     internal_len = self.graph.get_path_internal_length(this_sub_path)
+        #     # 0.18595576286315918
+        #     # # read_paths with overlaps should be and were already trimmed, so we should proceed without overlaps
+        #     # external_len_without_overlap = self.graph.get_path_len_without_terminal_overlaps(this_sub_path)
+        #
+        #     # 2023-03-09: get_path_len_without_terminal_overlaps -> get_path_length
+        #     # Because the end of the alignment can still stretch to the overlapped region
+        #     # and will not be recorded in the path.
+        #     # Thus, the start point can be the path length not the uni_overlap-trimmed one.
+        #     external_len = self.graph.get_path_length(this_sub_path, check_valid=False, adjust_for_cyclic=False)
+        #     # 0.15802343183582341
+        #     # left_id, right_id = get_id_range_in_increasing_values(
+        #     #     min_num=internal_len + 2, max_num=external_len_without_overlap,
+        #     #     increasing_numbers=self.align_len_at_path_sorted)
+        #     left_id, right_id = self.__get_id_range_in_increasing_values(min_num=internal_len + 2, max_num=external_len)
+        #     if left_id > right_id:
+        #         # no read found within this scope
+        #         logger.trace("Remove {} after pruning contig overlap ..".format(this_sub_path))
+        #         del self.all_sub_paths[this_sub_path]
+        #         continue
+        #     if use_median:
+        #         # 0.12435293197631836
+        #         if int((left_id + right_id) / 2) == (left_id + right_id) / 2.:
+        #             median_len = self.align_len_at_path_sorted[int((left_id + right_id) / 2)]
+        #         else:
+        #             median_len = (self.align_len_at_path_sorted[int((left_id + right_id) / 2)] +
+        #                           self.align_len_at_path_sorted[int((left_id + right_id) / 2) + 1]) / 2.
+        #         this_sub_path_info.num_possible_X = self.graph.get_num_of_possible_alignment_start_points(
+        #             read_len_aligned=median_len, align_to_path=this_sub_path, path_internal_len=internal_len)
+        #     else:
+        #         # 7.611977815628052
+        #         # maybe slightly precise than above, assessed
+        #         # this can be super time consuming in case of many subpaths, e.g.
+        #         num_possible_Xs = {}
+        #         align_len_id = left_id
+        #         while align_len_id <= right_id:
+        #             this_len = self.align_len_at_path_sorted[align_len_id]
+        #             this_x = self.graph.get_num_of_possible_alignment_start_points(
+        #                 read_len_aligned=this_len, align_to_path=this_sub_path, path_internal_len=internal_len)
+        #             if this_len not in num_possible_Xs:
+        #                 num_possible_Xs[this_len] = 0
+        #             num_possible_Xs[this_len] += this_x
+        #             align_len_id += 1
+        #             while align_len_id <= right_id and self.align_len_at_path_sorted[align_len_id] == this_len:
+        #                 num_possible_Xs[this_len] += this_x
+        #                 align_len_id += 1
+        #         this_sub_path_info.num_possible_X = sum(num_possible_Xs.values()) / (right_id - left_id + 1)
+        #     this_sub_path_info.num_in_range = right_id + 1 - left_id
+        #     this_sub_path_info.num_matched = len(this_sub_path_info.mapped_records)
+
+    def __subpath_info_filler(self, this_sub_path):
+        internal_len = self.graph.get_path_internal_length(this_sub_path)
+        # # read_paths with overlaps should be and were already trimmed, so we should proceed without overlaps
+        # external_len_without_overlap = self.graph.get_path_len_without_terminal_overlaps(this_sub_path)
+        # 2023-03-09: get_path_len_without_terminal_overlaps -> get_path_length
+        # Because the end of the alignment can still stretch to the overlapped region
+        # and will not be recorded in the path.
+        # Thus, the start point can be the path length not the uni_overlap-trimmed one.
+        external_len = self.graph.get_path_length(this_sub_path, check_valid=False, adjust_for_cyclic=False)
+        left_id, right_id = self.__get_id_range_in_increasing_values(min_num=internal_len + 2, max_num=external_len)
+        if left_id > right_id:
+            # no read found within this scope
+            logger.trace("Remove {} after pruning contig overlap ..".format(this_sub_path))
+            del self.all_sub_paths[this_sub_path]
+            return 0, 0
+        # 7.611977815628052
+        # maybe slightly precise than above, assessed
+        # this can be super time consuming in case of many subpaths, e.g.
+        num_possible_Xs = {}
+        align_len_id = left_id
+        while align_len_id <= right_id:
+            this_len = self.align_len_at_path_sorted[align_len_id]
+            this_x = self.graph.get_num_of_possible_alignment_start_points(
+                read_len_aligned=this_len, align_to_path=this_sub_path, path_internal_len=internal_len)
+            if this_len not in num_possible_Xs:
+                num_possible_Xs[this_len] = 0
+            num_possible_Xs[this_len] += this_x
+            align_len_id += 1
+            while align_len_id <= right_id and self.align_len_at_path_sorted[align_len_id] == this_len:
+                num_possible_Xs[this_len] += this_x
+                align_len_id += 1
+        num_in_range = right_id + 1 - left_id
+        sum_Xs = sum(num_possible_Xs.values())
+        return num_in_range, sum_Xs
 
     def __generate_align_len_lookup_table(self):
         """
@@ -526,127 +535,103 @@ class Traversome(object):
             get("as_right_lim_id", len(self.align_len_at_path_sorted) - 1)
         return left_id, right_id
 
-    def update_observed_sp_ids(self):
-        self.observed_sbp_id_set = set()
-        for go_sp, (this_sub_path, this_sub_path_info) in enumerate(self.all_sub_paths.items()):
-            if this_sub_path_info.mapped_records:
-                self.observed_sbp_id_set.add(go_sp)
-            else:
-                logger.trace("Drop subpath without observation: {}: {}".format(go_sp, this_sub_path))
-
-    def cover_all_observed_subpaths(self, variant_ids):
-        if not self.observed_sbp_id_set:
-            self.update_observed_sp_ids()
-        model_sp_ids = set()
-        for go_var in variant_ids:
-            for sub_path in self.variant_subpath_counters[self.variant_paths[go_var]]:
-                if sub_path in self.sbp_to_sbp_id:
-                    # if sub_path was not dropped after the construction of self.variant_subpath_counters
-                    model_sp_ids.add(self.sbp_to_sbp_id[sub_path])
-        if self.observed_sbp_id_set.issubset(model_sp_ids):
-            return True
-        else:
-            return False
-
-    def get_multinomial_like_formula(self,
-                                     variant_percents,
-                                     log_func,
-                                     within_variant_ids: Set = None):
-        """
-        use a combination of multiple multinomial distributions
-        :param variant_percents:
-             input symengine.Symbols for maximum likelihood analysis (scipy),
-                 e.g. [Symbol("P" + str(variant_id)) for variant_id in range(self.num_put_variants)].
-             input pm.Dirichlet for bayesian analysis (pymc3),
-                 e.g. pm.Dirichlet(name="comp", a=np.ones(variant_num), shape=(variant_num,)).
-        :param log_func:
-             input symengine.log for maximum likelihood analysis using scipy,
-             input tt.log for bayesian analysis using pymc3
-        :param within_variant_ids:
-             constrain the variant testing scope. Test all variants by default.
-                 e.g. set([0, 2])
-        :return: LogLikeFormulaInfo object
-        """
-        if not within_variant_ids or within_variant_ids == set(range(self.num_put_variants)):
-            within_variant_ids = None
-        # total length (all possible matches, ignoring margin effect if not circular)
-        total_length = 0
-        if within_variant_ids:
-            for go_variant, go_length in enumerate(self.variant_sizes):
-                if go_variant in within_variant_ids:
-                    total_length += variant_percents[go_variant] * float(go_length)
-        else:
-            for go_variant, go_length in enumerate(self.variant_sizes):
-                total_length += variant_percents[go_variant] * float(go_length)
-
-        # prepare subset of all_sub_paths in a list
-        these_sp_info = OrderedDict()
+    def get_multinomial_like_formula(self, variant_percents, log_func, within_variant_ids: Set = None):
+        self.model.get_like_formula(variant_percents, log_func, within_variant_ids)
+        # """
+        # use a combination of multiple multinomial distributions
+        # :param variant_percents:
+        #      input symengine.Symbols for maximum likelihood analysis (scipy),
+        #          e.g. [Symbol("P" + str(variant_id)) for variant_id in range(self.num_put_variants)].
+        #      input pm.Dirichlet for bayesian analysis (pymc3),
+        #          e.g. pm.Dirichlet(name="comp", a=np.ones(variant_num), shape=(variant_num,)).
+        # :param log_func:
+        #      input symengine.log for maximum likelihood analysis using scipy,
+        #      input tt.log for bayesian analysis using pymc3
+        # :param within_variant_ids:
+        #      constrain the variant testing scope. Test all variants by default.
+        #          e.g. set([0, 2])
+        # :return: LogLikeFormulaInfo object
+        # """
+        # if not within_variant_ids or within_variant_ids == set(range(self.num_put_variants)):
+        #     within_variant_ids = None
+        # # total length (all possible matches, ignoring margin effect if not circular)
+        # total_length = 0
         # if within_variant_ids:
-        #     for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
-        #         if set(this_sp_info.from_variants) & within_variant_ids:
-        #             these_sp_info[go_sp] = this_sp_info
+        #     for go_variant, go_length in enumerate(self.variant_sizes):
+        #         if go_variant in within_variant_ids:
+        #             total_length += variant_percents[go_variant] * float(go_length)
         # else:
-        for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
-            these_sp_info[go_sp] = this_sp_info
-        # clean zero expectations to avoid nan formula
-        for check_sp in list(these_sp_info):
-            if these_sp_info[check_sp].num_possible_X < 1:
-                del these_sp_info[check_sp]
-                continue
-            if within_variant_ids and not (set(these_sp_info[check_sp].from_variants) & within_variant_ids):
-                del these_sp_info[check_sp]
-
-        # calculate the observations
-        observations = [len(this_sp_info.mapped_records) for this_sp_info in these_sp_info.values()]
-
-        # sub path possible matches
-        logger.debug("  Formulating the subpath probabilities ..")
-        this_sbp_Xs = [these_sp_info[_go_sp_].num_possible_X for _go_sp_ in these_sp_info]
-        for go_valid_sp, this_sp_info in enumerate(these_sp_info.values()):
-            variant_weight = 0
-            if within_variant_ids:
-                sub_from_iso = {_go_iso_: _sp_freq_
-                                for _go_iso_, _sp_freq_ in this_sp_info.from_variants.items()
-                                if _go_iso_ in within_variant_ids}
-                for go_variant, sp_freq in sub_from_iso.items():
-                    variant_weight += variant_percents[go_variant] * sp_freq
-            else:
-                for go_variant, sp_freq in this_sp_info.from_variants.items():
-                    variant_weight += variant_percents[go_variant] * sp_freq
-            this_sbp_Xs[go_valid_sp] *= variant_weight
-        this_sbp_prob = [_sbp_X / total_length for _sbp_X in this_sbp_Xs]
-
-        # mark2, if include this, better removing code block under mark1
-        # leading to nan like?
-        # # the other unrecorded observed matches
-        # observations.append(len(self.alignment.raw_records) - sum(observations))
-        # # the other unrecorded expected matches
-        # # Theano may not support sum, use for loop instead
-        # other_prob = 1
-        # for _sbp_prob in this_sbp_prob:
-        #     other_prob -= _sbp_prob
-        # this_sbp_prob.append(other_prob)
-
-        for go_valid_sp, go_sp in enumerate(these_sp_info):
-            logger.trace("  Subpath {} observation: {}".format(go_sp, observations[go_valid_sp]))
-            logger.trace("  Subpath {} probability: {}".format(go_sp, this_sbp_prob[go_valid_sp]))
-        # logger.trace("  Rest observation: {}".format(observations[-1]))
-        # logger.trace("  Rest probability: {}".format(this_sbp_prob[-1]))
-
-        # for go_sp, this_sp_info in these_sp_info.items():
-        #     for record_id in this_sp_info.mapped_records:
-        #         this_len_sp_xs = self.pal_len_sbp_Xs[self.alignment.raw_records[record_id].p_align_len]
-        #         ...
-
-        # likelihood
-        logger.debug("  Summing up subpath likelihood function ..")
-        loglike_expression = 0
-        for go_sp, obs in enumerate(observations):
-            loglike_expression += log_func(this_sbp_prob[go_sp]) * obs
-        variable_size = len(within_variant_ids) if within_variant_ids else self.num_put_variants
-        sample_size = sum(observations)
-
-        return LogLikeFormulaInfo(loglike_expression, variable_size, sample_size)
+        #     for go_variant, go_length in enumerate(self.variant_sizes):
+        #         total_length += variant_percents[go_variant] * float(go_length)
+        #
+        # # prepare subset of all_sub_paths in a list
+        # these_sp_info = OrderedDict()
+        # # if within_variant_ids:
+        # #     for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
+        # #         if set(this_sp_info.from_variants) & within_variant_ids:
+        # #             these_sp_info[go_sp] = this_sp_info
+        # # else:
+        # for go_sp, (this_sub_path, this_sp_info) in enumerate(self.all_sub_paths.items()):
+        #     these_sp_info[go_sp] = this_sp_info
+        # # clean zero expectations to avoid nan formula
+        # for check_sp in list(these_sp_info):
+        #     if these_sp_info[check_sp].num_possible_X < 1:
+        #         del these_sp_info[check_sp]
+        #         continue
+        #     if within_variant_ids and not (set(these_sp_info[check_sp].from_variants) & within_variant_ids):
+        #         del these_sp_info[check_sp]
+        #
+        # # calculate the observations
+        # observations = [len(this_sp_info.mapped_records) for this_sp_info in these_sp_info.values()]
+        #
+        # # sub path possible matches
+        # logger.debug("  Formulating the subpath probabilities ..")
+        # this_sbp_Xs = [these_sp_info[_go_sp_].num_possible_X for _go_sp_ in these_sp_info]
+        # for go_valid_sp, this_sp_info in enumerate(these_sp_info.values()):
+        #     variant_weight = 0
+        #     if within_variant_ids:
+        #         sub_from_iso = {_go_iso_: _sp_freq_
+        #                         for _go_iso_, _sp_freq_ in this_sp_info.from_variants.items()
+        #                         if _go_iso_ in within_variant_ids}
+        #         for go_variant, sp_freq in sub_from_iso.items():
+        #             variant_weight += variant_percents[go_variant] * sp_freq
+        #     else:
+        #         for go_variant, sp_freq in this_sp_info.from_variants.items():
+        #             variant_weight += variant_percents[go_variant] * sp_freq
+        #     this_sbp_Xs[go_valid_sp] *= variant_weight
+        # this_sbp_prob = [_sbp_X / total_length for _sbp_X in this_sbp_Xs]
+        #
+        # # mark2, if include this, better removing code block under mark1
+        # # leading to nan like?
+        # # # the other unrecorded observed matches
+        # # observations.append(len(self.alignment.raw_records) - sum(observations))
+        # # # the other unrecorded expected matches
+        # # # Theano may not support sum, use for loop instead
+        # # other_prob = 1
+        # # for _sbp_prob in this_sbp_prob:
+        # #     other_prob -= _sbp_prob
+        # # this_sbp_prob.append(other_prob)
+        #
+        # for go_valid_sp, go_sp in enumerate(these_sp_info):
+        #     logger.trace("  Subpath {} observation: {}".format(go_sp, observations[go_valid_sp]))
+        #     logger.trace("  Subpath {} probability: {}".format(go_sp, this_sbp_prob[go_valid_sp]))
+        # # logger.trace("  Rest observation: {}".format(observations[-1]))
+        # # logger.trace("  Rest probability: {}".format(this_sbp_prob[-1]))
+        #
+        # # for go_sp, this_sp_info in these_sp_info.items():
+        # #     for record_id in this_sp_info.mapped_records:
+        # #         this_len_sp_xs = self.pal_len_sbp_Xs[self.alignment.raw_records[record_id].p_align_len]
+        # #         ...
+        #
+        # # likelihood
+        # logger.debug("  Summing up subpath likelihood function ..")
+        # loglike_expression = 0
+        # for go_sp, obs in enumerate(observations):
+        #     loglike_expression += log_func(this_sbp_prob[go_sp]) * obs
+        # variable_size = len(within_variant_ids) if within_variant_ids else self.num_put_variants
+        # sample_size = sum(observations)
+        #
+        # return LogLikeFormulaInfo(loglike_expression, variable_size, sample_size)
 
     # def get_binomial_like_formula(self, variant_percents, log_func, within_variant_ids=None):
     #     """
@@ -716,13 +701,29 @@ class Traversome(object):
 
     def fit_model_using_point_maximum_likelihood(self,
                                                  chosen_ids: typingODict[int, bool] = None):
-        self.max_like_fit = ModelFitMaxLike(self)
+        self.max_like_fit = ModelFitMaxLike(
+            self.model,
+            variant_paths=self.variant_paths,
+            all_sub_paths=self.all_sub_paths,
+            variant_subpath_counters=self.variant_subpath_counters,
+            sbp_to_sbp_id=self.sbp_to_sbp_id,
+            merged_variants=self.merged_variants,
+            be_unidentifiable_to=self.be_unidentifiable_to,
+            loglevel=self.loglevel)
         return self.max_like_fit.point_estimate(chosen_ids=chosen_ids)
 
     def fit_model_using_reverse_model_selection(self,
                                                 criterion=Criterion.AIC,
                                                 chosen_ids: typingODict[int, bool] = None):
-        self.max_like_fit = ModelFitMaxLike(self)
+        self.max_like_fit = ModelFitMaxLike(
+            self.model,
+            variant_paths=self.variant_paths,
+            all_sub_paths=self.all_sub_paths,
+            variant_subpath_counters=self.variant_subpath_counters,
+            sbp_to_sbp_id=self.sbp_to_sbp_id,
+            merged_variants=self.merged_variants,
+            be_unidentifiable_to=self.be_unidentifiable_to,
+            loglevel=self.loglevel)
         return self.max_like_fit.reverse_model_selection(
             n_proc=self.num_processes, criterion=criterion, chosen_ids=chosen_ids)
 

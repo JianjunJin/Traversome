@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 
 from loguru import logger
-from traversome.utils import harmony_weights, run_dill_encoded  # WeightedGMMWithEM find_greatest_common_divisor,
+from traversome.utils import harmony_weights, run_dill_encoded   # MaxTraversalReached
+# WeightedGMMWithEM find_greatest_common_divisor,
 from copy import deepcopy
 from scipy.stats import norm
 from collections import OrderedDict
@@ -25,7 +26,7 @@ class SingleTraversal(object):
     def __init__(self, path_generator_obj, random_seed):
         self.graph = path_generator_obj.graph
         self.read_paths = path_generator_obj.read_paths
-        self.local_max_alignment_len = path_generator_obj.local_max_alignment_len
+        self.local_max_alignment_len = path_generator_obj.max_alignment_len
         self.contig_coverages = path_generator_obj.contig_coverages
         self.hetero_chromosome = path_generator_obj.hetero_chromosome
         self.__starting_subpath_to_readpaths = path_generator_obj.pass_starting_subpath_to_readpaths()
@@ -90,7 +91,7 @@ class SingleTraversal(object):
                     break
                 overlap_path = tuple(overlap_path)
                 if overlap_path in self.__starting_subpath_to_readpaths:
-                    # logger.debug("starting, " + str(self.__starting_subpath_to_readpaths[overlap_path]))
+                    # logger.debug("starting, " + str(self.__start_subpath_to_readpaths[overlap_path]))
                     candidate_ls_list.append(sorted(self.__starting_subpath_to_readpaths[overlap_path]))
                     candidates_list_overlap_c_nums.append(overlap_c_num)
             # logger.debug(candidate_ls_list)
@@ -716,7 +717,7 @@ class PathGenerator(object):
     def __init__(self,
                  traversome_obj,
                  min_num_valid_search=1000,
-                 max_num_valid_search=100000,
+                 max_num_valid_search=100001,
                  num_processes=1,
                  force_circular=True,
                  hetero_chromosome=True,
@@ -760,8 +761,10 @@ class PathGenerator(object):
         assert 0 <= cov_inert
         assert 0.5 <= min_unit_similarity
         self.graph = traversome_obj.graph
-        self.alignment = traversome_obj.alignment
-        self.tvs = traversome_obj
+        # self.alignment = traversome_obj.alignment
+        # self.tvs = traversome_obj
+        self.max_alignment_len = traversome_obj.max_alignment_length
+        self.subpath_generator = traversome_obj.subpath_generator
         self.min_valid_search = min_num_valid_search
         self.max_valid_search = max_num_valid_search
         self.num_processes = num_processes
@@ -776,14 +779,14 @@ class PathGenerator(object):
         self.__min_unit_similarity = min_unit_similarity
 
         # to be generated
-        self.local_max_alignment_len = None
         self.read_paths = list()
         self.__read_paths_counter = dict()
         # self.__vertex_to_readpath = {vertex: set() for vertex in self.graph.vertex_info}
-        self.__starting_subpath_to_readpaths = {}
+        self.__start_subpath_to_readpaths = {}
         self.__middle_subpath_to_readpaths = {}
         self.__read_paths_not_in_variants = {}
         self.__read_paths_counter_indexed = False
+        self.index_readpaths_subpaths(traversome_obj.read_paths)
         self.contig_coverages = OrderedDict()
         # self.single_copy_vertices_prob = \
         #     OrderedDict([(_v, 1.) for _v in single_copy_vertices]) if single_copy_vertices \
@@ -800,8 +803,6 @@ class PathGenerator(object):
             num_processes = self.num_processes
         assert num_processes >= 1
         logger.info("Generating heuristic variants .. ")
-        if not self.__read_paths_counter_indexed:
-            self.index_readpaths_subpaths()
         if self.__use_alignment_cov:
             logger.debug("estimating contig coverages from read paths ..")
             self.estimate_contig_coverages_from_read_paths()
@@ -850,7 +851,8 @@ class PathGenerator(object):
             for variant_path in growing_variants[previous_len_variant:]:
                 logger.debug("check variant_path " + str(variant_path))
                 # TODO if memory can be shared in a pool without serialization, this can be much faster
-                for sub_path in self.tvs.get_variant_sub_paths(variant_path):
+                # TODO, separate this part into each worker, it will be much faster
+                for sub_path in self.subpath_generator.gen_subpaths(variant_path):
                     # logger.debug("check subpath", sub_path)
                     if sub_path in path_not_traversed:
                         del path_not_traversed[sub_path]
@@ -906,31 +908,33 @@ class PathGenerator(object):
                 return new_num_valid_search - num_valid_search, current_ratio, 1
                 # TODO this process will never stop if the graph cannot generate a circular path on forced circular
 
-    def index_readpaths_subpaths(self, filter_by_graph=True):
-        self.__read_paths_counter = dict()
-        alignment_lengths = []
-        if filter_by_graph:
-            for gaf_record in self.alignment.raw_records:
-                this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
-                # summarize only when the graph contain the path
-                if self.graph.contain_path(this_read_path):
-                    if this_read_path in self.__read_paths_counter:
-                        self.__read_paths_counter[this_read_path] += 1
-                    else:
-                        self.__read_paths_counter[this_read_path] = 1
-                        self.read_paths.append(this_read_path)
-                    # record alignment length
-                    alignment_lengths.append(gaf_record.p_align_len)
-        else:
-            for gaf_record in self.alignment.raw_records:
-                this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
-                if this_read_path in self.__read_paths_counter:
-                    self.__read_paths_counter[this_read_path] += 1
-                else:
-                    self.__read_paths_counter[this_read_path] = 1
-                    self.read_paths.append(this_read_path)
-                # record alignment length
-                alignment_lengths.append(gaf_record.p_align_len)
+    def index_readpaths_subpaths(self, tvs_read_paths):
+        for read_path, loc_ids in tvs_read_paths.items():
+            self.read_paths.append(read_path)
+            self.__read_paths_counter[read_path] = len(loc_ids)
+        # # alignment_lengths = []
+        # if filter_by_graph:
+        #     for gaf_record in self.alignment.raw_records:
+        #         this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
+        #         # summarize only when the graph contain the path
+        #         if self.graph.contain_path(this_read_path):
+        #             if this_read_path in self.__read_paths_counter:
+        #                 self.__read_paths_counter[this_read_path] += 1
+        #             else:
+        #                 self.__read_paths_counter[this_read_path] = 1
+        #                 self.read_paths.append(this_read_path)
+        #             # # record alignment length
+        #             # alignment_lengths.append(gaf_record.p_align_len)
+        # else:
+        #     for gaf_record in self.alignment.raw_records:
+        #         this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
+        #         if this_read_path in self.__read_paths_counter:
+        #             self.__read_paths_counter[this_read_path] += 1
+        #         else:
+        #             self.__read_paths_counter[this_read_path] = 1
+        #             self.read_paths.append(this_read_path)
+        #         # # record alignment length
+        #         # alignment_lengths.append(gaf_record.p_align_len)
         for read_id, this_read_path in enumerate(self.read_paths):
             read_contig_num = len(this_read_path)
             forward_read_path_tuple = tuple(this_read_path)
@@ -950,7 +954,7 @@ class PathGenerator(object):
                     self.__index_middle_subpath(
                         reverse_read_path_tuple[go_sub: go_sub + sub_contig_num], read_id, False)
         #
-        self.local_max_alignment_len = sorted(alignment_lengths)[-1]
+        # self.max_alignment_len = sorted(alignment_lengths)[-1]
         self.__read_paths_not_in_variants = {_rp: None for _rp in self.__read_paths_counter}
         self.__read_paths_counter_indexed = True
 
@@ -1075,13 +1079,14 @@ class PathGenerator(object):
         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
             len(self.variants), self.count_valid, mum_valid_search, self.count_search))
 
-    def __heuristic_traversal_worker(self, variant, variants_counts, path_not_traversed, g_vars, lock, event):
+    def __heuristic_traversal_worker(
+            self, variant, variants_counts, path_not_traversed, g_vars, lock, event, err_queue):
         """
         single worker of traversal, called by self.get_heuristic_paths_multiprocessing
         starting a new process from dill dumped python object: slow
         """
         try:
-            break_traverse = False
+            # break_traverse = False
             while g_vars.count_valid < g_vars.num_valid_search:
                 # move the parallelizable code block before the lock
                 # <<<
@@ -1124,20 +1129,17 @@ class PathGenerator(object):
                                 len(variant), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
 
                         if g_vars.count_valid >= g_vars.max_valid_search:
-                            break_traverse = True
+                            # break_traverse = True
                             # kill all other workers
+                            g_vars.run_status = "reached"
                             event.set()
-                            self.__access_read_path_coverage(
-                                growing_variants=variant,
-                                previous_len_variant=g_vars.previous_len_variant,
-                                num_valid_search=g_vars.num_valid_search,
-                                path_not_traversed=path_not_traversed,
-                                previous_un_traversed_ratio=g_vars.previous_ratio,
-                                previous_un_traversed_ratio_count=g_vars.previous_ratio_c,
-                                reset_num_valid_search=False)
-                            break
+                            return
+                            # return "reached"
+                            # raise MaxTraversalReached("")
 
                         if g_vars.count_valid >= g_vars.num_valid_search:
+                            # logger.info("max valid search: " + str(g_vars.max_valid_search))
+                            # logger.info("num valid search: " + str(g_vars.num_valid_search))
                             add_search, g_vars.previous_ratio, g_vars.previous_ratio_c = \
                                 self.__access_read_path_coverage(
                                     growing_variants=variant,
@@ -1151,16 +1153,22 @@ class PathGenerator(object):
                                 g_vars.previous_len_variant = len(variant)
                                 g_vars.num_valid_search += add_search
                             else:
-                                break_traverse = True
+                                # break_traverse = True
                                 # kill all other workers
                                 event.set()
-                                break
+                                return "done"
                     lock.release()
-                if break_traverse:
-                    break
+                # if break_traverse:
+                #     break
         except KeyboardInterrupt:
+            g_vars.run_status = "interrupt"
             event.set()
-            raise KeyboardInterrupt
+            return
+            # return "keyboard"
+            # raise KeyboardInterrupt
+        except Exception as e:
+            event.set()
+            err_queue.put(e)
 
     def __gen_heuristic_paths_mp(self, num_proc=2):
         """
@@ -1177,6 +1185,7 @@ class PathGenerator(object):
         for rp_not_in_v in self.__read_paths_not_in_variants:
             path_not_traversed[rp_not_in_v] = None
         global_vars = manager.Namespace()
+        global_vars.run_status = ""
         global_vars.count_search = self.count_search
         global_vars.count_valid = self.count_valid
         global_vars.num_valid_search = self.min_valid_search
@@ -1186,12 +1195,13 @@ class PathGenerator(object):
         global_vars.previous_ratio_c = 1
         lock = manager.Lock()
         event = manager.Event()
+        error_queue = manager.Queue()
         # v_len = len(self.graph.vertex_info)
         pool_obj = Pool(processes=num_proc)  # the worker processes are daemonic
         # dump function and args
         logger.info("Serializing the heuristic searching for multiprocessing ..")
         payload = dill.dumps((self.__heuristic_traversal_worker,
-                              (variants, variants_counts, path_not_traversed, global_vars, lock, event)))
+                              (variants, variants_counts, path_not_traversed, global_vars, lock, event, error_queue)))
         # logger.info("Start generating candidate paths ..")
         try:
             jobs = []
@@ -1215,12 +1225,17 @@ class PathGenerator(object):
                     else:
                         global_vars.num_valid_search += add_search
                         lock.release()
-            for job in jobs:
-                job.get()  # tracking errors
-        except KeyboardInterrupt:
-            event.set()
+            # for job in jobs:
+            #     job.get()  # tracking errors
+                # if "reached" in job_msg:
+                #     raise MaxTraversalReached("")
+                # elif "keyboard" in job_msg:
+                #     raise KeyboardInterrupt
             pool_obj.close()
-            pool_obj.terminate()
+        except KeyboardInterrupt:
+            # event.set()
+            # pool_obj.terminate()
+            # pool_obj.close()
             logger.info("<Keyboard interrupt>")
             self.__access_read_path_coverage(
                 growing_variants=variants,
@@ -1231,11 +1246,30 @@ class PathGenerator(object):
                 previous_un_traversed_ratio_count=global_vars.previous_ratio_c,
                 reset_num_valid_search=False)
         else:
-            pool_obj.close()
-            # logger.info("waiting ..")
             event.wait()
             pool_obj.terminate()
-            pool_obj.join()  # maybe no need to join
+            while not error_queue.empty():
+                raise error_queue.get()
+            if global_vars.run_status in {"reached", "interrupt"}:
+                # except MaxTraversalReached:
+                # pool_obj.terminate()
+                # pool_obj.join()  # maybe no need to join
+                if global_vars.run_status == "reached":
+                    logger.info("maximum num of valid searches reached.")
+                elif global_vars.run_status == "interrupt":
+                    logger.info("<Keyboard interrupt>")
+                self.__access_read_path_coverage(
+                    growing_variants=variants,
+                    previous_len_variant=global_vars.previous_len_variant,
+                    num_valid_search=global_vars.num_valid_search,
+                    path_not_traversed=path_not_traversed,
+                    previous_un_traversed_ratio=global_vars.previous_ratio,
+                    previous_un_traversed_ratio_count=global_vars.previous_ratio_c,
+                    reset_num_valid_search=False)
+            # else:
+            # logger.info("waiting ..")
+            # pool_obj.join()  # maybe no need to join
+
         self.variants_counts = dict(variants_counts)
         self.variants = list(variants)
         self.count_valid += global_vars.count_valid
@@ -1382,11 +1416,11 @@ class PathGenerator(object):
 
             # 3.3 calculate the support from read paths
             circular_units = []
-            original_sub_paths = set(self.tvs.get_variant_sub_paths(circular_path))
+            original_sub_paths = set(self.subpath_generator.gen_subpaths(circular_path))
             for this_scheme in qualified_schemes:
                 these_sub_paths = set()
                 for this_unit in this_scheme:
-                    these_sub_paths |= set(self.tvs.get_variant_sub_paths(this_unit))
+                    these_sub_paths |= set(self.subpath_generator.gen_subpaths(this_unit))
                 if original_sub_paths - these_sub_paths:
                     # the original one contains unique subpath(s)
                     continue
@@ -1442,7 +1476,7 @@ class PathGenerator(object):
     #         if find_start:
     #             path_shuffled = circular_path[len(v_list) - reseed_at:] + circular_path + circular_path[:unit_len]
     #             unit_seq_len = self.graph.get_path_length(path_shuffled[try_start: try_start + unit_len])
-    #             unit_copy_num = min(max(int((self.local_max_alignment_len - 2) / unit_seq_len), 1), gcd)
+    #             unit_copy_num = min(max(int((self.max_alignment_len - 2) / unit_seq_len), 1), gcd)
     #             return_list = []
     #             for go_unit in range(int(gcd/unit_copy_num)):
     #                 go_from__ = try_start + unit_len * unit_copy_num * go_unit
@@ -1461,10 +1495,10 @@ class PathGenerator(object):
         :param strand: bool
         :return:
         """
-        if subpath in self.__starting_subpath_to_readpaths:
-            self.__starting_subpath_to_readpaths[subpath].add((read_id, strand))
+        if subpath in self.__start_subpath_to_readpaths:
+            self.__start_subpath_to_readpaths[subpath].add((read_id, strand))
         else:
-            self.__starting_subpath_to_readpaths[subpath] = {(read_id, strand)}
+            self.__start_subpath_to_readpaths[subpath] = {(read_id, strand)}
 
     def __index_middle_subpath(self, subpath, read_id, strand):
         """
@@ -1480,7 +1514,7 @@ class PathGenerator(object):
             self.__middle_subpath_to_readpaths[subpath] = {(read_id, strand)}
 
     def pass_starting_subpath_to_readpaths(self):
-        return self.__starting_subpath_to_readpaths
+        return self.__start_subpath_to_readpaths
 
     def pass_middle_subpath_to_readpaths(self):
         return self.__middle_subpath_to_readpaths
