@@ -8,6 +8,7 @@ from loguru import logger
 from collections import OrderedDict
 from traversome.utils import Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
 from hashlib import sha256
+from typing import OrderedDict as typingODict
 import os
 
 
@@ -25,8 +26,15 @@ VERTEX_DIRECTION_BOOL_TO_STR = {True: "+", False: "-"}
 
 
 class Vertex(object):
-    def __init__(self, v_name, length=None, coverage=None, forward_seq=None, reverse_seq=None,
-                 tail_connections=None, head_connections=None, fastg_form_long_name=None):
+    def __init__(self,
+                 v_name,
+                 length=None,
+                 coverage=None,
+                 forward_seq=None,
+                 reverse_seq=None,
+                 tail_connections: typingODict = None,
+                 head_connections: typingODict = None,
+                 fastg_form_long_name=None):
         """
         :param v_name: str
         :param length: int
