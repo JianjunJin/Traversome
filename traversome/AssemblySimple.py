@@ -239,10 +239,8 @@ class AssemblySimple(object):
         # parse the 
         if self.graph_file:
             if self.graph_file.endswith(".gfa"):
-                logger.info("Parsing graph (GFA)")
                 self.parse_gfa()
             else:
-                logger.info("Parsing graph (FASTG)")
                 self.parse_fastg()
 
     def __repr__(self):
@@ -278,6 +276,7 @@ class AssemblySimple(object):
 
         Note: This doesn't seem currently to have a way to identify v.2.0
         """
+        logger.info("Parsing graph (GFA)")
         with open(self.graph_file) as gfa_open:
 
             # read first line to get version number
@@ -287,8 +286,8 @@ class AssemblySimple(object):
             # parse elements from first line
             if line.startswith("H\t"):
                 for element in line.strip().split("\t")[1:]:
-                    element = element.split(":")
-                    element_tag, element_type, element_description = element[0], element[1], ":".join(element[2:])
+                    element_tag, element_type, element_description = element.split(":", maxsplit=2)
+                    # element_tag, element_type, element_description = element[0], element[1], ":".join(element[2:])
                     if element_tag == "VN":
                         gfa_version_number = element_description
 
@@ -329,7 +328,7 @@ class AssemblySimple(object):
 
                 # split each into element_tag, element_type, element_description
                 for element in elements:
-                    element = element.split(":")  
+                    element = element.split(":", maxsplit=2)
                     # skip RC/FC
 
                     # get the sequence length
@@ -562,6 +561,7 @@ class AssemblySimple(object):
         """
         Parse alternative graph format in FASTG format. Store results in self.vertex_info.
         """
+        logger.info("Parsing graph (FASTG)")
         fastg_matrix = SequenceList(self.graph_file)
         # initialize names; only accept vertex that are formally stored, skip those that are only mentioned after ":"
         for i, seq in enumerate(fastg_matrix):
