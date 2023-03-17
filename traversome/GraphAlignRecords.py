@@ -50,7 +50,7 @@ class GAFRecord(object):
 
         # ...
         for flag_type_val in record_line_split[12:]:
-            op_flag, op_type, op_val = flag_type_val.split(":")
+            op_flag, op_type, op_val = flag_type_val.split(":", maxsplit=2)
             if op_type == "i":
                 self.optional_fields[op_flag] = int(op_val)
             elif op_type == "Z":
