@@ -36,7 +36,7 @@ class ModelFitBayesian(object):
             for go_id_id, chosen_id in enumerate(chosen_ids):
                 variant_percents[chosen_id] = real_percents[go_id_id]
             #
-            loglike_expression = self.traversome.get_multinomial_like_formula(
+            loglike_expression = self.traversome.model.get_like_formula(
                 variant_percents=variant_percents,
                 log_func=tt.log,
                 within_variant_ids=set(chosen_ids)).loglike_expression
