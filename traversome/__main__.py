@@ -9,6 +9,7 @@ import os, sys, platform
 from pathlib import Path
 from enum import Enum
 import typer
+from typing import Union
 from math import inf
 from traversome import __version__
 
@@ -67,7 +68,7 @@ def main(
     typer.secho(RUNNING_HEAD, fg=typer.colors.MAGENTA, bold=True)
 
 
-class PathGen(str, Enum):
+class VarGen(str, Enum):
     Heuristic = "H"
     Provided = "U"
 
@@ -104,10 +105,10 @@ class ChComposition(str, Enum):
 #         './', "-o", "--output",
 #         help="Output directory",
 #         exists=False, resolve_path=True),
-#     path_generator: PathGen = typer.Option(
-#         PathGen.Heuristic, "-P",
+#     var_gen_scheme: VarGen = typer.Option(
+#         VarGen.Heuristic, "-P",
 #         help="Path generator: H (Heuristic)/U (User-provided)"),
-#     num_valid_search: int = typer.Option(
+#     min_valid_search: int = typer.Option(
 #         1000, "-N", "--num-search",
 #         help="Num of valid traversals for heuristic searching."),
 #     num_processes: int = typer.Option(
@@ -148,7 +149,7 @@ class ChComposition(str, Enum):
 #         loglevel=log_level,
 #         overwrite=overwrite)
 #     try:
-#         assert path_generator != "U", "User-provided is under developing, please use heuristic instead!"
+#         assert var_gen_scheme != "U", "User-provided is under developing, please use heuristic instead!"
 #         from traversome.traversome import Traversome
 #         traverser = Traversome(
 #             graph=str(graph_file),
@@ -157,14 +158,14 @@ class ChComposition(str, Enum):
 #             function=function,
 #             out_prob_threshold=out_seq_threshold,
 #             force_circular=topology == "c",
-#             num_valid_search=num_valid_search,
+#             min_valid_search=min_valid_search,
 #             num_processes=num_processes,
 #             random_seed=random_seed,
 #             keep_temp=keep_temp,
 #             loglevel=log_level
 #         )
 #         traverser.run(
-#             path_generator=path_generator,
+#             var_gen_scheme=var_gen_scheme,
 #             hetero_chromosomes=composition == "u"  # opts.is_multi_chromosomes,
 #             )
 #     except:
@@ -187,12 +188,15 @@ def thorough(
         './', "-o", "--output",
         help="Output directory",
         exists=False, resolve_path=True),
-    path_generator: PathGen = typer.Option(
-        PathGen.Heuristic, "-P",
-        help="Path generator: H (Heuristic)/U (User-provided)"),
-    num_valid_search: int = typer.Option(
-        1000, "-N", "--num-search",
-        help="Num of valid traversals for heuristic searching."),
+    var_gen_scheme: VarGen = typer.Option(
+        VarGen.Heuristic, "-G",
+        help="Variant generating scheme: H (Heuristic)/U (User-provided)"),
+    min_valid_search: int = typer.Option(
+        1000, "-n", "--min-val-search",
+        help="Minimum num of valid traversals for heuristic searching."),
+    max_valid_search: int = typer.Option(
+        100000, "-N", "--max-val-search",
+        help="Maximum num of valid traversals for heuristic searching."),
     criterion: ModelSelectionMode = typer.Option(
         ModelSelectionMode.AIC, "-F", "--func",
         help="aic (reverse model selection using stepwise AIC, default)\n"
@@ -200,7 +204,9 @@ def thorough(
     random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed"),
     topology: ChTopology = typer.Option(
         ChTopology.circular, "--topology",
-        help="Chromosomes topology: c (constrained to be circular)/ u (unconstrained). "),
+        help="Chromosomes topology: "
+             "c (constrained to be circular);"
+             "u (unconstrained). "),
     composition: ChComposition = typer.Option(
         ChComposition.unconstrained, "--composition",
         help="Chromosomes composition: "
@@ -218,14 +224,19 @@ def thorough(
         100, "--min-align-len",
         help="Threshold for alignment length, below which the alignment with be discarded. ",
         min=100),
-    graph_component_selection: float = typer.Option(
-        0., "--graph-selection",
-        help="Use this if your graph is not manually curated into a single-component complete graph. "
-             "Followed by the weight ratio cutoff, below which a secondary connected component will be discarded. "
-             "The weight is calculated as \sum_{i=1}^{N}length_i*depth_i, where N is the contigs in that component. "
-             "A cutoff of 0 means keeping all components in the graph, while 1 means only keep the connected "
-             "component with the largest weight",
-        min=0, max=1),
+    graph_component_selection: str = typer.Option(
+        "0", "--graph-selection",
+        help="Use this if your graph is not manually curated into the target complete graph. "
+             "First, he weight of each connected component will be calculated as \sum_{i=1}^{N}length_i*depth_i, "
+             "where N is the contigs in that component. Then, the components will be sorted in a decreasing order. "
+             "1) If the input is an integer or a slice, this will trigger the selection of specific component "
+             "by the decreasing order, e.g. 0 will keep the first component; 0,4 will keep the first four components; "
+             "2) If the input is a float in the range of (0, 1), this will trigger the selection using "
+             "the accumulated weight ratio cutoff, "
+             "above which, the remaining components will be discarded. "
+             "A cutoff of 1 means keeping all components in the graph, "
+             "while a value close to 0 means only keep the connected "
+             "component with the largest weight. "),
     num_processes: int = typer.Option(
         1, "-p", "--processes",
         help="Num of processes. "),
@@ -247,15 +258,26 @@ def thorough(
         loglevel=log_level,
         overwrite=overwrite)
     try:
-        assert path_generator != "U", "User-provided is under developing, please use heuristic instead!"
+        assert var_gen_scheme != "U", "User-provided is under developing, please use heuristic instead!"
+        assert max_valid_search >= min_valid_search, ""
         from traversome.traversome import Traversome
+        if graph_component_selection.isdigit():
+            graph_component_selection = int(graph_component_selection)
+        elif "." in graph_component_selection:
+            graph_component_selection = float(graph_component_selection)
+        else:
+            try:
+                graph_component_selection = slice(*eval(graph_component_selection))
+            except (SyntaxError, TypeError):
+                raise TypeError(str(graph_component_selection) + " is invalid for --graph-selection!")
         traverser = Traversome(
             graph=str(graph_file),
             alignment=str(alignment_file),
             outdir=str(output_dir),
             model_criterion=criterion,
             out_prob_threshold=out_seq_threshold,
-            num_valid_search=num_valid_search,
+            min_valid_search=min_valid_search,
+            max_valid_search=max_valid_search,
             num_processes=num_processes,
             force_circular=topology == "c",
             n_generations=n_generations,
@@ -268,9 +290,11 @@ def thorough(
             graph_component_selection=graph_component_selection,
         )
         traverser.run(
-            path_generator=path_generator,
+            path_gen_scheme=var_gen_scheme,
             hetero_chromosomes=composition == "u"
         )
+    except SystemExit:
+        pass
     except:
         logger.exception("")
     logger.info("Total cost %.4f" % (time.time() - time_zero))

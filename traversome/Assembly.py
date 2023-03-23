@@ -9,6 +9,7 @@ import sys
 from copy import deepcopy
 from collections import OrderedDict
 from loguru import logger
+from typing import Union
 from traversome.AssemblySimple import AssemblySimple #, VertexMergingHistory, VertexEditHistory
 # from traversome.PathGeneratorGraphOnly import PathGeneratorGraphOnly
 from traversome.PathGenerator import PathGenerator
@@ -194,24 +195,70 @@ class Assembly(AssemblySimple):
                                                      for next_v, next_e in connected_set)
                                                 for this_v in self.vertex_info})
 
-    def reduce_graph_by_weight(self, cutoff: float, update_cluster: bool = True):
+    def reduce_graph_by_weight(self,
+                               component_ids: Union[int, slice] = None,
+                               cutoff_to_max: float = None,
+                               cutoff_to_total: float = None,
+                               update_cluster: bool = True):
         """
-        below which a secondary connected component will be discarded.
-        The weight is calculated as \sum_{i=1}^{N}length_i*depth_i, where N is the contigs in that component.
-        A cutoff of 0 means keeping all components in the graph, while 1 means only keep the connected
-        component with the largest weight.
+        The weight of a connected component is calculated as \sum_{i=1}^{N}length_i*depth_i,
+        where N is the contigs in that connected component.
+
+        Parameters
+        ----
+        component_ids: Union[int, slice] = 0
+            Chose the remaining components by ids.
+        cutoff_to_max: float (0, 1]
+            Below which a secondary connected component will be discarded.
+            A cutoff_to_max of 0 means keeping all components in the graph, while 1 means only keep the connected
+            component with the largest weight.
+        cutoff_to_total: float (0, 1)
+            Accumulated weight, above which, the next smaller component will be discarded.
+            A cutoff_to_max of 1 means keeping all components in the graph, while a value closer to 0 will only
+            keep the component with the largest weight.
+        update_cluster: bool
         """
-        if cutoff > 0:
+        if sum([component_ids is None, cutoff_to_total is None, cutoff_to_max is None]) == 2:
             if not self.vertex_clusters:
                 self.update_vertex_clusters()
+            discard_vs = set()
             weights = [sum([self.vertex_info[_v].cov * self.vertex_info[_v].len for _v in cls])
                        for cls in self.vertex_clusters]
-            max_w = max(weights)
-            discard_vs = set()
-            for go_c, weight in enumerate(weights):
-                if weight < max_w * cutoff:
-                    discard_vs.update(self.vertex_clusters[go_c])
+            if cutoff_to_max is None and cutoff_to_total is None:
+                sorted_orders = sorted(list(range(len(weights))), key=lambda x: (-weights[x], self.vertex_clusters[x]))
+                try:
+                    if isinstance(component_ids, slice):
+                        selected_component_ids = set(sorted_orders[component_ids])
+                    else:
+                        selected_component_ids = {sorted_orders[component_ids]}
+                except IndexError:
+                    raise IndexError("component_ids is out of the component size of %i" % len(self.vertex_clusters))
+                for go_c, comp in enumerate(self.vertex_clusters):
+                    if go_c not in selected_component_ids:
+                        discard_vs.update(comp)
+            elif component_ids is None and cutoff_to_total is None and cutoff_to_max > 0:
+                assert cutoff_to_max <= 1
+                max_w = max(weights)
+                for go_c, weight in enumerate(weights):
+                    if weight < max_w * cutoff_to_max:
+                        discard_vs.update(self.vertex_clusters[go_c])
+            elif component_ids is None and cutoff_to_max is None and cutoff_to_total < 1:
+                assert 0 < cutoff_to_total
+                sorted_orders = sorted(list(range(len(weights))), key=lambda x: (-weights[x], self.vertex_clusters[x]))
+                sum_weights = sum(weights)
+                accumulated_w = 0.
+                selected_component_ids = set()
+                check_order_id = 0
+                while check_order_id < len(weights) - 1 and accumulated_w < sum_weights * cutoff_to_total:
+                    selected_component_ids.add(sorted_orders[check_order_id])
+                    accumulated_w += weights[sorted_orders[check_order_id]]
+                    check_order_id += 1
+                for go_c, comp in enumerate(self.vertex_clusters):
+                    if go_c not in selected_component_ids:
+                        discard_vs.update(comp)
             self.remove_vertex(discard_vs, update_cluster=update_cluster)
+        else:
+            raise ValueError("Please choose only one criteria among component_ids, cutoff_to_max, and cutoff_to_total!")
 
     def remove_vertex(self, vertices, update_cluster=True):
         """
@@ -894,7 +941,7 @@ class Assembly(AssemblySimple):
     #         self,
     #         graph_alignment,
     #         random_obj,
-    #         num_valid_search,
+    #         min_valid_search,
     #         num_processes=1,
     #         force_circular=True,
     #         hetero_chromosome=True):
@@ -902,7 +949,7 @@ class Assembly(AssemblySimple):
     #     :param graph_alignment:
     #     :param random_obj: random
     #         passed from traversome.random [or from import random]
-    #     :param num_valid_search
+    #     :param min_valid_search
     #     :param num_processes
     #     :param force_circular
     #     :param hetero_chromosome
@@ -910,7 +957,7 @@ class Assembly(AssemblySimple):
     #     generator = PathGenerator(
     #         assembly_graph_obj=self,
     #         graph_alignment=graph_alignment,
-    #         num_valid_search=num_valid_search,
+    #         min_valid_search=min_valid_search,
     #         num_processes=num_processes,
     #         force_circular=force_circular,
     #         hetero_chromosome=hetero_chromosome,
@@ -1028,7 +1075,7 @@ class Assembly(AssemblySimple):
         if self.is_circular_path(input_path):
             first_n, first_e = input_path[0]
             # append the sequence with uni_overlap trimmed
-            seq_segments.append(last_v_info.seq[last_e][:-last_v_info.connections[(first_n, not first_e)]])
+            seq_segments.append(last_v_info.seq[last_e][:-last_v_info.connections[last_e][(first_n, not first_e)]])
         else:
             seq_segments.append(last_v_info.seq[last_e])
         return "".join(seq_segments)
