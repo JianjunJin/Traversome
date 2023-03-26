@@ -200,7 +200,7 @@ class ModelFitMaxLike(object):
                                       (chosen_ids, criterion, global_vars, lock, event, error_queue)))
                 pool_obj = Pool(processes=n_proc)
                 job_list = []
-                for go_w, var_id in enumerate(chosen_ids):
+                for go_w in range(len(chosen_ids)):
                     logger.debug("assigning job to worker {}".format(go_w + 1))
                     job_list.append(pool_obj.apply_async(run_dill_encoded, (payload,)))
                     logger.debug("assigned job to worker {}".format(go_w + 1))
@@ -293,11 +293,13 @@ class ModelFitMaxLike(object):
                         format(", ".join([self.__str_rep_id(_c_i)
                                           for _c_i in sorted_chosen_ids]), self.__str_rep_id(var_id)))
                 res_list = self.__compute_like_and_criteria(chosen_id_set=testing_ids, criteria=criterion)
+                lock.acquire()
                 g_vars.recorded_ids.append(var_id)
                 g_vars.prop.append(res_list[0])
                 g_vars.echo.append(res_list[1])
                 g_vars.loglike.append(res_list[2])
                 g_vars.criterion.append(res_list[3])
+                lock.release()
                 # logger.debug("Generating the likelihood function .. ")
                 # neg_loglike_func_obj = self.get_neg_likelihood_of_var_freq(within_variant_ids=testing_ids)
                 # logger.info("Maximizing the likelihood function for {} variants".format(len(testing_ids)))

@@ -46,11 +46,15 @@ class SingleTraversal(object):
             self.graph.get_standardized_path_circ(self.graph.roll_path(self.__heuristic_extend_path(start_path)))
 
     def __heuristic_extend_path(
-            self, path, not_do_reverse=False):
+            self,
+            path,
+            # not_do_reverse=False
+    ):
         """
-        improvement needed
         :param path: empty path like [] or starting path like [("v1", True), ("v2", False)]
-        :param not_do_reverse: mainly for iteration, a mark to stop searching from the reverse end
+
+        # :param not_do_reverse: mainly for iteration, a mark to stop searching from the reverse end
+
         :return: a candidate variant path. e.g. [("v0", True), ("v1", True), ("v2", False), ("v3", True)]
         """
         if not path:
@@ -63,11 +67,15 @@ class SingleTraversal(object):
                 read_path = self.graph.reverse_path(read_path)
             path = list(read_path)
             logger.trace("      starting path(" + str(len(path)) + "): " + str(path))
-            # initial_mean, initial_std = self.__get_cov_mean(read_path, return_std=True)
-            return self.__heuristic_extend_path(
-                path=path,
-                not_do_reverse=False)
-        else:
+        not_do_reverse = False
+        while True:
+            #
+            #     # initial_mean, initial_std = self.__get_cov_mean(read_path, return_std=True)
+            #     return self.__heuristic_extend_path(
+            #         path=path,
+            #         not_do_reverse=False)
+            # else:
+
             # keep going in a circle util the path length reaches beyond the longest read alignment
             # stay within what data can tell
             repeating_unit = self.graph.roll_path(path)
@@ -114,7 +122,10 @@ class SingleTraversal(object):
                         path = list(self.read_paths[read_id])
                     else:
                         path = list(self.graph.reverse_path(self.read_paths[read_id]))
-                    return self.__heuristic_extend_path(path)
+                    continue
+                    # 2023-03-23: find a bug in previous recursive code
+                    # return self.__heuristic_extend_path(path)
+
             # like_ls_cached will be calculated in if not self.hetero_chromosome
             # it may be further used in self.__heuristic_check_multiplicity()
             like_ls_cached = []
@@ -169,21 +180,28 @@ class SingleTraversal(object):
                         logger.trace("      single next: ({}, {})".format(next_name, next_end))
                         like_ls_cached = None
                     # if self.hetero_chromosome or self.graph.is_fully_covered_by(path + [(next_name, not next_end)]):
-                    return self.__heuristic_check_multiplicity(
+                    path, keep_extend, not_do_reverse = self.__heuristic_check_multiplicity(
                         path=path,
                         proposed_extension=[(next_name, not next_end)],
                         not_do_reverse=not_do_reverse,
                         cached_like_ls=like_ls_cached
                     )
+                    if keep_extend:
+                        continue
+                    else:
+                        return path
                 else:
                     if not_do_reverse:
                         logger.trace("      traversal ended without next vertex.")
                         return path
                     else:
                         logger.trace("      traversal reversed without next vertex.")
-                        return self.__heuristic_extend_path(
-                            list(self.graph.reverse_path(path)),
-                            not_do_reverse=True)
+                        path = list(self.graph.reverse_path(path))
+                        not_do_reverse = True
+                        continue
+                        # return self.__heuristic_extend_path(
+                        #     list(self.graph.reverse_path(path)),
+                        #     not_do_reverse=True)
             else:
                 logger.debug("    path(" + str(len(path)) + "): " + str(path))
                 # if there is only one candidate
@@ -300,13 +318,17 @@ class SingleTraversal(object):
                 # logger.debug("    extend path   : {}".format(new_extend))
 
                 # if self.hetero_chromosome or self.graph.is_fully_covered_by(path + new_extend):
-                return self.__heuristic_check_multiplicity(
+                path, keep_extend, not_do_reverse = self.__heuristic_check_multiplicity(
                     # initial_mean=initial_mean,
                     # initial_std=initial_std,
                     path=path,
                     proposed_extension=new_extend,
                     not_do_reverse=not_do_reverse,
                     cached_like_ls=like_ls_cached)
+                if keep_extend:
+                    continue
+                else:
+                    return path
                 # else:
                 #     return self.__heuristic_extend_path(
                 #         path + new_extend,
@@ -417,10 +439,11 @@ class SingleTraversal(object):
         normal distribution
         :param path:
         :param proposed_extension:
-        :param not_do_reverse: True if the reverse direction has already been traversed, so do not reverse.
+        :param not_do_reverse: a mark to stop searching from the reverse end
         :param current_v_counts: Dict
         :param cached_like_ls: input cached likelihood ratio list instead of recalculating it
-        :return:
+
+        :return: path:list, keep_extend:bool, not_do_reverse:bool
         """
         assert len(proposed_extension)
         # if there is a vertex of proposed_extension that was not used in current path,
@@ -428,24 +451,6 @@ class SingleTraversal(object):
         if not current_v_counts:
             current_vs = [v_n for v_n, v_e in path]
             current_v_counts = {_v_n: current_vs.count(_v_n) for _v_n, _v_e in proposed_extension}
-        #     current_v_counts = {}
-        #     for v_name, v_end in proposed_extension:
-        #         v_count = current_vs.count(v_name)
-        #         if v_count:
-        #             current_v_counts[v_name] = v_count
-        #         else:
-        #             return self.__heuristic_extend_path(
-        #                 path + list(proposed_extension),
-        #                 not_do_reverse=not_do_reverse)
-        # else:
-        #     for v_name, v_end in proposed_extension:
-        #         if current_v_counts[v_name] == 0:
-        #             return self.__heuristic_extend_path(
-        #                 path + list(proposed_extension),
-        #                 not_do_reverse=not_do_reverse)
-
-        # extend_names = [v_n for v_n, v_e in path]
-        # extend_names = {v_n: extendnames.count(v_n) for v_n in set(extend_names)}
         if not (cached_like_ls is None or cached_like_ls == []):
             like_ratio_list = cached_like_ls
         else:
@@ -466,9 +471,7 @@ class SingleTraversal(object):
             logger.trace("      draw prob:{}".format(draw_prob))
             if draw_prob > random.random():
                 logger.trace("      draw accepted:{}".format(proposed_extension[:proposed_end]))
-                return self.__heuristic_extend_path(
-                    list(deepcopy(path)) + list(proposed_extension[:proposed_end]),
-                    not_do_reverse=not_do_reverse)
+                return list(deepcopy(path)) + list(proposed_extension[:proposed_end]), True, not_do_reverse
         else:
             # Tested to be a bad idea
             # if self.force_circular:
@@ -486,13 +489,11 @@ class SingleTraversal(object):
             if not_do_reverse:
                 logger.trace("        linear traversal ended to fit {}'s coverage.".format(proposed_extension[0][0]))
                 logger.trace("        checked likes: {}".format(like_ratio_list))
-                return list(deepcopy(path))
+                return list(deepcopy(path)), False, None
             else:
                 logger.trace("        linear traversal reversed to fit {}'s coverage.".format(proposed_extension[0][0]))
                 logger.trace("        checked likes: {}".format(like_ratio_list))
-                return self.__heuristic_extend_path(
-                    list(self.graph.reverse_path(list(deepcopy(path)))),
-                    not_do_reverse=True)
+                return list(self.graph.reverse_path(list(deepcopy(path)))), True, True
 
     def __check_path(self, path):
         assert len(path)
