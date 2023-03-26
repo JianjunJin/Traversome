@@ -243,7 +243,7 @@ def thorough(
     n_generations: int = typer.Option(10000, "--mcmc", help="MCMC generations"),
     n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
     overwrite: bool = typer.Option(False, help="Remove previous result if exists."),
-    keep_temp: bool = typer.Option(False, help="Keep temporary files"),
+    # keep_temp: bool = typer.Option(False, help="Keep temporary files"),
     log_level: LogLevel = typer.Option(
         LogLevel.INFO, "--loglevel", help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
@@ -283,7 +283,7 @@ def thorough(
             n_generations=n_generations,
             n_burn=n_burn,
             random_seed=random_seed,
-            keep_temp=keep_temp,
+            keep_temp=False,
             loglevel=log_level,
             min_alignment_identity_cutoff=min_alignment_identity_cutoff,
             min_alignment_len_cutoff=min_alignment_len_cutoff,
