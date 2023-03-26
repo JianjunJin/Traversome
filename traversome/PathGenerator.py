@@ -90,7 +90,7 @@ class SingleTraversal(object):
             # generate the extending candidates
             candidate_ls_list = []
             candidates_list_overlap_c_nums = []
-            for overlap_c_num in range(1, len(path) + 1):  # TODO: set start to be 2 because 1 is like next_connections
+            for overlap_c_num in range(2, len(path) + 1):  # TODO: set start to be 2 because 1 is like next_connections
                 overlap_path = path[-overlap_c_num:]
                 # stop adding extending candidate when the overlap is longer than our longest read alignment
                 # stay within what data can tell
@@ -564,149 +564,6 @@ class SingleTraversal(object):
         else:
             return mean
 
-    # def __directed_graph_solver(
-    #         self, ongoing_paths, next_connections, vertices_left, in_all_start_ve):
-    #     if not vertices_left:
-    #         new_paths, new_standardized = self.graph.get_standardized_isomer(ongoing_paths)
-    #         if new_standardized not in self.variants_counts:
-    #             self.variants_counts[new_standardized] = 1
-    #             self.variants.append(new_standardized)
-    #         else:
-    #             self.variants_counts[new_standardized] += 1
-    #         return
-    #
-    #     find_next = False
-    #     for next_vertex, next_end in next_connections:
-    #         # print("next_vertex", next_vertex, next_end)
-    #         if next_vertex in vertices_left:
-    #             find_next = True
-    #             new_paths = deepcopy(ongoing_paths)
-    #             new_left = deepcopy(vertices_left)
-    #             new_paths[-1].append((next_vertex, not next_end))
-    #             new_left[next_vertex] -= 1
-    #             if not new_left[next_vertex]:
-    #                 del new_left[next_vertex]
-    #             new_connections = sorted(self.graph.vertex_info[next_vertex].connections[not next_end])
-    #             if not new_left:
-    #                 new_paths, new_standardized = self.graph.get_standardized_isomer(new_paths)
-    #                 if new_standardized not in self.variants_counts:
-    #                     self.variants_counts[new_standardized] = 1
-    #                     self.variants.append(new_standardized)
-    #                 else:
-    #                     self.variants_counts[new_standardized] += 1
-    #                 return
-    #             else:
-    #                 self.__directed_graph_solver(new_paths, new_connections, new_left, in_all_start_ve)
-    #     if not find_next:
-    #         new_all_start_ve = deepcopy(in_all_start_ve)
-    #         while new_all_start_ve:
-    #             new_start_vertex, new_start_end = new_all_start_ve.pop(0)
-    #             if new_start_vertex in vertices_left:
-    #                 new_paths = deepcopy(ongoing_paths)
-    #                 new_left = deepcopy(vertices_left)
-    #                 new_paths.append([(new_start_vertex, new_start_end)])
-    #                 new_left[new_start_vertex] -= 1
-    #                 if not new_left[new_start_vertex]:
-    #                     del new_left[new_start_vertex]
-    #                 new_connections = sorted(self.graph.vertex_info[new_start_vertex].connections[new_start_end])
-    #                 if not new_left:
-    #                     new_paths, new_standardized = self.graph.get_standardized_isomer(new_paths)
-    #                     if new_standardized not in self.variants_counts:
-    #                         self.variants_counts[new_standardized] = 1
-    #                         self.variants.append(new_standardized)
-    #                     else:
-    #                         self.variants_counts[new_standardized] += 1
-    #                 else:
-    #                     self.__directed_graph_solver(new_paths, new_connections, new_left, new_all_start_ve)
-    #                     break
-    #         if not new_all_start_ve:
-    #             return
-
-    # def __circular_directed_graph_solver(self,
-    #     ongoing_path,
-    #     next_connections,
-    #     vertices_left,
-    #     check_all_kinds,
-    #     palindromic_repeat_vertices,
-    #     ):
-    #     """
-    #     recursively exhaust all circular paths, deprecated for now
-    #     :param ongoing_path:
-    #     :param next_connections:
-    #     :param vertices_left:
-    #     :param check_all_kinds:
-    #     :param palindromic_repeat_vertices:
-    #     :return:
-    #     """
-    #     if not vertices_left:
-    #         new_path = deepcopy(ongoing_path)
-    #         if palindromic_repeat_vertices:
-    #             new_path = [(this_v, True) if this_v in palindromic_repeat_vertices else (this_v, this_e)
-    #                         for this_v, this_e in new_path]
-    #         if check_all_kinds:
-    #             rev_path = self.graph.reverse_path(new_path)
-    #             this_path_derived = [new_path, rev_path]
-    #             for change_start in range(1, len(new_path)):
-    #                 this_path_derived.append(new_path[change_start:] + new_path[:change_start])
-    #                 this_path_derived.append(rev_path[change_start:] + rev_path[:change_start])
-    #             standardized_path = tuple(sorted(this_path_derived)[0])
-    #             if standardized_path not in self.variants_counts:
-    #                 self.variants_counts[standardized_path] = 1
-    #                 self.variants.append(standardized_path)
-    #             else:
-    #                 self.variants_counts[standardized_path] += 1
-    #         else:
-    #             new_path = tuple(new_path)
-    #             if new_path not in self.variants_counts:
-    #                 self.variants_counts[new_path] = 1
-    #                 self.variants.append(new_path)
-    #             else:
-    #                 self.variants_counts[new_path] += 1
-    #         return
-    #
-    #     for next_vertex, next_end in next_connections:
-    #         # print("next_vertex", next_vertex)
-    #         if next_vertex in vertices_left:
-    #             new_path = deepcopy(ongoing_path)
-    #             new_left = deepcopy(vertices_left)
-    #             new_path.append((next_vertex, not next_end))
-    #             new_left[next_vertex] -= 1
-    #             if not new_left[next_vertex]:
-    #                 del new_left[next_vertex]
-    #             new_connections = self.graph.vertex_info[next_vertex].connections[not next_end]
-    #             if not new_left:
-    #                 if (self.__start_vertex, not self.__start_direction) in new_connections:
-    #                     if palindromic_repeat_vertices:
-    #                         new_path = [
-    #                             (this_v, True) if this_v in palindromic_repeat_vertices else (this_v, this_e)
-    #                             for this_v, this_e in new_path]
-    #                     if check_all_kinds:
-    #                         rev_path = self.graph.reverse_path(new_path)
-    #                         this_path_derived = [new_path, rev_path]
-    #                         for change_start in range(1, len(new_path)):
-    #                             this_path_derived.append(new_path[change_start:] + new_path[:change_start])
-    #                             this_path_derived.append(rev_path[change_start:] + rev_path[:change_start])
-    #                         standardized_path = tuple(sorted(this_path_derived)[0])
-    #                         if standardized_path not in self.variants_counts:
-    #                             self.variants_counts[standardized_path] = 1
-    #                             self.variants.append(standardized_path)
-    #                         else:
-    #                             self.variants_counts[standardized_path] += 1
-    #                     else:
-    #                         new_path = tuple(new_path)
-    #                         if new_path not in self.variants_counts:
-    #                             self.variants_counts[new_path] = 1
-    #                             self.variants.append(new_path)
-    #                         else:
-    #                             self.variants_counts[new_path] += 1
-    #                     return
-    #                 else:
-    #                     return
-    #             else:
-    #                 new_connections = sorted(new_connections)
-    #                 self.__circular_directed_graph_solver(new_path, new_connections, new_left, check_all_kinds,
-    #                                                       palindromic_repeat_vertices)
-
 
 class PathGenerator(object):
     """
@@ -754,6 +611,8 @@ class PathGenerator(object):
         :param use_alignment_cov: use the coverage from assembly graph if False.
         :param min_unit_similarity: minimum contig-len-weighted path similarity shared among units [0.5, 1]
             Used to trigger the decomposition of a long path concatenated by multiple units.
+        :param resume: resume a previous run
+        :param temp_f: a json file recording the generated paths for resuming and debugging
         """
         assert 1 <= num_processes
         assert 0 <= differ_f
