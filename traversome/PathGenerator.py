@@ -1,9 +1,11 @@
 #!/usr/bin/env python
+import os
 
 from loguru import logger
 from traversome.utils import harmony_weights, run_dill_encoded   # MaxTraversalReached
 # WeightedGMMWithEM find_greatest_common_divisor,
 from copy import deepcopy
+from pathlib import Path as fpath
 from scipy.stats import norm
 from collections import OrderedDict
 import numpy as np
@@ -12,9 +14,12 @@ from multiprocessing import Manager, Pool
 import warnings
 import dill
 import random
+import json
+import traceback
+import sys
 
 
-#suppress numpy warnings at exp()
+# suppress numpy warnings at exp()
 warnings.filterwarnings('ignore')
 
 
@@ -55,7 +60,7 @@ class SingleTraversal(object):
 
         # :param not_do_reverse: mainly for iteration, a mark to stop searching from the reverse end
 
-        :return: a candidate variant path. e.g. [("v0", True), ("v1", True), ("v2", False), ("v3", True)]
+        :return: a candidate variants path. e.g. [("v0", True), ("v1", True), ("v2", False), ("v3", True)]
         """
         if not path:
             # randomly choose the read path and the direction
@@ -584,13 +589,15 @@ class PathGenerator(object):
                  decay_t=1000,
                  cov_inert=1.,
                  use_alignment_cov=False,
-                 min_unit_similarity=0.85):
+                 min_unit_similarity=0.85,
+                 resume=False,
+                 temp_dir: fpath = None):
         """
         :param traversome_obj: traversome object
         :param min_num_valid_search: minimum number of valid searches
         :param max_num_valid_search: maximum number of valid searches
-        :param force_circular: force the generated variant topology to be circular
-        :param hetero_chromosome: a variant is allowed to only traverse part of the graph.
+        :param force_circular: force the generated variants topology to be circular
+        :param hetero_chromosome: a variants is allowed to only traverse part of the graph.
             Different variants must be composed of identical set of contigs if hetero_chromosome=False.
         :param differ_f: difference factor [0, INF)
             Weighted by which, reads with the same overlap with current path will be used according to their counts.
@@ -612,7 +619,7 @@ class PathGenerator(object):
         :param min_unit_similarity: minimum contig-len-weighted path similarity shared among units [0.5, 1]
             Used to trigger the decomposition of a long path concatenated by multiple units.
         :param resume: resume a previous run
-        :param temp_f: a json file recording the generated paths for resuming and debugging
+        :param temp_dir: directory recording the generated paths for resuming and debugging
         """
         assert 1 <= num_processes
         assert 0 <= differ_f
@@ -628,6 +635,8 @@ class PathGenerator(object):
         self.min_valid_search = min_num_valid_search
         self.max_valid_search = max_num_valid_search
         self.num_processes = num_processes
+        self.resume = resume
+        self.temp_dir = temp_dir
         self.force_circular = force_circular
         self.hetero_chromosome = hetero_chromosome
         self.__differ_f = differ_f
@@ -658,6 +667,9 @@ class PathGenerator(object):
         self.variants = list()
         self.variants_counts = dict()
 
+        if self.temp_dir:
+            self.temp_dir.mkdir(exist_ok=self.resume)
+
     def generate_heuristic_paths(self, num_processes=None):
         if num_processes is None:  # use the user input value if provided
             num_processes = self.num_processes
@@ -672,20 +684,37 @@ class PathGenerator(object):
         self.estimate_single_copy_vertices()
         logger.debug("start traversing ..")
         self.__previous_len_variant = 0
+
+        # load previous
+        if self.resume and self.temp_dir.exists():
+            self.load_temp()
+            if sum(self.variants_counts.values()) >= self.max_valid_search:  # hit the hard bound
+                logger.info("Maximum num of valid searches reached.")
+                return
+
         if num_processes == 1:
             self.__gen_heuristic_paths_uni()
         else:
             self.__gen_heuristic_paths_mp(num_proc=num_processes)
-    # def generate_heuristic_circular_isomers(self):
-    #     # based on alignments
-    #     logger.warning("This function is under testing .. ")
-    #     if not self.__read_paths_counter_indexed:
-    #         self.index_readpaths_subpaths()
-    #
-    ## different from PathGeneratorGraphOnly.get_all_circular_isomers()
-    ## this seaching is within the scope of long reads-supported paths
-    # def generate_all_circular_isomers(self):
-    #     # based on alignments
+
+    def load_temp(self):
+        len_vars = len(list(self.temp_dir.glob("variant.*.tuple")))
+        if len_vars:
+            logger.info("Loading generated variants ..")
+        for var_id in range(1, len_vars + 1):
+            # although using pickle will be faster, txt is human-readable
+            tuple_f = self.temp_dir.joinpath(f"variant.{var_id}.tuple")
+            count_f = self.temp_dir.joinpath(f"variant.{var_id}.count")
+            try:
+                with open(tuple_f) as input_r, open(count_f) as input_i:
+                    this_variant = eval(input_r.read())
+                    this_count = int(input_i.read())
+                    self.variants.append(this_variant)
+                    self.variants_counts[this_variant] = this_count
+            except FileNotFoundError as e:
+                logger.error(str(e))
+                logger.error("'--previous resume' is not usable when the generated files are illegal!")
+                sys.exit(0)
 
     def __access_read_path_coverage(self,
                                     growing_variants,
@@ -697,9 +726,9 @@ class PathGenerator(object):
                                     reset_num_valid_search=True,
                                     report_detailed_warning=True):
         """
-        Return: (expected_num_searches_to_add, un_traversed_path_ratio)
+        Return: (expected_num_searches_to_add, un_traversed_path_ratio, counts_of_ratio_unchanged)
         """
-        logger.info("assessing read path coverage ..")
+        logger.info("Assessing read path coverage ..")
         logger.debug(str(path_not_traversed))
         logger.debug(str(bool(path_not_traversed)))
         """The minimum requirement is that all observed read_paths were covered"""
@@ -743,7 +772,7 @@ class PathGenerator(object):
                         logger.warning("  read path %i (len=%i, reads=%i): %s" %
                                        (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
                 logger.warning("This may due to 1) insufficient num of valid variants (-N), or "
-                               "2) unrealistic constraints on the variant topology.")
+                               "2) unrealistic constraints on the variants topology.")
                 return
             if current_ratio == previous_un_traversed_ratio:
                 # if the same un_traversed ratio occurs more than 2 times, stop searching for variants
@@ -754,7 +783,7 @@ class PathGenerator(object):
                             logger.warning("  read path %i (len=%i, reads=%i): %s" %
                                            (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
                     logger.warning("This may due to 1) insufficient num of valid variants (-N), or "
-                                   "2) unrealistic constraints on the variant topology.")
+                                   "2) unrealistic constraints on the variants topology.")
                     return 0, current_ratio, None
                 else:
                     new_num_valid_search = num_valid_search * log(0.5 / len(self.read_paths)) / log(current_ratio)
@@ -837,7 +866,7 @@ class PathGenerator(object):
         """
         Currently only use the connection information
 
-        TODO: use estimate variant separation and multiplicity estimation to better estimate this
+        TODO: use estimate variants separation and multiplicity estimation to better estimate this
         """
         for go_v, v_name in enumerate(self.graph.vertex_info):
             if len(self.graph.vertex_info[v_name].connections[True]) < 2 and \
@@ -869,18 +898,38 @@ class PathGenerator(object):
         # logger.info("Start generating candidate paths ..")
         # v_len = len(self.graph.vertex_info)
         # while self.count_valid < self.num_valid_search:
-        break_traverse = False
         previous_ratio = 1.
         previous_ratio_c = 0
-        mum_valid_search = self.min_valid_search
-        while True:
+        num_valid_search = self.min_valid_search
+        variant_ids = {}
+        for go_v, variant in enumerate(self.variants):   # variant id is 1-based for easier manual inspection
+            variant_ids[variant] = go_v + 1
+        self.count_valid = sum(self.variants_counts.values())
+        if self.count_valid >= num_valid_search:
+            add_search, previous_ratio, previous_ratio_c = self.__access_read_path_coverage(
+                growing_variants=self.variants,
+                previous_len_variant=self.__previous_len_variant,
+                num_valid_search=num_valid_search,
+                path_not_traversed=self.__read_paths_not_in_variants,
+                previous_un_traversed_ratio=previous_ratio,
+                previous_un_traversed_ratio_count=previous_ratio_c)
+            if add_search:
+                self.__previous_len_variant = len(self.variants)
+                num_valid_search += add_search
+            else:
+                logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                    len(self.variants), self.count_valid, self.min_valid_search, "-"))
+                logger.info("Sufficient previous valid paths loaded.")
+                return
+        do_traverse = True
+        while do_traverse:
             single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
             single_traversal.run()
             new_path = single_traversal.result_path
             self.count_search += 1
             logger.debug("    traversal {}: {}".format(self.count_search, self.graph.repr_path(new_path)))
             # logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
-            #     len(self.variants), count_valid, mum_valid_search, count_search))
+            #     len(self.variants), count_valid, num_valid_search, count_search))
             is_circular_p = self.graph.is_circular_path(new_path)
             invalid_search = (self.force_circular and not is_circular_p) or \
                              (not self.hetero_chromosome and not self.graph.is_fully_covered_by(new_path))
@@ -899,48 +948,70 @@ class PathGenerator(object):
                     self.count_valid += 1
                     if new_path in self.variants_counts:
                         self.variants_counts[new_path] += 1
+                        var_id = variant_ids[new_path]
+                        self.__save_tmp_counts(var_id, self.variants_counts[new_path])
                         logger.debug("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                            len(self.variants), self.count_valid, mum_valid_search, self.count_search))
+                            len(self.variants), self.count_valid, num_valid_search, self.count_search))
                     else:
                         self.variants_counts[new_path] = 1
                         self.variants.append(new_path)
+                        # variant id is 1-based for easier manual inspection
+                        var_id = variant_ids[new_path] = len(self.variants)
+                        self.__save_tmp_counts(var_id, 1)
+                        self.__save_tmp_path(var_id, new_path)
                         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                            len(self.variants), self.count_valid, mum_valid_search, self.count_search))
+                            len(self.variants), self.count_valid, num_valid_search, self.count_search))
 
                     # hard bound
                     if self.count_valid >= self.max_valid_search:
                         self.__access_read_path_coverage(
                             growing_variants=self.variants,
                             previous_len_variant=self.__previous_len_variant,
-                            num_valid_search=mum_valid_search,
+                            num_valid_search=num_valid_search,
                             path_not_traversed=self.__read_paths_not_in_variants,
                             previous_un_traversed_ratio=previous_ratio,
                             previous_un_traversed_ratio_count=previous_ratio_c,
                             reset_num_valid_search=False)
-                        break_traverse = True
+                        do_traverse = False
                         break
 
-                    if self.count_valid >= mum_valid_search:
+                    if self.count_valid >= num_valid_search:
                         add_search, previous_ratio, previous_ratio_c = self.__access_read_path_coverage(
                             growing_variants=self.variants,
                             previous_len_variant=self.__previous_len_variant,
-                            num_valid_search=mum_valid_search,
+                            num_valid_search=num_valid_search,
                             path_not_traversed=self.__read_paths_not_in_variants,
                             previous_un_traversed_ratio=previous_ratio,
                             previous_un_traversed_ratio_count=previous_ratio_c)
                         if add_search:
                             self.__previous_len_variant = len(self.variants)
-                            mum_valid_search += add_search
+                            num_valid_search += add_search
                         else:
-                            break_traverse = True
+                            do_traverse = False
                             break
-            if break_traverse:
-                break
+            # if break_traverse:
+            #     break
         logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-            len(self.variants), self.count_valid, mum_valid_search, self.count_search))
+            len(self.variants), self.count_valid, num_valid_search, self.count_search))
+
+    def __save_tmp_counts(self, var_id, counts):
+        if self.temp_dir.exists():
+            count_f_tmp = self.temp_dir.joinpath(f"variant.{var_id}.count.TMP")
+            count_f = self.temp_dir.joinpath(f"variant.{var_id}.count")
+            with open(count_f_tmp, "w") as output_i:
+                output_i.write(str(counts))
+            os.rename(count_f_tmp, count_f)
+
+    def __save_tmp_path(self, var_id, new_path):
+        if self.temp_dir.exists():
+            tuple_f_tmp = self.temp_dir.joinpath(f"variant.{var_id}.tuple.TMP")
+            tuple_f = self.temp_dir.joinpath(f"variant.{var_id}.tuple")
+            with open(tuple_f_tmp, "w") as output_t:
+                output_t.write(str(new_path))
+            os.rename(tuple_f_tmp, tuple_f)
 
     def __heuristic_traversal_worker(
-            self, variant, variants_counts, path_not_traversed, g_vars, lock, event, err_queue):
+            self, variants, variant_ids, variants_counts, path_not_traversed, g_vars, lock, event, err_queue):
         """
         single worker of traversal, called by self.get_heuristic_paths_multiprocessing
         starting a new process from dill dumped python object: slow
@@ -980,13 +1051,18 @@ class PathGenerator(object):
                         g_vars.count_valid += 1
                         if new_path in variants_counts:
                             variants_counts[new_path] += 1
+                            var_id = variant_ids[new_path]
+                            self.__save_tmp_counts(var_id, variants_counts[new_path])
                             logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                                len(variant), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
+                                len(variants), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
                         else:
                             variants_counts[new_path] = 1
-                            variant.append(new_path)
+                            variants.append(new_path)
+                            var_id = variant_ids[new_path] = len(variants)
+                            self.__save_tmp_counts(var_id, 1)
+                            self.__save_tmp_path(var_id, new_path)
                             logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                                len(variant), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
+                                len(variants), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
 
                         if g_vars.count_valid >= g_vars.max_valid_search:
                             # break_traverse = True
@@ -1002,7 +1078,7 @@ class PathGenerator(object):
                             # logger.info("num valid search: " + str(g_vars.num_valid_search))
                             add_search, g_vars.previous_ratio, g_vars.previous_ratio_c = \
                                 self.__access_read_path_coverage(
-                                    growing_variants=variant,
+                                    growing_variants=variants,
                                     previous_len_variant=g_vars.previous_len_variant,
                                     num_valid_search=g_vars.num_valid_search,
                                     path_not_traversed=path_not_traversed,
@@ -1010,7 +1086,7 @@ class PathGenerator(object):
                                     previous_un_traversed_ratio_count=g_vars.previous_ratio_c)
                             logger.info("adding searches by " + str(add_search))
                             if add_search:
-                                g_vars.previous_len_variant = len(variant)
+                                g_vars.previous_len_variant = len(variants)
                                 g_vars.num_valid_search += add_search
                             else:
                                 # break_traverse = True
@@ -1027,23 +1103,43 @@ class PathGenerator(object):
             # return "keyboard"
             # raise KeyboardInterrupt
         except Exception as e:
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            tb = traceback.format_exception(exc_type, exc_value, exc_traceback)
+            location = traceback.extract_tb(exc_traceback)[-1]
             event.set()
-            err_queue.put(e)
+            err_queue.put((e, tb, location))
 
     def __gen_heuristic_paths_mp(self, num_proc=2):
         """
         multiprocess version of generating heuristic paths
         starting a new process from dill dumped python object: slow
         """
+        self.count_valid = sum(self.variants_counts.values())
+        if self.count_valid >= self.min_valid_search:
+            # TODO: previous_ratio, etc can be loaded using json
+            add_search, previous_ratio, previous_ratio_c = \
+                self.__access_read_path_coverage(
+                    growing_variants=self.variants,
+                    previous_len_variant=0,
+                    num_valid_search=self.min_valid_search,
+                    path_not_traversed=self.__read_paths_not_in_variants,
+                    previous_un_traversed_ratio=1.,
+                    previous_un_traversed_ratio_count=1)
+            if not add_search:
+                logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                    len(self.variants), self.count_valid, self.min_valid_search, "-"))
+                logger.info("Sufficient previous valid paths loaded.")
+                return
+            else:
+                self.min_valid_search += add_search
+        else:
+            previous_ratio, previous_ratio_c = 1., 1
+
         manager = Manager()
         variants_counts = manager.dict()
+        variant_ids = manager.dict()
         variants = manager.list()
         path_not_traversed = manager.dict()
-        if self.variants_counts:
-            variants_counts.update(self.variants_counts)
-            variants.extend(self.variants)
-        for rp_not_in_v in self.__read_paths_not_in_variants:
-            path_not_traversed[rp_not_in_v] = None
         global_vars = manager.Namespace()
         global_vars.run_status = ""
         global_vars.count_search = self.count_search
@@ -1051,8 +1147,19 @@ class PathGenerator(object):
         global_vars.num_valid_search = self.min_valid_search
         global_vars.max_valid_search = self.max_valid_search
         global_vars.previous_len_variant = self.__previous_len_variant
-        global_vars.previous_ratio = 1.  # initialize the shared variable for recording the ratio of un-traversed reads
-        global_vars.previous_ratio_c = 1
+        global_vars.previous_ratio = previous_ratio
+        # initialize the shared variable for recording the ratio of un-traversed reads
+        global_vars.previous_ratio_c = previous_ratio_c
+
+        if self.variants_counts:
+            variants_counts.update(self.variants_counts)
+            variants.extend(self.variants)
+            for go_v, variant in enumerate(self.variants):   # variant id is 1-based for easier manual inspection
+                variant_ids[variant] = go_v + 1
+            global_vars.previous_len_variant = self.__previous_len_variant = len(self.variants)
+        for rp_not_in_v in self.__read_paths_not_in_variants:
+            path_not_traversed[rp_not_in_v] = None
+
         lock = manager.Lock()
         event = manager.Event()
         error_queue = manager.Queue()
@@ -1061,7 +1168,14 @@ class PathGenerator(object):
         # dump function and args
         logger.info("Serializing the heuristic searching for multiprocessing ..")
         payload = dill.dumps((self.__heuristic_traversal_worker,
-                              (variants, variants_counts, path_not_traversed, global_vars, lock, event, error_queue)))
+                              (variants,
+                               variant_ids,
+                               variants_counts,
+                               path_not_traversed,
+                               global_vars,
+                               lock,
+                               event,
+                               error_queue)))
         # logger.info("Start generating candidate paths ..")
         try:
             jobs = []
@@ -1109,7 +1223,10 @@ class PathGenerator(object):
             event.wait()
             pool_obj.terminate()
             while not error_queue.empty():
-                raise error_queue.get()
+                e, tb, location = error_queue.get()
+                logger.error("\n" + "".join(tb))
+                sys.exit(0)
+                # raise error_queue.get()
             if global_vars.run_status in {"reached", "interrupt"}:
                 # except MaxTraversalReached:
                 # pool_obj.terminate()

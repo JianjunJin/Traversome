@@ -10,6 +10,7 @@ import random
 
 from loguru import logger
 from copy import deepcopy
+from pathlib import Path as fpath
 from collections import OrderedDict
 from traversome.Assembly import Assembly
 from traversome.GraphAlignRecords import GraphAlignRecords
@@ -45,6 +46,7 @@ class Traversome(object):
             keep_temp=False,
             random_seed=12345,
             loglevel="DEBUG",
+            resume=False,
             **kwargs):
         # store input files and params
         self.graph_gfa = graph
@@ -55,6 +57,7 @@ class Traversome(object):
         self.force_circular = force_circular
         self.out_prob_threshold = out_prob_threshold
         self.keep_temp = keep_temp
+        self.resume = resume
         self.kwargs = kwargs
 
         # init logger
@@ -266,7 +269,10 @@ class Traversome(object):
                 max_num_valid_search=max_num_search,
                 num_processes=num_processes,
                 force_circular=self.force_circular,
-                hetero_chromosome=hetero_chromosomes)
+                hetero_chromosome=hetero_chromosomes,
+                temp_dir=fpath(self.outdir).joinpath("paths"),
+                resume=self.resume,
+                )
             generator.generate_heuristic_paths()
             self.variant_paths = generator.variants
         self.__update_params_for_variants()

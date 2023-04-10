@@ -89,6 +89,15 @@ class ChComposition(str, Enum):
     unconstrained = "u"
 
 
+# typer does not support mutually exclusive options yet, use Enum to work around
+# ref: https://github.com/tiangolo/typer/issues/140
+class Previous(str, Enum):
+    terminate = "terminate"
+    resume = "resume"
+    overwrite = "overwrite"
+
+
+
 # deprecated for now
 # @app.command()
 # def ml(
@@ -242,7 +251,11 @@ def thorough(
         help="Num of processes. "),
     n_generations: int = typer.Option(10000, "--mcmc", help="MCMC generations"),
     n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
-    overwrite: bool = typer.Option(False, help="Remove previous result if exists."),
+    prev_run: Previous = typer.Option(
+        Previous.terminate, "--previous",
+        help="terminate: exit with error if previous result exists\n"
+             "resume: continue on latest checkpoint if previous result exists\n"
+             "overwrite: remove previous result if exists."),
     # keep_temp: bool = typer.Option(False, help="Keep temporary files"),
     log_level: LogLevel = typer.Option(
         LogLevel.INFO, "--loglevel", help="Logging level. Use DEBUG for more, ERROR for less."),
@@ -256,7 +269,7 @@ def thorough(
     initialize(
         output_dir=output_dir,
         loglevel=log_level,
-        overwrite=overwrite)
+        previous=prev_run)
     try:
         assert var_gen_scheme != "U", "User-provided is under developing, please use heuristic instead!"
         assert max_valid_search >= min_valid_search, ""
@@ -283,11 +296,12 @@ def thorough(
             n_generations=n_generations,
             n_burn=n_burn,
             random_seed=random_seed,
-            keep_temp=False,
+            # keep_temp=False,
             loglevel=log_level,
             min_alignment_identity_cutoff=min_alignment_identity_cutoff,
             min_alignment_len_cutoff=min_alignment_len_cutoff,
             graph_component_selection=graph_component_selection,
+            resume=prev_run == "resume",
         )
         traverser.run(
             path_gen_scheme=var_gen_scheme,
@@ -300,13 +314,13 @@ def thorough(
     logger.info("Total cost %.4f" % (time.time() - time_zero))
 
 
-def initialize(output_dir, loglevel, overwrite):
+def initialize(output_dir, loglevel, previous):
     """
     clear files if overwrite
     log head and running environment
     """
-    os.makedirs(str(output_dir), exist_ok=overwrite)
-    if overwrite and os.path.isdir(output_dir):
+    os.makedirs(str(output_dir), exist_ok=previous in ("overwrite", "resume"))
+    if previous == "overwrite" and os.path.isdir(output_dir):
         for exist_f in output_dir.glob("*.*"):
             os.remove(exist_f)
     logfile = os.path.join(output_dir, "traversome.log.txt")
