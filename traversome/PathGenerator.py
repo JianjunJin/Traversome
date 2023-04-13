@@ -60,7 +60,7 @@ class SingleTraversal(object):
 
         # :param not_do_reverse: mainly for iteration, a mark to stop searching from the reverse end
 
-        :return: a candidate variants path. e.g. [("v0", True), ("v1", True), ("v2", False), ("v3", True)]
+        :return: a candidate variant path. e.g. [("v0", True), ("v1", True), ("v2", False), ("v3", True)]
         """
         if not path:
             # randomly choose the read path and the direction
@@ -155,7 +155,7 @@ class SingleTraversal(object):
                             for next_v in candidates_next:
                                 v_name, v_end = next_v
                                 current_v_counts = {v_name: current_vs.count(v_name)}
-                                loglike_ls = self.__cal_multiplicity_like(path=deepcopy(path),
+                                loglike_ls = self.__cal_multiplicity_like(path=path,
                                                                           proposed_extension=[next_v],
                                                                           current_v_counts=current_v_counts,
                                                                           old_cov_mean=old_cov_mean,
@@ -164,9 +164,13 @@ class SingleTraversal(object):
                                                                           single_cov_std=single_cov_std,
                                                                           logarithm=True)
                                 like_ls_cached.append(exp(loglike_ls))
-                                weights.append(loglike_ls[0])
+                                weights.append(max(loglike_ls))  # the best scenario
                             logger.trace("      likes: {}".format(weights))
-                            weights = exp(np.array(weights) - max(weights))
+                            #
+                            weights = exp(np.array(weights))
+                            # ratio: likelihood proportion
+                            weights = np.where(weights == np.inf, 1, weights / (1. + weights))
+                            weights = weights / max(weights)
                             chosen_cdd_id = random.choices(range(len(candidates_next)), weights=weights)[0]
                             next_name, next_end = candidates_next[chosen_cdd_id]
                             like_ls_cached = like_ls_cached[chosen_cdd_id]
@@ -281,7 +285,7 @@ class SingleTraversal(object):
                                 cdd_extend = read_path[candidates_ovl_n[go_c]:]
                                 logger.trace("      candidate ext {}: {}".format(go_c, cdd_extend))
                                 current_v_counts = {_v_n: current_vs.count(_v_n) for _v_n, _v_e in cdd_extend}
-                                like_ls = self.__cal_multiplicity_like(path=deepcopy(path),
+                                like_ls = self.__cal_multiplicity_like(path=path,
                                                                        proposed_extension=cdd_extend,
                                                                        current_v_counts=current_v_counts,
                                                                        old_cov_mean=old_cov_mean,
@@ -289,7 +293,8 @@ class SingleTraversal(object):
                                                                        single_cov_mean=single_cov_mean,
                                                                        single_cov_std=single_cov_std)
                                 like_ls_cached.append(like_ls)
-                                weights[go_c] *= max(like_ls)
+                                max_like = max(like_ls)
+                                weights[go_c] *= 1. if max_like == inf else max_like / (1. + max_like)
                             logger.trace("      like_ls_cached: {}".format(like_ls_cached))
                     elif self.__cov_inert:
                         # coverage inertia (multi-chromosomes) and not hetero_chromosome are mutually exclusive
@@ -363,6 +368,7 @@ class SingleTraversal(object):
         :param single_cov_std: passed to avoid repeated calculation
         :return: log_like_ratio_list
         """
+        path = list(deepcopy(path))
         if not current_v_counts:
             current_vs = [v_n for v_n, v_e in path]
             current_v_counts = {v_n: current_vs.count(v_n)
@@ -380,7 +386,7 @@ class SingleTraversal(object):
 
         logger.trace("        current_v_counts:{}".format(current_v_counts))
         # check the multiplicity of every vertices
-        # check the likelihood of making longest extension first, than shorten the extension
+        # check the likelihood of varying size of extension
         log_like_ratio_list = []
         log_like_ratio = 0.
         proposed_lengths = {_v_: self.graph.vertex_info[_v_].len for _v_, _e_ in proposed_extension}
@@ -399,7 +405,7 @@ class SingleTraversal(object):
                 else:
                     old_like = -inf
                 _old_like_cache[v_name] = old_like
-            new_cov_mean, new_cov_std = self.__get_cov_mean(path + [(v_name, v_end)], return_std=True)
+            # new_cov_mean, new_cov_std = self.__get_cov_mean(path + [(v_name, v_end)], return_std=True)
             if current_c:
                 new_single_cov = self.contig_coverages[v_name] / float(current_c + 1)
                 logger.trace("        new_single_cov: {}".format(new_single_cov))
@@ -408,14 +414,14 @@ class SingleTraversal(object):
                 new_like = norm.logpdf(new_single_cov, loc=single_cov_mean, scale=single_cov_std)
             else:
                 new_like = 0.
-            old_cov_mean, old_cov_std = new_cov_mean, new_cov_std
+            # old_cov_mean, old_cov_std = new_cov_mean, new_cov_std
             # weighted by log(length), de-weight later for comparison
             logger.trace("        unweighted loglike ratio: {}".format(new_like - old_like))
             logger.trace("        weighting by length: {}".format(proposed_lengths[v_name]))
             logger.trace("        weighted loglike ratio: {}".format((new_like - old_like) * proposed_lengths[v_name]))
             log_like_ratio += (new_like - old_like) * proposed_lengths[v_name]
             # probability higher than 1.0 (log_ratio > 0.) will remain as 1.0 (log_ratio as 0.)
-            log_like_ratio = min(0, log_like_ratio)
+            # log_like_ratio = min(0, log_like_ratio)  # 2023-04-13 bug fixes
             log_like_ratio_list.append(log_like_ratio)
             # logger.trace("      initial_mean: %.4f, old_mean: %.4f (%.4f), proposed_mean: %.4f (%.4f)" % (
             #     initial_mean, old_cov_mean, old_cov_std, new_cov_mean, new_cov_std))
@@ -431,6 +437,7 @@ class SingleTraversal(object):
             accumulated_v_lengths.insert(0, sum(v_lengths[:longest_ex_len - rev_go]))
         # logger.trace("    proposed_lengths: {}".format(proposed_lengths))
         # logger.trace("    accumulated_v_lengths: {}".format(accumulated_v_lengths))
+        # TODO: weighting and de-weighting can be problematic
         log_like_ratio_list = [_llr / accumulated_v_lengths[_go] for _go, _llr in enumerate(log_like_ratio_list)]
         if logarithm:
             return np.array(log_like_ratio_list, dtype=np.float128)
@@ -460,7 +467,7 @@ class SingleTraversal(object):
             like_ratio_list = cached_like_ls
         else:
             like_ratio_list = self.__cal_multiplicity_like(
-                path=list(deepcopy(path)), proposed_extension=proposed_extension, current_v_counts=current_v_counts)
+                path=path, proposed_extension=proposed_extension, current_v_counts=current_v_counts)
         # step-by-step shorten the extension
         # Given that the acceptance rate should be P_n=\prod_{i=1}^{n}{x_i} for extension with length of n,
         # where x_i is the probability of accepting contig i,
@@ -469,9 +476,14 @@ class SingleTraversal(object):
         #    d_{n-1} = (P_{n-1} - P_n) / (1 - P_n)
         longest_ex_len = len(proposed_extension)
         previous_like = 0.
-        for rev_go, like_ratio in enumerate(like_ratio_list[::-1]):
+        prob_list = np.where(like_ratio_list == np.inf, 1, like_ratio_list / (1. + like_ratio_list))  # 2023-04-13 bug fixes
+        for rev_go, like_ratio in enumerate(prob_list[::-1]):  # 2023-04-13 bug fixes
             proposed_end = longest_ex_len - rev_go
-            draw_prob = (like_ratio - previous_like) / (1. - previous_like)
+            if rev_go == 0:
+                # the first draw
+                draw_prob = like_ratio
+            else:
+                draw_prob = (like_ratio - previous_like) / (1. - previous_like)
             previous_like = like_ratio
             logger.trace("      draw prob:{}".format(draw_prob))
             if draw_prob > random.random():
@@ -596,8 +608,8 @@ class PathGenerator(object):
         :param traversome_obj: traversome object
         :param min_num_valid_search: minimum number of valid searches
         :param max_num_valid_search: maximum number of valid searches
-        :param force_circular: force the generated variants topology to be circular
-        :param hetero_chromosome: a variants is allowed to only traverse part of the graph.
+        :param force_circular: force the generated variant topology to be circular
+        :param hetero_chromosome: a variant is allowed to only traverse part of the graph.
             Different variants must be composed of identical set of contigs if hetero_chromosome=False.
         :param differ_f: difference factor [0, INF)
             Weighted by which, reads with the same overlap with current path will be used according to their counts.
@@ -674,7 +686,6 @@ class PathGenerator(object):
         if num_processes is None:  # use the user input value if provided
             num_processes = self.num_processes
         assert num_processes >= 1
-        logger.info("Generating heuristic variants .. ")
         if self.__use_alignment_cov:
             logger.debug("estimating contig coverages from read paths ..")
             self.estimate_contig_coverages_from_read_paths()
@@ -682,16 +693,16 @@ class PathGenerator(object):
         else:
             self.use_contig_coverage_from_assembly_graph()
         self.estimate_single_copy_vertices()
-        logger.debug("start traversing ..")
-        self.__previous_len_variant = 0
 
         # load previous
+        self.__previous_len_variant = 0
         if self.resume and self.temp_dir.exists():
             self.load_temp()
             if sum(self.variants_counts.values()) >= self.max_valid_search:  # hit the hard bound
                 logger.info("Maximum num of valid searches reached.")
                 return
 
+        logger.info("Generating heuristic variants .. ")
         if num_processes == 1:
             self.__gen_heuristic_paths_uni()
         else:
@@ -772,7 +783,7 @@ class PathGenerator(object):
                         logger.warning("  read path %i (len=%i, reads=%i): %s" %
                                        (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
                 logger.warning("This may due to 1) insufficient num of valid variants (-N), or "
-                               "2) unrealistic constraints on the variants topology.")
+                               "2) unrealistic constraints on the variant topology.")
                 return
             if current_ratio == previous_un_traversed_ratio:
                 # if the same un_traversed ratio occurs more than 2 times, stop searching for variants
@@ -783,7 +794,7 @@ class PathGenerator(object):
                             logger.warning("  read path %i (len=%i, reads=%i): %s" %
                                            (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
                     logger.warning("This may due to 1) insufficient num of valid variants (-N), or "
-                                   "2) unrealistic constraints on the variants topology.")
+                                   "2) unrealistic constraints on the variant topology.")
                     return 0, current_ratio, None
                 else:
                     new_num_valid_search = num_valid_search * log(0.5 / len(self.read_paths)) / log(current_ratio)
@@ -866,7 +877,7 @@ class PathGenerator(object):
         """
         Currently only use the connection information
 
-        TODO: use estimate variants separation and multiplicity estimation to better estimate this
+        TODO: use estimate variant separation and multiplicity estimation to better estimate this
         """
         for go_v, v_name in enumerate(self.graph.vertex_info):
             if len(self.graph.vertex_info[v_name].connections[True]) < 2 and \
@@ -899,7 +910,7 @@ class PathGenerator(object):
         # v_len = len(self.graph.vertex_info)
         # while self.count_valid < self.num_valid_search:
         previous_ratio = 1.
-        previous_ratio_c = 0
+        previous_ratio_c = 1
         num_valid_search = self.min_valid_search
         variant_ids = {}
         for go_v, variant in enumerate(self.variants):   # variant id is 1-based for easier manual inspection
@@ -921,6 +932,9 @@ class PathGenerator(object):
                     len(self.variants), self.count_valid, self.min_valid_search, "-"))
                 logger.info("Sufficient previous valid paths loaded.")
                 return
+        elif self.count_valid:
+            logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
+                len(self.variants), self.count_valid, self.min_valid_search, "-"))
         do_traverse = True
         while do_traverse:
             single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
@@ -1316,7 +1330,7 @@ class PathGenerator(object):
         if not candidate_num_units:  # or candidate_num_units == [1]:
             return [circular_path]
         else:
-            v_lengths = np.array(list(v_lengths.values()))
+            v_lengths = np.array([self.graph.vertex_info[v_n_].len for v_n_, v_e_ in unique_vne_list])
             v_copies = np.array(list(vne_to_copy.values()))
             # not very important TODO account for uni_overlap; mutable overlaps; uni_overlap = self.graph.uni_overlap()
             total_base_len = float(sum(v_lengths * v_copies))  # ignore overlap effect
