@@ -3,6 +3,7 @@
 """
 Command-line Interface to traversome
 """
+import shutil
 import time
 time_zero = time.time()
 import os, sys, platform
@@ -257,7 +258,7 @@ def thorough(
         help="terminate: exit with error if previous result exists\n"
              "resume: continue on latest checkpoint if previous result exists\n"
              "overwrite: remove previous result if exists."),
-    # keep_temp: bool = typer.Option(False, help="Keep temporary files"),
+    keep_temp: bool = typer.Option(False, help="Keep temporary files"),
     log_level: LogLevel = typer.Option(
         LogLevel.INFO, "--loglevel", help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
@@ -272,6 +273,14 @@ def thorough(
         loglevel=log_level,
         previous=prev_run)
     try:
+        # disable caching can solve the temp file issue, but largely reduce performance
+        # import theano
+        # theano.config.cxx = ""
+        # set the caching directory to be inside each output directory
+        theano_cache_dir = output_dir.joinpath("theano.cache")
+        os.environ["THEANO_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
+        os.environ["AESARA_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
+
         assert var_gen_scheme != "U", "User-provided is under developing, please use heuristic instead!"
         assert max_valid_search >= min_valid_search, ""
         from traversome.traversome import Traversome
@@ -308,6 +317,23 @@ def thorough(
             path_gen_scheme=var_gen_scheme,
             hetero_chromosomes=composition == "u"
         )
+        # remove theano cached files if not keeping temporary files
+        if not keep_temp:
+            # try:
+            #     import theano.gof.compiledir
+            #     theano.gof.compiledir.compiledir_purge()
+            # except ModuleNotFoundError:
+            #     import aesara.compile.compiledir
+            #     from aesara.link.c.basic import get_module_cache
+            #     # aesara.compile.compiledir.cleanup()
+            #     # cache = get_module_cache(init_args=dict(do_refresh=False))
+            #     # cache.clear_old()
+            #     aesara.compile.compiledir.basecompiledir_purge()
+            # theano.gof.cc.cmodule.clear_compiledir()
+            # for lock_f in theano_cache_dir.glob("*/.lock"):
+            #     os.remove(lock_f)
+            shutil.rmtree(theano_cache_dir, ignore_errors=True)
+            # os.system("rm -rf " + str(theano_cache_dir))
     except SystemExit:
         pass
     except:
