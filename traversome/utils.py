@@ -405,7 +405,7 @@ class VariantSubPathsGenerator:
         self.read_paths_hashed = read_paths_hashed
         self.variant_subpath_counters = {}
 
-    @cache
+    @cache(maxsize=None)
     def gen_subpaths(self, variant_path):
         if variant_path in self.variant_subpath_counters:
             return self.variant_subpath_counters[variant_path]
