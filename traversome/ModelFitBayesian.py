@@ -3,8 +3,16 @@ import os.path
 
 from loguru import logger
 from collections import OrderedDict
-import pymc3 as pm
-import theano.tensor as tt
+try:
+    import pymc3 as pm
+except ModuleNotFoundError:
+    # newer version of pymc
+    import pymc as pm
+try:
+    import theano.tensor as tt
+except ModuleNotFoundError:
+    # newer version of pymc uses aesara (Theano-PyMC), instead of Theano which was no more maintained
+    import aesara.tensor as tt
 import numpy as np
 import arviz as az
 from typing import OrderedDict as typingODict
