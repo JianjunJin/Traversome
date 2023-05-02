@@ -29,9 +29,8 @@ else:
     install_requires = [
         "dill",
         "numpy",
-        # "pandas",
         "scipy",
-    	"pymc3",
+    	"pymc>=4",
         "symengine",
         "sympy",
         "matplotlib",
