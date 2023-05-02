@@ -36,9 +36,16 @@ else:
     sys.exit(0)
 
 if MAJOR_VERSION == 3 and MINOR_VERSION >= 9:
+    # functools.cache is a decorator that was added in Python 3.9 as a simple, lightweight, unbounded function cache
     from functools import cache
 else:
-    from functools import lru_cache as cache
+    # functools.lru_cache is a decorator that was added in Python 3.2 to cache the results of function calls
+    # using the Least Recently Used (LRU) strategy
+    from functools import lru_cache
+
+    # define a cache function that is equivalent to using lru_cache with maxsize=None
+    def cache(user_function):
+        return lru_cache(maxsize=None)(user_function)
 
 
 def complementary_seqs(input_seq_iter):
@@ -405,7 +412,7 @@ class VariantSubPathsGenerator:
         self.read_paths_hashed = read_paths_hashed
         self.variant_subpath_counters = {}
 
-    @cache(maxsize=None)
+    @cache
     def gen_subpaths(self, variant_path):
         if variant_path in self.variant_subpath_counters:
             return self.variant_subpath_counters[variant_path]
