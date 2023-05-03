@@ -350,7 +350,7 @@ def initialize(output_dir, loglevel, previous):
     if previous == "overwrite" and os.path.isdir(output_dir):
         for exist_f in output_dir.glob("*.*"):
             os.remove(exist_f)
-        rmdir(output_dir.joinpath("paths"))
+        rmdir(output_dir.joinpath("paths"), ignore_errors=True)
     logfile = os.path.join(output_dir, "traversome.log.txt")
     from loguru import logger
     setup_simple_logger(sink_list=[logfile], loglevel=loglevel)
