@@ -740,14 +740,14 @@ class PathGenerator(object):
         Return: (expected_num_searches_to_add, un_traversed_path_ratio, counts_of_ratio_unchanged)
         """
         logger.info("Assessing read path coverage ..")
-        logger.debug(str(path_not_traversed))
-        logger.debug(str(bool(path_not_traversed)))
+        logger.debug("  paths not traversed: " + str(path_not_traversed))
+        logger.debug("  paths not traversed: " + str(bool(path_not_traversed)))
         """The minimum requirement is that all observed read_paths were covered"""
         if not path_not_traversed:
             return 0, 0, None
         else:
             # must use dict.keys() to iterate a manager-dict in a child process
-            logger.debug(str([str(_rp) + ";  " for _rp in path_not_traversed.keys()]))
+            # logger.debug(str([str(_rp) + ";  " for _rp in path_not_traversed.keys()]))
             for variant_path in growing_variants[previous_len_variant:]:
                 logger.debug("check variant_path " + str(variant_path))
                 # TODO if memory can be shared in a pool without serialization, this can be much faster
@@ -758,6 +758,7 @@ class PathGenerator(object):
                         del path_not_traversed[sub_path]
                 # the current get_variant_sub_paths function only consider subpaths with length > 1
                 # TODO: get subpath adaptive to length=1, more general and less restrictions
+                # TODO: important!!!!
                 # after which the following block can be removed
                 for single_v, single_e in variant_path:
                     single_sbp = ((single_v, False),)
@@ -779,6 +780,7 @@ class PathGenerator(object):
             if not reset_num_valid_search:
                 logger.warning("{} read paths not traversed".format(len(path_not_traversed)))
                 if report_detailed_warning:
+                    # must use dict.keys() to iterate a manager-dict in a child process
                     for go_p, p_n_t in enumerate(sorted(list(path_not_traversed.keys()))):
                         logger.warning("  read path %i (len=%i, reads=%i): %s" %
                                        (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
@@ -790,6 +792,7 @@ class PathGenerator(object):
                 if previous_un_traversed_ratio_count > 2:
                     logger.warning("{} read paths not traversed".format(len(path_not_traversed)))
                     if report_detailed_warning:
+                        # must use dict.keys() to iterate a manager-dict in a child process
                         for go_p, p_n_t in enumerate(sorted(list(path_not_traversed.keys()))):
                             logger.warning("  read path %i (len=%i, reads=%i): %s" %
                                            (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
