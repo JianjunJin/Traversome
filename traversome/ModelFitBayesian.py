@@ -33,7 +33,7 @@ class ModelFitBayesian(object):
             chosen_ids = OrderedDict([(self.traversome.be_unidentifiable_to[variant_id], True)
                                       for variant_id in chosen_ids])
         else:
-            chosen_ids = OrderedDict([(variant_id, True) for variant_id in self.traversome.merged_variants])
+            chosen_ids = OrderedDict([(variant_id, True) for variant_id in self.traversome.repr_to_merged_variants])
         chosen_num = len(chosen_ids)
         with pm.Model() as variants_model:
             # Because many traversome attributes including subpath information were created using the original variant
@@ -56,8 +56,11 @@ class ModelFitBayesian(object):
             # sample from the distribution
 
             # uses the BFGS optimization algorithm to find the maximum of the log-posterior
-            logger.info("Searching the maximum of the log-posterior ..")
-            start = pm.find_MAP(model=variants_model)
+            # logger.info("Searching the maximum of the log-posterior ..")
+            # # https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.find_MAP.html
+            # # find_MAP should not be used to initialize the NUTS sampler. Simply call pymc.sample()
+            # # and it will automatically initialize NUTS in a better way.
+            # start = pm.find_MAP(model=variants_model)
             # trace = pm.sample_smc(n_generations, parallel=False)
 
             # In an upcoming release,
@@ -69,7 +72,7 @@ class ModelFitBayesian(object):
                 discard_tuned_samples=True,
                 cores=1,
                 init='adapt_diag',
-                start=start,
+                # start=start,
                 return_inferencedata=True)
 
             logger.info("Summarizing the MCMC traces ..")
