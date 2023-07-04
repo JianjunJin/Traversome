@@ -68,7 +68,7 @@ class ModelFitMaxLike(object):
                  all_sub_paths,
                  variant_subpath_counters,
                  sbp_to_sbp_id,
-                 merged_variants,
+                 repr_to_merged_variants,
                  be_unidentifiable_to,
                  loglevel):
         self.model = model
@@ -77,7 +77,7 @@ class ModelFitMaxLike(object):
         self.all_sub_paths = all_sub_paths
         self.variant_subpath_counters = variant_subpath_counters
         self.sbp_to_sbp_id = sbp_to_sbp_id
-        self.merged_variants = merged_variants
+        self.repr_to_merged_variants = repr_to_merged_variants
         self.be_unidentifiable_to = be_unidentifiable_to
         self.loglevel = loglevel
 
@@ -102,8 +102,8 @@ class ModelFitMaxLike(object):
             #                           for variant_id in chosen_ids_set])
             chosen_ids = {self.be_unidentifiable_to[variant_id] for variant_id in chosen_ids}
         else:
-            # chosen_ids_set = OrderedDict([(variant_id, True) for variant_id in self.merged_variants])
-            chosen_ids = {variant_id for variant_id in self.merged_variants}
+            # chosen_ids_set = OrderedDict([(variant_id, True) for variant_id in self.repr_to_merged_variants])
+            chosen_ids = {variant_id for variant_id in self.repr_to_merged_variants}
         # Because many traversome attributes including subpath information were created using the original variant
         # ids, so here we prefer not making traversome.get_multinomial_like_formula complicated. Instead, we create
         # variant_percents with foo values inserted when that variant id is not in chosen_ids_set.
@@ -145,8 +145,8 @@ class ModelFitMaxLike(object):
             #                           for variant_id in chosen_ids])
             chosen_ids = {self.be_unidentifiable_to[variant_id] for variant_id in chosen_ids}
         else:
-            # chosen_ids = OrderedDict([(variant_id, True) for variant_id in self.merged_variants])
-            chosen_ids = {variant_id for variant_id in self.merged_variants}
+            # chosen_ids = OrderedDict([(variant_id, True) for variant_id in self.repr_to_merged_variants])
+            chosen_ids = {variant_id for variant_id in self.repr_to_merged_variants}
         # Because many traversome attributes including subpath information were created using the original variant
         # ids, so here we prefer not making traversome.get_multinomial_like_formula complicated. Instead, we create
         # variant_percents with foo values inserted when that variant id is not in chosen_ids_set.
@@ -234,7 +234,7 @@ class ModelFitMaxLike(object):
                     # for var_id in list(chosen_ids_set):
                     #     if abs(previous_prop[var_id] - 0.) < diff_tolerance:
                     #         del chosen_ids_set[var_id]
-                    #         for uid_var_id in self.traversome.merged_variants[var_id]:
+                    #         for uid_var_id in self.traversome.repr_to_merged_variants[var_id]:
                     #             del previous_prop[uid_var_id]
                     #         del previous_echo[self.__str_rep_id(var_id)]
                     #         logger.info("Drop {}".format(self.__str_rep_id(var_id)))
@@ -256,7 +256,7 @@ class ModelFitMaxLike(object):
         for var_id in list(chosen_ids):
             if abs(representative_props[var_id] - 0.) < diff_tolerance:
                 chosen_ids.remove(var_id)
-                for uid_var_id in self.merged_variants[var_id]:
+                for uid_var_id in self.repr_to_merged_variants[var_id]:
                     del representative_props[uid_var_id]
                 del echo_props[self.__str_rep_id(var_id)]
                 logger.info("Drop id_{}".format(self.__str_rep_id(var_id)))
@@ -382,11 +382,11 @@ class ModelFitMaxLike(object):
 
     def __summarize_run_prop(self, success_run, within_var_ids):
         prop_dict = {}
-        representatives = [rep_id for rep_id in sorted(within_var_ids) if rep_id in self.merged_variants]
+        representatives = [rep_id for rep_id in sorted(within_var_ids) if rep_id in self.repr_to_merged_variants]
         echo_prop = OrderedDict()
         for go, this_prop in enumerate(success_run.x):
             echo_prop[self.__str_rep_id(representatives[go])] = this_prop
-            unidentifiable_var_ids = self.merged_variants[representatives[go]]
+            unidentifiable_var_ids = self.repr_to_merged_variants[representatives[go]]
             this_prop /= len(unidentifiable_var_ids)
             for uid_var_id in unidentifiable_var_ids:
                 prop_dict[uid_var_id] = this_prop
@@ -394,7 +394,7 @@ class ModelFitMaxLike(object):
         return use_prop, echo_prop
 
     def __str_rep_id(self, rep_id):
-        return "+".join([str(_uid_var_id) for _uid_var_id in self.merged_variants[rep_id]])
+        return "+".join([str(_uid_var_id) for _uid_var_id in self.repr_to_merged_variants[rep_id]])
 
     def get_neg_likelihood_of_var_freq(self, within_variant_ids: set = None, scipy_style=True):
         # log_like_formula = self.traversome.get_likelihood_binomial_formula(
