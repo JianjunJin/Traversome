@@ -87,7 +87,7 @@ class Traversome(object):
         self.be_unidentifiable_to = {}
         # use the merged variants to represent each set of variants.
         # within each set the variants are unidentifiable to each other
-        self.merged_variants = {}
+        self.repr_to_merged_variants = {}
         # The result of model fitting using ml/mc, the base to update above model information for a second fitting run
         # {variant_id: percent}
         self.variant_proportions = OrderedDict()
@@ -154,15 +154,17 @@ class Traversome(object):
             num_processes=self.num_processes,
             hetero_chromosomes=hetero_chromosomes
         )
-        logger.info("======== VARIANTS SEARCHING ENDS ========\n")
 
-        logger.info("======== MODEL SELECTION & FITTING STARTS ========")
         if self.num_put_variants == 0:
             logger.error("No candidate variants found!")
+            logger.info("======== VARIANTS SEARCHING ENDS ========\n")
             raise SystemExit(0)
-        elif self.num_put_variants == 1:
+        elif self.num_put_variants == 1 or len(self.repr_to_merged_variants) == 1:
             self.variant_proportions[0] = 1.
+            logger.info("======== VARIANTS SEARCHING ENDS ========\n")
         else:
+            logger.info("======== VARIANTS SEARCHING ENDS ========\n")
+            logger.info("======== MODEL SELECTION & FITTING STARTS ========")
             logger.debug("Estimating candidate variant frequencies using Maximum Likelihood...")
             # if self.kwargs["criterion"] == "single":
             #     # single point estimate
@@ -172,10 +174,11 @@ class Traversome(object):
             self.variant_proportions = self.fit_model_using_reverse_model_selection(
                 criterion=self.kwargs["model_criterion"])
             # update candidate info according to the result of reverse model selection
-            if len(self.variant_proportions) > 1:
+            # assure self.repr_to_merged_variants was generated
+            if len([repr_v for repr_v in self.variant_proportions if repr_v in self.repr_to_merged_variants]) > 1:
                 logger.debug("Estimating candidate variant frequencies using Bayesian MCMC ...")
                 self.variant_proportions = self.fit_model_using_bayesian_mcmc(chosen_ids=self.variant_proportions)
-        logger.info("======== MODEL SELECTION & FITTING ENDS ========\n")
+            logger.info("======== MODEL SELECTION & FITTING ENDS ========\n")
 
         self.output_seqs()
 
@@ -292,7 +295,7 @@ class Traversome(object):
         elif self.num_put_variants == 0:
             logger.warning("No valid configuration found for the input assembly graph.")
         else:
-            # self.merged_variants = OrderedDict([(0, [0])])
+            # self.repr_to_merged_variants = OrderedDict([(0, [0])])
             logger.warning("Only one genomic configuration found for the input assembly graph.")
 
     # TODO get subpath adaptive to length=1, more general and less restrictions
@@ -307,8 +310,9 @@ class Traversome(object):
         # this_overlap = self.graph.uni_overlap()
         # self.variant_subpath_counters = OrderedDict()
         for this_var_p in self.variant_paths:
-            foo = self.get_variant_sub_paths(this_var_p)
-        self.variant_subpath_counters = self.subpath_generator.variant_subpath_counters
+            # foo = self.get_variant_sub_paths(this_var_p)
+            self.variant_subpath_counters[this_var_p] = self.get_variant_sub_paths(this_var_p)
+        # self.variant_subpath_counters should be only a subset of self.subpath_generator.variant_subpath_counters
 
         # create unidentifiable table
         self.be_unidentifiable_to = OrderedDict()
@@ -322,11 +326,11 @@ class Traversome(object):
                             self.variant_subpath_counters[self.variant_paths[represent_iso_id]]:
                         self.be_unidentifiable_to[check_iso_id] = represent_iso_id
         # logger.info(str(self.be_unidentifiable_to))
-        self.merged_variants = \
+        self.repr_to_merged_variants = \
             OrderedDict([(rps_id, []) for rps_id in sorted(set(self.be_unidentifiable_to.values()))])
         for check_iso_id, rps_iso_id in self.be_unidentifiable_to.items():
-            self.merged_variants[rps_iso_id].append(check_iso_id)
-        for unidentifiable_ids in self.merged_variants.values():
+            self.repr_to_merged_variants[rps_iso_id].append(check_iso_id)
+        for unidentifiable_ids in self.repr_to_merged_variants.values():
             if len(unidentifiable_ids) > 1:
                 logger.warning("Mutually unidentifiable paths in current alignment: %s" % unidentifiable_ids)
 
@@ -339,7 +343,7 @@ class Traversome(object):
                     self.all_sub_paths[this_sub_path] = SubPathInfo()
                 self.all_sub_paths[this_sub_path].from_variants[go_variant] = this_sub_count
 
-        # to simplify downstream calculation, remove shared sub-paths shared by all variants
+        # to simplify downstream calculation, remove shared sub-paths (with same counts) shared by all variants
         for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
             if len(this_sub_path_info.from_variants) == self.num_put_variants and \
                     len(set(this_sub_path_info.from_variants.values())) == 1:
@@ -351,8 +355,9 @@ class Traversome(object):
 
         if not self.all_sub_paths:
             logger.error("No valid subpath found!")
-            raise SystemExit(0)
+            # raise SystemExit(0)
             # sys.exit(1)
+            return
 
         # match graph alignments to all_sub_paths
         for read_path, record_ids in self.read_paths.items():
@@ -713,7 +718,7 @@ class Traversome(object):
             all_sub_paths=self.all_sub_paths,
             variant_subpath_counters=self.variant_subpath_counters,
             sbp_to_sbp_id=self.sbp_to_sbp_id,
-            merged_variants=self.merged_variants,
+            repr_to_merged_variants=self.repr_to_merged_variants,
             be_unidentifiable_to=self.be_unidentifiable_to,
             loglevel=self.loglevel)
         return self.max_like_fit.point_estimate(chosen_ids=chosen_ids)
@@ -727,7 +732,7 @@ class Traversome(object):
             all_sub_paths=self.all_sub_paths,
             variant_subpath_counters=self.variant_subpath_counters,
             sbp_to_sbp_id=self.sbp_to_sbp_id,
-            merged_variants=self.merged_variants,
+            repr_to_merged_variants=self.repr_to_merged_variants,
             be_unidentifiable_to=self.be_unidentifiable_to,
             loglevel=self.loglevel)
         return self.max_like_fit.reverse_model_selection(
@@ -752,7 +757,7 @@ class Traversome(object):
     #     self.be_unidentifiable_to = {}
     #     # use the merged variants to represent each set of variants.
     #     # within each set the variants are unidentifiable to each other
-    #     self.merged_variants = {}
+    #     self.repr_to_merged_variants = {}
     #
     #     for
 
@@ -767,15 +772,19 @@ class Traversome(object):
         sorted_rank = sorted(list(self.variant_proportions), key=lambda x: -self.variant_proportions[x])
         # for go_isomer, this_prob in self.ext_component_proportions.items():
         for count_seq, go_variant_set in enumerate(sorted_rank):
+            if self.repr_to_merged_variants and go_variant_set not in self.repr_to_merged_variants:
+                # when self.generate_all_informative_sub_paths() was not called,
+                # bool(repr_to_merged_variants)==False - TODO: when?
+                continue
             this_prob = self.variant_proportions[go_variant_set]
             if this_prob > self.out_prob_threshold:
                 this_base_name = "variant.%0{}i".format(out_digit) % (count_seq + 1)
                 seq_file_name = os.path.join(self.outdir, this_base_name + ".fasta")
                 with open(seq_file_name, "w") as output_handler:
-                    if self.merged_variants:
-                        unidentifiable_ids = self.merged_variants[go_variant_set]
+                    if self.repr_to_merged_variants:
+                        unidentifiable_ids = self.repr_to_merged_variants[go_variant_set]
                     else:
-                        # when self.generate_all_informative_sub_paths() was not called
+                        # when self.generate_all_informative_sub_paths() was not called - TODO: when?
                         unidentifiable_ids = [go_variant_set]
                     len_un_id = len(unidentifiable_ids)
                     freq_mark = "@{}.".format(count_seq + 1) if len_un_id > 1 else ""
