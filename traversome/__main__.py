@@ -272,12 +272,12 @@ def thorough(
         output_dir=output_dir,
         loglevel=log_level,
         previous=prev_run)
+    theano_cache_dir = output_dir.joinpath("theano.cache")
     try:
         # disable caching can solve the temp file issue, but largely reduce performance
         # import theano
         # theano.config.cxx = ""
         # set the caching directory to be inside each output directory
-        theano_cache_dir = output_dir.joinpath("theano.cache")
         os.environ["THEANO_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
         os.environ["AESARA_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
 
@@ -313,32 +313,35 @@ def thorough(
             graph_component_selection=graph_component_selection,
             resume=prev_run == "resume",
         )
-        traverser.run(
+        traverser.\
+            run(
             path_gen_scheme=var_gen_scheme,
             hetero_chromosomes=composition == "u"
         )
-        # remove theano cached files if not keeping temporary files
-        if not keep_temp:
-            # try:
-            #     import theano.gof.compiledir
-            #     theano.gof.compiledir.compiledir_purge()
-            # except ModuleNotFoundError:
-            #     import aesara.compile.compiledir
-            #     from aesara.link.c.basic import get_module_cache
-            #     # aesara.compile.compiledir.cleanup()
-            #     # cache = get_module_cache(init_args=dict(do_refresh=False))
-            #     # cache.clear_old()
-            #     aesara.compile.compiledir.basecompiledir_purge()
-            # theano.gof.cc.cmodule.clear_compiledir()
-            # for lock_f in theano_cache_dir.glob("*/.lock"):
-            #     os.remove(lock_f)
-            shutil.rmtree(theano_cache_dir, ignore_errors=True)
-            # os.system("rm -rf " + str(theano_cache_dir))
+        del traverser
     except SystemExit:
         pass
     except:
         logger.exception("")
     logger.info("Total cost %.4f" % (time.time() - time_zero))
+    # remove theano cached files if not keeping temporary files
+    # TODO WARNING (theano.link.c.cmodule) and FileNotFoundError to be fixed
+    # if not keep_temp:
+    #     try:
+    #         import theano.gof.compiledir
+    #         theano.gof.compiledir.compiledir_purge()
+    #     except ModuleNotFoundError:
+    #         import aesara.compile.compiledir
+    #         from aesara.link.c.basic import get_module_cache
+    #         # aesara.compile.compiledir.cleanup()
+    #         # cache = get_module_cache(init_args=dict(do_refresh=False))
+    #         # cache.clear_old()
+    #         aesara.compile.compiledir.basecompiledir_purge()
+    #     theano.gof.cc.cmodule.clear_compiledir()
+    #     for lock_f in theano_cache_dir.glob("*/.lock"):
+    #         os.remove(lock_f)
+    #     shutil.rmtree(theano_cache_dir, ignore_errors=True)
+    #     os.system("rm -rf " + str(theano_cache_dir))
 
 
 def initialize(output_dir, loglevel, previous):
@@ -348,9 +351,10 @@ def initialize(output_dir, loglevel, previous):
     """
     os.makedirs(str(output_dir), exist_ok=previous in ("overwrite", "resume"))
     if previous == "overwrite" and os.path.isdir(output_dir):
+        rmdir(output_dir.joinpath("paths"), ignore_errors=True)
+        rmdir(output_dir.joinpath("theano.cache"), ignore_errors=True)
         for exist_f in output_dir.glob("*.*"):
             os.remove(exist_f)
-        rmdir(output_dir.joinpath("paths"), ignore_errors=True)
     logfile = os.path.join(output_dir, "traversome.log.txt")
     from loguru import logger
     setup_simple_logger(sink_list=[logfile], loglevel=loglevel)
