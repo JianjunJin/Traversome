@@ -330,6 +330,7 @@ class AssemblySimple(object):
                 sequence = elements.pop(0)
                 seq_len_tag = None
                 kmer_count = None
+                seq_depth = None
                 seq_depth_tag = None
                 sh_256_val = None
                 other_attributes = {}
@@ -392,10 +393,16 @@ class AssemblySimple(object):
                 if (kmer_count is not None) or (seq_depth_tag is not None):
                     
                     # normalize kmer count to be per-bp
-                    if kmer_count is not None:
-                        seq_depth = kmer_count / float(seq_len)
-                    else:  # seq_depth_tag is not None:
+                    if seq_depth_tag is not None:
                         seq_depth = seq_depth_tag
+                    else:
+                        seq_depth = kmer_count / float(seq_len)
+                    # TODO: SPAdes output graph_after_simplification has equal seq_depth_tag and kmer_count
+                    #       which is weird. Thus, modified into above.
+                    # if kmer_count is not None:
+                    #     seq_depth = kmer_count / float(seq_len)
+                    # else:  # seq_depth_tag is not None:
+                    #     seq_depth = seq_depth_tag
                     
                     # if seqdepth is in suitable range then save data
                     if self.min_cov <= seq_depth <= self.max_cov:
@@ -685,6 +692,7 @@ class AssemblySimple(object):
             out_file += ".gfa"
         if not other_attr:
             other_attr = {}
+        logger.debug("  writing graph to " + str(out_file))
         out_file_handler = open(out_file, "w")
         for vertex_name in self.vertex_info:
             out_file_handler.write("\t".join(
