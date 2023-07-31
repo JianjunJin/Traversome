@@ -378,7 +378,7 @@ class GraphAlignRecords(object):
     def __init__(
             self,
             alignment_file,
-            alignment_format="GAF",
+            alignment_format=None,
             gen_multi_hits_prob=False,
             # min_aligned_path_len=0,
             min_align_len=0,
@@ -392,8 +392,11 @@ class GraphAlignRecords(object):
     ):
         # store params to self
         self.alignment_file = alignment_file
-        assert alignment_format in ("GAF", "SPA-TSV"), "Unsupported format {}!".format(alignment_format)  # currently
-        self.alignment_format = alignment_format
+        if alignment_format is None:
+            self.alignment_format = self.parse_alignment_format_from_postfix()
+        else:
+            self.alignment_format = alignment_format
+        assert self.alignment_format in ("GAF", "SPA-TSV"), "Unsupported format {}!".format(alignment_format)
         self.parse_cigar = parse_cigar
         self.min_align_len = min_align_len
         # self.min_aligned_path_len = min_aligned_path_len
@@ -1115,6 +1118,15 @@ class GraphAlignRecords(object):
         else:
             # TODO
             pass
+
+    def parse_alignment_format_from_postfix(self):
+        if self.alignment_file.lower().endswith(".gaf"):
+            alignment_format = "GAF"
+        elif self.alignment_file.lower().endswith(".tsv"):
+            alignment_format = "SPA-TSV"
+        else:
+            raise Exception("Please denote the alignment format using adequate postfix (.gaf/.tsv)")
+        return alignment_format
 
     def __iter__(self):
         for query_name, read_record in self.read_records.items():
