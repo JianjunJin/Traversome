@@ -15,7 +15,7 @@ from collections import OrderedDict
 from traversome.Assembly import Assembly
 from traversome.GraphAlignRecords import GraphAlignRecords
 from traversome.utils import \
-    SubPathInfo, Criterion, VariantSubPathsGenerator  # ProcessingGraphFailed,
+    SubPathInfo, Criterion, VariantSubPathsGenerator, executable, run_graph_aligner  # ProcessingGraphFailed,
 from traversome.ModelFitMaxLike import ModelFitMaxLike
 from traversome.ModelFitBayesian import ModelFitBayesian
 from traversome.PathGenerator import PathGenerator
@@ -39,6 +39,7 @@ class Traversome(object):
             self,
             graph,
             alignment,
+            reads_file,
             outdir,
             num_processes=1,
             force_circular=True,
@@ -51,7 +52,7 @@ class Traversome(object):
         # store input files and params
         self.graph_gfa = graph
         self.alignment_file = alignment
-        self.alignment_format = self.parse_alignment_format_from_postfix()
+        self.reads_file = reads_file
         self.outdir = outdir
         self.num_processes = num_processes
         self.force_circular = force_circular
@@ -101,26 +102,55 @@ class Traversome(object):
         self.random = random
         self.random.seed(random_seed)
 
-    def run(self, path_gen_scheme="H", hetero_chromosomes=True):
+    def run(self, path_gen_scheme="H", uni_chromosome=False):
         """
         Parse the assembly graph files ...
         """
         logger.info("======== DIGESTING DATA STARTS ========")
+        # TODO use json to store env parameters later
+        logger.info("constraint chromosome topology to be circular: " + str(self.force_circular))
+        logger.info("constraint chromosome composition to be single: " + str(uni_chromosome))
+
         self.graph = Assembly(self.graph_gfa)
         self.graph.update_vertex_clusters()
+        # choose the component
         graph_component_selection = self.kwargs.get("graph_component_selection", 0)
         if isinstance(graph_component_selection, int) or isinstance(graph_component_selection, slice):
             self.graph.reduce_graph_by_weight(component_ids=graph_component_selection)
         elif isinstance(graph_component_selection, float):
             self.graph.reduce_graph_by_weight(cutoff_to_total=graph_component_selection)
+        # merge graph if possible
+        if self.graph.merge_all_possible_vertices():
+            if self.alignment_file:
+                # the graph was changed and cannot be traced back to the names in the alignment
+                # this can also be moved down considering structure, however more computational efficient to be here
+                raise Exception("Graph be simplified by merging all possible nodes ! "
+                                "Please provide the raw reads, or simplify the graph and redo the alignment!")
+            else:
+                logger.info("  graph merged")
+                self.graph_gfa = os.path.join(self.outdir, "processed.gfa")
+                self.graph.write_to_gfa(self.graph_gfa)
+        self.graph.update_vertex_clusters()
         logger.info("  #contigs in total: {}".format(len(self.graph.vertex_info)))
         logger.info("  #contigs in each component: {}".format(sorted([len(cls) for cls in self.graph.vertex_clusters])))
 
+        if not self.alignment_file:
+            if self.resume and os.path.exists(os.path.join(self.outdir, "alignment.gaf")):
+                self.alignment_file = os.path.join(self.outdir, "alignment.gaf")
+            elif executable("GraphAligner"):  # TODO: add path option
+                self.alignment_file = os.path.join(self.outdir, "alignment.gaf")
+                # TODO: pass options to GraphAligner
+                run_graph_aligner(
+                    graph_file=self.graph_gfa,
+                    seq_file=self.reads_file,
+                    alignment_file=self.alignment_file,
+                    num_processes=self.num_processes)
+            else:
+                raise Exception("GraphAligner not available or damaged!")
         alignment = GraphAlignRecords(
             self.alignment_file,
-            alignment_format=self.alignment_format,
             min_align_len=self.kwargs.get("min_alignment_len_cutoff", 100),
-            min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.8),
+            min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.85),
         )
         self.generate_read_paths(
             graph_alignment=alignment,
@@ -152,7 +182,7 @@ class Traversome(object):
             min_num_search=self.kwargs.get("min_valid_search", 1000),
             max_num_search=self.kwargs.get("max_valid_search", 100000),
             num_processes=self.num_processes,
-            hetero_chromosomes=hetero_chromosomes
+            uni_chromosome=uni_chromosome
         )
 
         if self.num_put_variants == 0:
@@ -181,15 +211,6 @@ class Traversome(object):
             logger.info("======== MODEL SELECTION & FITTING ENDS ========\n")
 
         self.output_seqs()
-
-    def parse_alignment_format_from_postfix(self):
-        if self.alignment_file.lower().endswith(".gaf"):
-            alignment_format = "GAF"
-        elif self.alignment_file.lower().endswith(".tsv"):
-            alignment_format = "SPA-TSV"
-        else:
-            raise Exception("Please denote the alignment format using adequate postfix (.gaf/.tsv)")
-        return alignment_format
 
     def generate_read_paths(self, graph_alignment, filter_by_graph=True):
         align_len_at_path = []
@@ -261,7 +282,7 @@ class Traversome(object):
             min_num_search=1000,
             max_num_search=100000,
             num_processes=1,
-            hetero_chromosomes=True):
+            uni_chromosome=False):
         """
         generate candidate variant paths from the graph
         """
@@ -272,7 +293,7 @@ class Traversome(object):
                 max_num_valid_search=max_num_search,
                 num_processes=num_processes,
                 force_circular=self.force_circular,
-                hetero_chromosome=hetero_chromosomes,
+                uni_chromosome=uni_chromosome,
                 temp_dir=fpath(self.outdir).joinpath("paths"),
                 resume=self.resume,
                 )
