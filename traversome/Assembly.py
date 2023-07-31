@@ -603,8 +603,9 @@ class Assembly(AssemblySimple):
                         self.remove_vertex([this_vertex, next_vertex], update_cluster=False)
                         break
 
-        # update the clusters now that some vertices have been merged.
-        self.update_vertex_clusters()
+        if merged:
+            # update the clusters
+            self.update_vertex_clusters()
 
         # return boolean of whether anything was merged.
         return merged
