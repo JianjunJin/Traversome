@@ -82,13 +82,15 @@ class ModelSelectionMode(str, Enum):
 
 
 class ChTopology(str, Enum):
-    circular = "c"
-    unconstrained = "u"
+    circular = "circular"
+    unconstrained = "all"
+    none = None  # not specified
 
 
 class ChComposition(str, Enum):
-    single = "s"
-    unconstrained = "u"
+    single = "single"
+    unconstrained = "all"
+    none = None  # not specified
 
 
 # typer does not support mutually exclusive options yet, use Enum to work around
@@ -190,10 +192,18 @@ def thorough(
         ..., "-g", "--graph",
         help="GFA/FASTG format Graph file",
         exists=True, resolve_path=True),
+    # TODO gzip
+    reads_file: Path = typer.Option(
+        None, "-f", "--fastq",
+        help="FASTQ format long read file. "
+             "Conflict with flag `-a`.",
+        resolve_path=True,
+        ),
     alignment_file: Path = typer.Option(
-        ..., "-a", "--alignment",
-        help="GAF format alignment file",
-        exists=True, resolve_path=True,
+        None, "-a", "--alignment",
+        help="GAF format alignment file. "
+             "Conflict with flag `-f`.",
+        resolve_path=True,
         ),
     output_dir: Path = typer.Option(
         './', "-o", "--output",
@@ -212,27 +222,30 @@ def thorough(
         ModelSelectionMode.AIC, "-F", "--func",
         help="aic (reverse model selection using stepwise AIC, default)\n"
              "bic (reverse model selection using stepwise BIC)"),
-    random_seed: int = typer.Option(12345, "--rs", "--random-seed", help="Random seed"),
+    random_seed: int = typer.Option(
+        12345, "--rs", "--random-seed", help="Random seed"),
     topology: ChTopology = typer.Option(
-        ChTopology.circular, "--topology",
+        ..., "--topo", "--topology",
         help="Chromosomes topology: "
-             "c (constrained to be circular);"
-             "u (unconstrained). "),
+             "circular (constrained to be circular);"
+             "all (unconstrained). ",
+        prompt_required=True),
     composition: ChComposition = typer.Option(
-        ChComposition.unconstrained, "--composition",
+        ..., "--chr", "--composition",
         help="Chromosomes composition: "
-             "s (single, each single form covers all contigs, default) / "
-             "u (unconstrained, single or multi-chromosomes)"),
+             "single (each single form covers all contigs) / "
+             "all (unconstrained, single or multi-chromosomes, RECOMMENDED for most cases)",
+        prompt_required=True),
     out_seq_threshold: float = typer.Option(
         0.0, "-S",
         help="Threshold for sequence output",
         min=0, max=1),
     min_alignment_identity_cutoff: float = typer.Option(
-        0.8, "--min-align-id",
+        0.85, "--min-align-id",
         help="Threshold for alignment identity, below which the alignment with be discarded. ",
         min=0, max=1),
     min_alignment_len_cutoff: int = typer.Option(
-        100, "--min-align-len",
+        5000, "--min-align-len",
         help="Threshold for alignment length, below which the alignment with be discarded. ",
         min=100),
     graph_component_selection: str = typer.Option(
@@ -250,7 +263,7 @@ def thorough(
              "component with the largest weight. "),
     num_processes: int = typer.Option(
         1, "-p", "--processes",
-        help="Num of processes. "),
+        help="Num of processes. Multiprocessing will lead to non-identical result with the same random seed."),
     n_generations: int = typer.Option(10000, "--mcmc", help="MCMC generations"),
     n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
     prev_run: Previous = typer.Option(
@@ -267,6 +280,13 @@ def thorough(
     Examples:
     traversome thorough -g graph.gfa -a align.gaf -o .
     """
+    if reads_file and alignment_file:
+        sys.stderr.write("Flags `-f` and `-a` are mutually exclusive!")
+        sys.exit()
+    elif not reads_file and not alignment_file:
+        sys.stderr.write("Either the sequence file (via `-f`) or the graph alignment (via `-a`) should be provided!")
+        sys.exit()
+
     from loguru import logger
     initialize(
         output_dir=output_dir,
@@ -293,16 +313,18 @@ def thorough(
                 graph_component_selection = slice(*eval(graph_component_selection))
             except (SyntaxError, TypeError):
                 raise TypeError(str(graph_component_selection) + " is invalid for --graph-selection!")
+        # TODO: use json file to record parameters
         traverser = Traversome(
             graph=str(graph_file),
-            alignment=str(alignment_file),
+            alignment=str(alignment_file) if alignment_file else alignment_file,
+            reads_file=str(reads_file) if reads_file else reads_file,  # TODO allow multiple files
             outdir=str(output_dir),
             model_criterion=criterion,
             out_prob_threshold=out_seq_threshold,
             min_valid_search=min_valid_search,
             max_valid_search=max_valid_search,
             num_processes=num_processes,
-            force_circular=topology == "c",
+            force_circular=topology == ChTopology.circular,
             n_generations=n_generations,
             n_burn=n_burn,
             random_seed=random_seed,
@@ -316,7 +338,7 @@ def thorough(
         traverser.\
             run(
             path_gen_scheme=var_gen_scheme,
-            hetero_chromosomes=composition == "u"
+            uni_chromosome=composition == ChComposition.single
         )
         del traverser
     except SystemExit:
