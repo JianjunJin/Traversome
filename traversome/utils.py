@@ -13,8 +13,10 @@ from enum import Enum
 from collections import OrderedDict
 import numpy as np
 import random
+import subprocess
 # from pathos.multiprocessing import ProcessingPool as Pool
 import dill
+from loguru import logger
 
 
 # PY VERSION CHECK: only 2.7 and 3.5+ (this could be enforced by pip/conda)
@@ -954,4 +956,32 @@ def harmony_weights(raw_weights, diff):
 def run_dill_encoded(payload):
     fun, args = dill.loads(payload)
     return fun(*args)
+
+
+DEAD_CODES = (2, 126, 127)  # python 3.5+
+
+
+def executable(test_this):
+    return True if subprocess.getstatusoutput(test_this)[0] not in DEAD_CODES else False
+
+
+def run_graph_aligner(
+        graph_file: str,
+        seq_file: str,
+        alignment_file: str,
+        num_processes: int = 1):
+    logger.info("Making alignment using GraphAligner ..")
+    this_command = os.path.join("", "GraphAligner") + \
+                   " -g " + graph_file + " -f " + seq_file + " --multimap-score-fraction 0.95" + \
+                   " -x vg -t " + str(num_processes) + \
+                   " -a " + alignment_file + ".tmp.gaf"
+    logger.debug(this_command)
+    ga_run = subprocess.Popen(this_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
+    output, err = ga_run.communicate()
+    if "error" in output.decode("utf8").lower() or "(ERR)" in output.decode("utf8"):
+        logger.error(output.decode("utf8"))
+        exit()
+    else:
+        os.rename(alignment_file + ".tmp.gaf", alignment_file)
+
 
