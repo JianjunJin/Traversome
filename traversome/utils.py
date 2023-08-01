@@ -424,7 +424,8 @@ class VariantSubPathsGenerator:
             these_sub_paths = dict()
             num_seg = len(variant_path)
             # print("run get")
-            if self.force_circular:
+            # if self.force_circular:
+            if self.graph.is_circular_path(variant_path):
                 for go_start_v, start_segment in enumerate(variant_path):
                     # find the longest sub_path,
                     # that begins with start_segment and be in the range of alignment length
