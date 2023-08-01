@@ -157,7 +157,7 @@ class Traversome(object):
             filter_by_graph=True)
         self.subpath_generator = VariantSubPathsGenerator(
             graph=self.graph,
-            force_circular=self.force_circular,
+            # force_circular=self.force_circular,
             min_alignment_len=self.min_alignment_length,
             max_alignment_len=self.max_alignment_length,
             read_paths_hashed=set(self.read_paths))

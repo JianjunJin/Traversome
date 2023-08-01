@@ -406,9 +406,15 @@ class WeightedGMMWithEM:
 
 # TODO get subpath adaptive to length=1, more general and less restrictions
 class VariantSubPathsGenerator:
-    def __init__(self, graph, force_circular, min_alignment_len, max_alignment_len, read_paths_hashed):
+    def __init__(
+            self,
+            graph,
+            # force_circular,
+            min_alignment_len,
+            max_alignment_len,
+            read_paths_hashed):
         self.graph = graph
-        self.force_circular = force_circular
+        # self.force_circular = force_circular
         self.min_alignment_len = min_alignment_len
         self.max_alignment_len = max_alignment_len
         self.read_paths_hashed = read_paths_hashed
