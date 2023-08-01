@@ -438,7 +438,9 @@ class VariantSubPathsGenerator:
                     this_longest_sub_path = [start_segment]
                     this_internal_path_len = 0
                     go_next = (go_start_v + 1) % num_seg
-                    while this_internal_path_len < self.max_alignment_len:
+                    # keep adding vertex until this_internal_path_len is larger than self.max_alignment_len - 2,
+                    # so that the_longest_sub_path can potentially be covered by observed data
+                    while this_internal_path_len <= self.max_alignment_len - 2:
                         next_n, next_e = variant_path[go_next]
                         next_v_info = self.graph.vertex_info[next_n]
                         pre_n, pre_e = this_longest_sub_path[-1]
@@ -483,7 +485,9 @@ class VariantSubPathsGenerator:
                     this_longest_sub_path = [start_segment]
                     this_internal_path_len = 0
                     go_next = go_start_v + 1
-                    while go_next < num_seg and this_internal_path_len < self.max_alignment_len:
+                    # keep adding vertex until this_internal_path_len is larger than self.max_alignment_len - 2,
+                    # so that the_longest_sub_path can potentially be covered by observed data
+                    while go_next < num_seg and this_internal_path_len <= self.max_alignment_len - 2:
                         next_n, next_e = variant_path[go_next]
                         next_v_info = self.graph.vertex_info[next_n]
                         pre_n, pre_e = this_longest_sub_path[-1]
