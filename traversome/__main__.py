@@ -286,6 +286,10 @@ def thorough(
     elif not reads_file and not alignment_file:
         sys.stderr.write("Either the sequence file (via `-f`) or the graph alignment (via `-a`) should be provided!")
         sys.exit()
+    elif reads_file and not reads_file.exists():
+        raise FileNotFoundError(reads_file)
+    elif alignment_file and not alignment_file.exists():
+        raise FileNotFoundError(alignment_file)
 
     from loguru import logger
     initialize(
