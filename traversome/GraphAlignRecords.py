@@ -927,6 +927,8 @@ class GraphAlignRecords(object):
             self.parse_alignment_file_single()
         else:
             self.parse_alignment_file_mul(num_proc=num_proc, num_block_lines=_num_block_lines)
+            # # empirically 4 is enough, a greater value will not help
+            # self.parse_alignment_file_mul(num_proc=max(num_proc, 4), num_block_lines=_num_block_lines)
 
     def parse_alignment_file_mul(self, num_proc, num_block_lines=10000):
         """
