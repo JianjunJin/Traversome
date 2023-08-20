@@ -9,6 +9,7 @@ from collections import OrderedDict
 from traversome.utils import Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
 from hashlib import sha256
 from typing import OrderedDict as typingODict
+from typing import Union
 import os
 
 
@@ -19,6 +20,26 @@ import os
 INF = float("inf")
 DEFAULT_COV = 1
 VERTEX_DIRECTION_BOOL_TO_STR = {True: "+", False: "-"}
+
+
+#######################################################
+###   FUNCTIONS
+#######################################################
+def check_positive_value(
+        value: Union[float, int],
+        flag: str) -> Union[float, int]:
+    """
+    Some values may be negative probably due to issues of other software tools (e.g sometimes Bandage output graph).
+    Automatically converting negative values into positive values with warnings.
+    """
+    if value < 0:
+        logger.warning("illegitimate " + flag + " value " + str(value) + " adjusted to " + str(-value) + "!")
+        return -value
+    elif value == 0:
+        raise ValueError("illegitimate " + flag + " value " + str(value) + "!")
+    else:
+        return value
+
 
 #######################################################
 ###   CLASSES
@@ -343,18 +364,26 @@ class AssemblySimple(object):
                     # get the sequence length
                     if element[0].upper() == "LN":
                         seq_len_tag = int(element[-1])
+                        seq_len_tag = check_positive_value(seq_len_tag, "LN")
                     
                     # ...
                     elif element[0].upper() == "KC":
                         kmer_count = int(element[-1])
+                        kmer_count = check_positive_value(kmer_count, "KC")
 
                     # get read counts (as kmer counts)
                     elif element[0].upper() == "RC":
                         kmer_count = int(element[-1])
+                        kmer_count = check_positive_value(kmer_count, "KC")
 
                     # seqdepth tag ...
                     elif element[0].upper() == "DP":
                         seq_depth_tag = float(element[-1])
+                        seq_depth_tag = check_positive_value(seq_depth_tag, "DP")
+
+                    elif element[0].upper() == "RD":  # took read depth as seq_depth_tag counts
+                        seq_depth_tag = int(element[-1])
+                        seq_depth_tag = check_positive_value(seq_depth_tag, "RD")
 
                     # get sequence checksum 
                     elif element[0].upper() == "SH":
@@ -498,10 +527,16 @@ class AssemblySimple(object):
                     # skip RC/FC
                     if element[0].upper() == "KC":
                         kmer_count = int(element[-1])
+                        kmer_count = check_positive_value(kmer_count, "KC")
                     elif element[0].upper() == "RC":  # took read counts as kmer counts
                         kmer_count = int(element[-1])
+                        kmer_count = check_positive_value(kmer_count, "RC")
                     elif element[0].upper() == "DP":
                         seq_depth_tag = float(element[-1])
+                        seq_depth_tag = check_positive_value(seq_depth_tag, "DP")
+                    elif element[0].upper() == "RD":  # took read depth as seq_depth_tag counts
+                        seq_depth_tag = int(element[-1])
+                        seq_depth_tag = check_positive_value(seq_depth_tag, "RD")
                     elif element[0].upper() == "SH":
                         sh_256_val = ":".join(element[2:])
                     elif element[0].upper() == "UR":
