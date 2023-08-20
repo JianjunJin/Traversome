@@ -456,9 +456,11 @@ class VariantSubPathsGenerator:
                     # if len(this_longest_sub_path) < 2 \
                     #         or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_len:
                     #     continue
-                    # TODO size of 1 can also be included
-                    if len(this_longest_sub_path) < 2:
-                        continue
+
+                    # size of 1 can also be included
+                    # if len(this_longest_sub_path) < 2:
+                    #     continue
+
                     # print("this_longest_sub_path", this_longest_sub_path, "passed")
 
                     # record shorter sub_paths starting from start_segment
@@ -495,9 +497,10 @@ class VariantSubPathsGenerator:
                         this_longest_sub_path.append((next_n, next_e))
                         this_internal_path_len += next_v_info.len - this_overlap
                         go_next += 1
-                    if len(this_longest_sub_path) < 2 \
-                            or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_len:
-                        continue
+                    # size of 1 can also be included
+                    # if len(this_longest_sub_path) < 2 \
+                    #         or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_len:
+                    #     continue
                     # record shorter sub_paths starting from start_segment
                     len_this_sub_p = len(this_longest_sub_path)
                     for skip_tail in range(len_this_sub_p - 1):
@@ -505,8 +508,8 @@ class VariantSubPathsGenerator:
                             self.graph.get_standardized_path_circ(this_longest_sub_path[:len_this_sub_p - skip_tail])
                         if this_sub_path not in self.read_paths_hashed:
                             continue
-                        if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_len:
-                            break
+                        # if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_len:
+                        #     break
                         if this_sub_path not in these_sub_paths:
                             these_sub_paths[this_sub_path] = 0
                         these_sub_paths[this_sub_path] += 1
@@ -989,7 +992,8 @@ def run_graph_aligner(
     logger.debug(this_command)
     ga_run = subprocess.Popen(this_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
     output, err = ga_run.communicate()
-    if "error" in output.decode("utf8").lower() or "(ERR)" in output.decode("utf8"):
+    # TODO better adjusted for graphaligner log
+    if "Aborted" in output.decode("utf8"):  # or "(ERR)" in output.decode("utf8"):
         logger.error(output.decode("utf8"))
         exit()
     else:

@@ -70,7 +70,7 @@ class Traversome(object):
         self.graph = None
         # self.alignment = None
         self.align_len_at_path_sorted = None
-        self.__align_len_lookup_table = {}
+        self.__align_len_id_lookup_table = {}
         self.max_alignment_length = None
         self.min_alignment_length = None
         self.read_paths = OrderedDict()
@@ -384,7 +384,7 @@ class Traversome(object):
         for read_path, record_ids in self.read_paths.items():
             if read_path in self.all_sub_paths:
                 self.all_sub_paths[read_path].mapped_records = record_ids
-        # # remove sp with zero observations, commented because we have added constraits above
+        # # remove sp with zero observations, commented because we have added constraints above
         # for this_sub_path in list(self.all_sub_paths):
         #     if not self.all_sub_paths[this_sub_path].mapped_records:
         #         del self.all_sub_paths[this_sub_path]
@@ -415,7 +415,7 @@ class Traversome(object):
         #     use_median = False
         # use_median = False
 
-        self.__generate_align_len_lookup_table()
+        self.__generate_align_len_id_lookup_table()
 
         if self.num_processes == 1:
             for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
@@ -441,7 +441,7 @@ class Traversome(object):
                     del self.all_sub_paths[this_sub_path]
 
         # clear memory
-        self.__align_len_lookup_table = {}
+        self.__align_len_id_lookup_table = {}
 
         # 2023-03-14 commented out
         # for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
@@ -458,9 +458,9 @@ class Traversome(object):
         #     external_len = self.graph.get_path_length(this_sub_path, check_valid=False, adjust_for_cyclic=False)
         #     # 0.15802343183582341
         #     # left_id, right_id = get_id_range_in_increasing_values(
-        #     #     min_num=internal_len + 2, max_num=external_len_without_overlap,
+        #     #     min_len=internal_len + 2, max_len=external_len_without_overlap,
         #     #     increasing_numbers=self.align_len_at_path_sorted)
-        #     left_id, right_id = self.__get_id_range_in_increasing_values(min_num=internal_len + 2, max_num=external_len)
+        #     left_id, right_id = self.__get_id_range_in_increasing_values(min_len=internal_len + 2, max_len=external_len)
         #     if left_id > right_id:
         #         # no read found within this scope
         #         logger.trace("Remove {} after pruning contig overlap ..".format(this_sub_path))
@@ -505,65 +505,120 @@ class Traversome(object):
         # and will not be recorded in the path.
         # Thus, the start point can be the path length not the uni_overlap-trimmed one.
         external_len = self.graph.get_path_length(this_sub_path, check_valid=False, adjust_for_cyclic=False)
-        left_id, right_id = self.__get_id_range_in_increasing_values(min_num=internal_len + 2, max_num=external_len)
+        left_id, right_id = self.__get_id_range_in_increasing_lengths(min_len=internal_len + 2, max_len=external_len)
         if left_id > right_id:
             # no read found within this scope
             logger.trace("Remove {} after pruning contig overlap ..".format(this_sub_path))
             del self.all_sub_paths[this_sub_path]
             return 0, 0
-        # 7.611977815628052
-        # maybe slightly precise than above, assessed
-        # this can be super time consuming in case of many subpaths, e.g.
+
+        if len(this_sub_path) > 1:
+            # prepare the end stats for the path
+            left_n1, left_e1 = this_sub_path[0]
+            left_n2, left_e2 = this_sub_path[1]
+            left_info = self.graph.vertex_info[left_n1]
+            left_1_len = left_info.len
+            left_12_overlap = left_info.connections[left_e1][(left_n2, not left_e2)]
+            right_n1, right_e1 = this_sub_path[-1]
+            right_n2, right_e2 = this_sub_path[-2]
+            right_info = self.graph.vertex_info[right_n1]
+            right_1_len = right_info.len
+            right_12_overlap = right_info.connections[not right_e1][(right_n2, right_e2)]
+
+            def get_num_of_possible_alignment_start_points(read_len_aligned):
+                """
+                If a read with certain length could be aligned to a path (size>=2),
+                calculate how many possible start points could this alignment happen.
+
+                Example:
+                ----------------------------------------
+                |      \                               |
+                |     b \          e          / a      |
+                |        \___________________/         |
+                |        /                   \         |
+                |     c /                     \ d      |
+                |      /                       \       |
+                |     /                         \      |
+                |                                \     |
+                ----------------------------------------
+                for graph(a=2,b=3,c=4,d=5,e=6), if read has length of 11 and be aligned to b->e->d,
+                then there could be 3 possible alignment start points
+
+                :param read_len_aligned:
+                :return:
+                """
+                # when a, b, c, d is longer than the read_len_aligned,
+                # the result is the maximum_num_cat without trimming
+                maximum_num_cat = read_len_aligned - internal_len - 2
+                # trim left
+                left_trim = max(maximum_num_cat - left_1_len - left_12_overlap, 0)
+                # trim right
+                right_trim = max(maximum_num_cat - right_1_len - right_12_overlap, 0)
+                return maximum_num_cat - left_trim - right_trim
+        else:
+            def get_num_of_possible_alignment_start_points(read_len_aligned):
+                """
+                If a read with certain length could be aligned to a path (size==1),
+                the start points can be simply calculated as follows
+                """
+                return external_len - read_len_aligned + 1
+
         num_possible_Xs = {}
         align_len_id = left_id
         while align_len_id <= right_id:
             this_len = self.align_len_at_path_sorted[align_len_id]
-            this_x = self.graph.get_num_of_possible_alignment_start_points(
-                read_len_aligned=this_len, align_to_path=this_sub_path, path_internal_len=internal_len)
+            this_x = get_num_of_possible_alignment_start_points(read_len_aligned=this_len)
             if this_len not in num_possible_Xs:
                 num_possible_Xs[this_len] = 0
             num_possible_Xs[this_len] += this_x
             align_len_id += 1
+            # each alignment record will be counted once, if the next align_len_id has the same length
             while align_len_id <= right_id and self.align_len_at_path_sorted[align_len_id] == this_len:
                 num_possible_Xs[this_len] += this_x
                 align_len_id += 1
+        # num_in_range is the total number of alignments (observations) in range
         num_in_range = right_id + 1 - left_id
+        # sum_Xs is the numerator for generating the distribution rate,
+        # with the denominator approximating the genome size
         sum_Xs = sum(num_possible_Xs.values())
+
         return num_in_range, sum_Xs
 
-    def __generate_align_len_lookup_table(self):
+    def __generate_align_len_id_lookup_table(self):
         """
         called by generate_sub_path_stats
-        to speed up align len id looking up
+        to speed up self.__get_id_range_in_increasing_lengths
         """
         its_left_id = 0
         its_right_id = 0
         max_id = len(self.align_len_at_path_sorted) - 1
-        self.__align_len_lookup_table = \
+        self.__align_len_id_lookup_table = \
             {potential_len: {"as_left_lim_id": None, "as_right_lim_id": None}
              for potential_len in range(self.min_alignment_length, self.max_alignment_length + 1)}
         for potential_len in range(self.min_alignment_length, self.max_alignment_length + 1):
             if potential_len == self.align_len_at_path_sorted[its_right_id]:
-                self.__align_len_lookup_table[potential_len]["as_left_lim_id"] = its_left_id = its_right_id
+                self.__align_len_id_lookup_table[potential_len]["as_left_lim_id"] = its_left_id = its_right_id
                 while potential_len == self.align_len_at_path_sorted[its_right_id]:
-                    self.__align_len_lookup_table[potential_len]["as_right_lim_id"] = its_right_id
+                    self.__align_len_id_lookup_table[potential_len]["as_right_lim_id"] = its_right_id
                     if its_right_id == max_id:
                         break
                     else:
                         its_left_id = its_right_id
                         its_right_id += 1
             else:
-                self.__align_len_lookup_table[potential_len]["as_left_lim_id"] = its_right_id
-                self.__align_len_lookup_table[potential_len]["as_right_lim_id"] = its_left_id
+                self.__align_len_id_lookup_table[potential_len]["as_left_lim_id"] = its_right_id
+                self.__align_len_id_lookup_table[potential_len]["as_right_lim_id"] = its_left_id
 
-    def __get_id_range_in_increasing_values(self, min_num, max_num):
-        """
-        called by __generate_align_len_lookup_table
+    def __get_id_range_in_increasing_lengths(self, min_len, max_len):
+        """Given a range of length (min_len, max_len), return the len_id of them,
+        which helps quickly count the number of reads and number of possible matches given a subpath
+
+        called by self.__subpath_info_filler.
         replace get_id_range_in_increasing_values func in utils.py
         """
-        left_id = self.__align_len_lookup_table.get(min_num, {}).\
+        left_id = self.__align_len_id_lookup_table.get(min_len, {}).\
             get("as_left_lim_id", 0)
-        right_id = self.__align_len_lookup_table.get(max_num, {}).\
+        right_id = self.__align_len_id_lookup_table.get(max_len, {}).\
             get("as_right_lim_id", len(self.align_len_at_path_sorted) - 1)
         return left_id, right_id
 
