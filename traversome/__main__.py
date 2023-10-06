@@ -10,10 +10,11 @@ import os, sys, platform
 from pathlib import Path
 from enum import Enum
 import typer
-from typing import Union
+from typing import Union, Optional
 from math import inf
 from shutil import rmtree as rmdir
 from traversome import __version__
+from traversome.utils import setup_logger
 
 # add the -h option for showing help
 CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
@@ -70,9 +71,9 @@ def main(
     typer.secho(RUNNING_HEAD, fg=typer.colors.MAGENTA, bold=True)
 
 
-class VarGen(str, Enum):
-    Heuristic = "H"
-    Provided = "U"
+# class VarGen(str, Enum):
+#     Heuristic = "H"
+#     Provided = "U"
 
 
 class ModelSelectionMode(str, Enum):
@@ -209,15 +210,30 @@ def thorough(
         './', "-o", "--output",
         help="Output directory",
         exists=False, resolve_path=True),
-    var_gen_scheme: VarGen = typer.Option(
-        VarGen.Heuristic, "-G",
-        help="Variant generating scheme: H (Heuristic)/U (User-provided)"),
+    var_fixed: Path = typer.Option(
+        None, "--vf", "--variant-fixed",
+        help="A file containing user assigned variant paths "
+             "that will remain after model selection process. "
+             "Each line contains a variant path in Bandage path format, "
+             "e.g. 53+,45-,33+(circular) or in GAF alignment format, e.g. >53<45>33"
+        ),
+    var_candidate: Path = typer.Option(
+        None, "--vc", "--variant-candidate",
+        help="A file containing user proposed candidate variant paths "
+             "that will be compared during model selection process. "
+             "Each line contains a variant path in Bandage path format, "
+             "e.g. 53+,45-,33+(circular) or in GAF alignment format, e.g. >53<45>33"
+    ),
+    # Currently there is no other searching scheme implemented
+    # var_gen_scheme: VarGen = typer.Option(
+    #     VarGen.Heuristic, "-G",
+    #     help="Variant generating scheme: H (Heuristic)"),
     min_valid_search: int = typer.Option(
         1000, "-n", "--min-val-search",
-        help="Minimum num of valid traversals for heuristic searching."),
+        help="Minimum num of valid traversals for heuristic search."),
     max_valid_search: int = typer.Option(
         100000, "-N", "--max-val-search",
-        help="Maximum num of valid traversals for heuristic searching."),
+        help="Maximum num of valid traversals for heuristic search."),
     criterion: ModelSelectionMode = typer.Option(
         ModelSelectionMode.AIC, "-F", "--func",
         help="aic (reverse model selection using stepwise AIC, default)\n"
@@ -261,11 +277,21 @@ def thorough(
              "A cutoff of 1 means keeping all components in the graph, "
              "while a value close to 0 means only keep the connected "
              "component with the largest weight. "),
+    keep_graph_redundancy: bool = typer.Option(
+        False, "--keep-graph-redundancy",
+        help="Activate keeping graph redundancy mode, which does not merge neighboring contigs when possible "
+             "and may potentially increase the computational burden."
+        ),
     num_processes: int = typer.Option(
         1, "-p", "--processes",
         help="Num of processes. Multiprocessing will lead to non-identical result with the same random seed."),
-    n_generations: int = typer.Option(10000, "--mcmc", help="MCMC generations"),
+    n_generations: int = typer.Option(
+        10000, "--mcmc",
+        help="MCMC generations. Set '--mcmc 0' to disable mcmc process."),
     n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
+    mc_bracket_depth: Optional[int] = typer.Option(
+        10000, "--mc-bd", "--mc-bracket-depth",
+        help="Bracket depth for gcc during MCMC sampling. "),
     prev_run: Previous = typer.Option(
         Previous.terminate, "--previous",
         help="terminate: exit with error if previous result exists\n"
@@ -276,9 +302,9 @@ def thorough(
         LogLevel.INFO, "--loglevel", help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
     """
-    Conduct Bayesian MCMC analysis for solving assembly graph
+    Conduct thorough analysis from assembly graph and reads/read-graph alignment.
     Examples:
-    traversome thorough -g graph.gfa -a align.gaf -o .
+    traversome thorough -g graph.gfa -a align.gaf -o output_dir
     """
     if reads_file and alignment_file:
         sys.stderr.write("Flags `-f` and `-a` are mutually exclusive!")
@@ -304,10 +330,32 @@ def thorough(
         # set the caching directory to be inside each output directory
         os.environ["THEANO_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
         os.environ["AESARA_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
+        # TODO to fix pytensor issue
+        os.environ["PYTENSOR_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
 
-        assert var_gen_scheme != "U", "User-provided is under developing, please use heuristic instead!"
-        assert max_valid_search >= min_valid_search, ""
-        from traversome.traversome import Traversome
+        # assert var_gen_scheme != "U", "User-provided is under developing, please use heuristic instead!"
+        setup_logger(loglevel=log_level, timed=True, log_file=os.path.join(output_dir, "traversome.log.txt"))
+        if max_valid_search < 1:
+            logger.info("Heuristic search disabled. ")
+            if bool(var_candidate) or bool(var_fixed):
+                if bool(var_fixed) and not var_fixed.is_file():
+                    raise FileNotFoundError(f"Invalid input file: {var_fixed}")
+                if bool(var_candidate) and not var_candidate.is_file():
+                    raise FileNotFoundError(f"Invalid input file: {var_candidate}")
+                logger.info("Only user input variants will be included in downstream analysis. ")
+            else:
+                raise ValueError("User input variant(s) (--vf/--vc) is required when heuristic search was disabled! ")
+        else:
+            if max_valid_search < min_valid_search:
+                logger.warning("Input minimum num of valid traversals is larger than the maximum! Resetting..")
+                min_valid_search = max_valid_search
+            logger.info(f"Minimum num of valid traversals: {min_valid_search}")
+            logger.info(f"Maximum num of valid traversals: {max_valid_search}")
+        force_circular = topology == ChTopology.circular
+        logger.info(f"constraint chromosome topology to be circular: {force_circular}")
+        single_chr = composition == ChComposition.single
+        logger.info(f"constraint chromosome composition to be single: {single_chr} \n")
+        # assert max_valid_search >= min_valid_search, ""
         if graph_component_selection.isdigit():
             graph_component_selection = int(graph_component_selection)
         elif "." in graph_component_selection:
@@ -318,17 +366,20 @@ def thorough(
             except (SyntaxError, TypeError):
                 raise TypeError(str(graph_component_selection) + " is invalid for --graph-selection!")
         # TODO: use json file to record parameters
+        from traversome.traversome import Traversome
         traverser = Traversome(
             graph=str(graph_file),
             alignment=str(alignment_file) if alignment_file else alignment_file,
             reads_file=str(reads_file) if reads_file else reads_file,  # TODO allow multiple files
+            var_fixed=str(var_fixed) if var_fixed else var_fixed,
+            var_candidate=str(var_candidate) if var_candidate else var_candidate,
             outdir=str(output_dir),
             model_criterion=criterion,
             out_prob_threshold=out_seq_threshold,
             min_valid_search=min_valid_search,
             max_valid_search=max_valid_search,
             num_processes=num_processes,
-            force_circular=topology == ChTopology.circular,
+            force_circular=force_circular,
             n_generations=n_generations,
             n_burn=n_burn,
             random_seed=random_seed,
@@ -337,12 +388,14 @@ def thorough(
             min_alignment_identity_cutoff=min_alignment_identity_cutoff,
             min_alignment_len_cutoff=min_alignment_len_cutoff,
             graph_component_selection=graph_component_selection,
+            keep_graph_redundancy=keep_graph_redundancy,
             resume=prev_run == "resume",
+            mc_bracket_depth=mc_bracket_depth,
         )
         traverser.\
             run(
-            path_gen_scheme=var_gen_scheme,
-            uni_chromosome=composition == ChComposition.single
+            # path_gen_scheme=var_gen_scheme,
+            uni_chromosome=single_chr
         )
         del traverser
     except SystemExit:
@@ -383,27 +436,71 @@ def initialize(output_dir, loglevel, previous):
             os.remove(exist_f)
     logfile = os.path.join(output_dir, "traversome.log.txt")
     from loguru import logger
-    setup_simple_logger(sink_list=[logfile], loglevel=loglevel)
+    # avoid repeating RUNNING_HEAD in the screen output by typer.secho
+    setup_logger(loglevel=loglevel, timed=False, log_file=logfile, screen_out=None)
     logger.info(RUNNING_HEAD)
-    setup_simple_logger(sink_list=[logfile, sys.stdout], loglevel=loglevel)
+    setup_logger(loglevel=loglevel, timed=False, log_file=logfile)
     logger.info(RUNNING_ENV_INFO)
 
 
-def setup_simple_logger(sink_list, loglevel="INFO"):
+@app.command()
+def simulate(
+    graph_f: Path = typer.Option(
+        ..., "-g", "--graph",
+        help="GFA/FASTG format Graph file",
+        exists=True, resolve_path=True),
+    variant_file: Path = typer.Option(
+        ..., "--vp", "--variant-path-file",
+        help="A file containing variant paths "
+             "that will be compared during model selection process. "
+             "Each line contains a variant path in Bandage path format, "
+             "e.g. 53+,45-,33+(circular) or in GAF alignment format, e.g. >53<45>33"),
+    var_proportions: str = typer.Option(
+        ..., "-p", "--prop",
+        help="Proportions of the input variants split by comma and sum up to 1, e.g. -p 0.7,0.3"),
+    len_distribution: str = typer.Option(
+        ..., "-l", "--len",
+        help="Followed by ont, pb, hifi or mean,std_dev (e.g. -l 15000,13000). "
+             "The read lengths will be draw from a gamma distribution."),
+    # TODO add sequencing depth
+    # TODO add Mb, Gb, etc
+    data_size: int = typer.Option(
+        ..., "-s", "--data-size",
+        help="Expected total number of bases. "),
+    output_gaf: Path = typer.Option(
+        './', "-o", "--output",
+        help="Output alignment file (*.gaf)",
+        exists=False, resolve_path=True),
+    random_seed: int = typer.Option(
+        12345, "--rs", "--random-seed",
+        help="Random seed"),
+    ):
     """
-    Configure Loguru to log to stdout and logfile.
-    param: sink_list e.g. [sys.stdout, logfile]
+    Currently only simulate true alignment without errors
     """
-    # add stdout logger
+    from traversome.Simulator import SimpleSimulator
+    from traversome.Assembly import Assembly
+    from traversome.utils import user_paths_reader
+    var_props = [float(vp) for vp in var_proportions.split(",")]
+    assert sum(var_props) == 1.
+    length_distribution = len_distribution if len_distribution in {"ont", "pb", "hifi"} \
+        else [int(float(l_)) for l_ in len_distribution.split(",")]
     from loguru import logger
-    simple_config = {
-        "handlers": [
-            {
-                "sink": sink_obj,
-                "format": "<level>{message}</level>",
-                "level": loglevel,
-                }
-            for sink_obj in sink_list]
-    }
-    logger.configure(**simple_config)
-    logger.enable("traversome")
+    logfile = str(output_gaf) + ".log"
+    # avoid repeating RUNNING_HEAD in the screen output by typer.secho
+    setup_logger(loglevel="INFO", timed=False, log_file=logfile, screen_out=None)
+    logger.info(RUNNING_HEAD)
+    setup_logger(loglevel="INFO", timed=False, log_file=logfile)
+    logger.info(RUNNING_ENV_INFO)
+    setup_logger(loglevel="INFO", timed=True, log_file=logfile)
+    simulator = SimpleSimulator(
+        graph_obj=Assembly(graph_file=str(graph_f)),
+        variants=user_paths_reader(str(variant_file)),
+        variant_proportions=var_props,
+        length_distribution=length_distribution,
+        data_size=data_size,
+        out_file=str(output_gaf),
+        random_seed=random_seed
+        )
+    simulator.run()
+
