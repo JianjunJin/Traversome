@@ -223,6 +223,7 @@ class SingleTraversal(object):
                     candidates_ovl_n = []
                     weights = []
                     num_reads_used = 0
+                    max_ovl = max(candidates_list_overlap_c_nums)
                     for go_overlap, same_ov_cdd in enumerate(candidate_ls_list):
                         # flatten the candidate_ls_list:
                         # each item in candidate_ls_list is a list of candidates of the same overlap contig
@@ -237,7 +238,8 @@ class SingleTraversal(object):
                         same_ov_w = harmony_weights(same_ov_w, diff=self.__differ_f)
                         # RuntimeWarning: overflow encountered in exp of numpy, or math range error in exp of math
                         # change to dtype=np.float128?
-                        same_ov_w = exp(np.array(log(same_ov_w) + log(self.__decay_f) * ovl_c_num, dtype=np.float128))
+                        same_ov_w = exp(np.array(log(same_ov_w) - log(self.__decay_f) * (max_ovl - ovl_c_num),
+                                                 dtype=np.float128))
                         weights.extend(same_ov_w)
                         # To reduce computational burden, only reads that overlap most with current path
                         # will be considered in the extension. Proportions below 1/decay_t which will be neglected
@@ -310,7 +312,12 @@ class SingleTraversal(object):
                                    for go_c, (r_id, r_strand) in enumerate(candidates)]
                         weights = exp(np.array([log(weights[go_c]) - abs(log(cov / current_ave_coverage))
                                                 for go_c, cov in enumerate(cdd_cov)], dtype=np.float128))
-                    chosen_cdd_id = random.choices(range(len(candidates)), weights=weights)[0]
+                    try:
+                        chosen_cdd_id = random.choices(range(len(candidates)), weights=weights)[0]
+                    except ValueError:
+                        print(weights)
+                        print("---------------")
+                        raise Exception
                     if like_ls_cached:
                         like_ls_cached = like_ls_cached[chosen_cdd_id]
                     else:
@@ -673,12 +680,14 @@ class PathGenerator(object):
         # to be generated
         self.read_paths = list()
         self.__read_paths_counter = dict()
+        for read_path, loc_ids in traversome_obj.read_paths.items():  # make a simplified copy of tvs.read_paths
+            self.read_paths.append(read_path)
+            self.__read_paths_counter[read_path] = len(loc_ids)
         # self.__vertex_to_readpath = {vertex: set() for vertex in self.graph.vertex_info}
         self.__start_subpath_to_readpaths = {}
         self.__middle_subpath_to_readpaths = {}
         self.__read_paths_not_in_variants = {}
         self.__read_paths_counter_indexed = False
-        self.index_readpaths_subpaths(traversome_obj.read_paths)
         self.contig_coverages = OrderedDict()
         # self.single_copy_vertices_prob = \
         #     OrderedDict([(_v, 1.) for _v in single_copy_vertices]) if single_copy_vertices \
@@ -694,6 +703,16 @@ class PathGenerator(object):
             self.temp_dir.mkdir(exist_ok=self.resume)
 
     def generate_heuristic_paths(self, num_processes=None):
+        # load previous
+        self.__previous_len_variant = 0
+        if self.resume and self.temp_dir.exists():
+            self.load_temp()
+            if sum(self.variants_counts.values()) >= self.max_valid_search:  # hit the hard bound
+                logger.info("Maximum num of valid searches reached.")
+                return
+
+        self.index_readpaths_subpaths()
+
         if num_processes is None:  # use the user input value if provided
             num_processes = self.num_processes
         assert num_processes >= 1
@@ -704,14 +723,6 @@ class PathGenerator(object):
         else:
             self.use_contig_coverage_from_assembly_graph()
         self.estimate_single_copy_vertices()
-
-        # load previous
-        self.__previous_len_variant = 0
-        if self.resume and self.temp_dir.exists():
-            self.load_temp()
-            if sum(self.variants_counts.values()) >= self.max_valid_search:  # hit the hard bound
-                logger.info("Maximum num of valid searches reached.")
-                return
 
         logger.info("Generating heuristic variants .. ")
         if num_processes == 1:
@@ -822,10 +833,8 @@ class PathGenerator(object):
                 return new_num_valid_search - num_valid_search, current_ratio, 1
                 # TODO this process will never stop if the graph cannot generate a circular path on forced circular
 
-    def index_readpaths_subpaths(self, tvs_read_paths):
-        for read_path, loc_ids in tvs_read_paths.items():
-            self.read_paths.append(read_path)
-            self.__read_paths_counter[read_path] = len(loc_ids)
+    def index_readpaths_subpaths(self):
+        logger.info("Indexing aligned read path records ..")
         # # alignment_lengths = []
         # if filter_by_graph:
         #     for gaf_record in self.alignment.raw_records:
