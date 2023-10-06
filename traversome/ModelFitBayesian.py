@@ -1,21 +1,30 @@
 #!/usr/bin/env python
 import os.path
 
+import pytensor
 from loguru import logger
 from collections import OrderedDict
-try:
-    import pymc3 as pm
-except ModuleNotFoundError:
-    # newer version of pymc
-    import pymc as pm
-try:
-    import theano.tensor as tt
-except ModuleNotFoundError:
-    # newer version of pymc uses aesara (Theano-PyMC), instead of Theano which was no more maintained
-    import aesara.tensor as tt
+# try:
+#     import pymc3 as pm
+# except ModuleNotFoundError:
+#     # newer version of pymc
+#     import pymc as pm
+import pymc as pm
+# try:
+#     import theano.tensor as tt
+# except ModuleNotFoundError:
+#     # newer version of pymc uses aesara (Theano-PyMC), instead of Theano which was no more maintained
+#     import aesara.tensor as tt
+# import aesara.tensor as tt
+# use pytensor instead of aesara
+import pytensor.tensor as tt
+# from pytensor.link.c.exceptions import CompileError
+# os.environ['CFLAGS'] = '-fbracket-depth=16000'
+# os.environ['CXXFLAGS'] = '-fbracket-depth=16000'
 import numpy as np
 import arviz as az
 from typing import OrderedDict as typingODict
+from traversome.utils import try_gcc_option
 
 
 class ModelFitBayesian(object):
@@ -25,7 +34,17 @@ class ModelFitBayesian(object):
         self.traversome = traversome_obj
         self.num_of_variants = traversome_obj.num_put_variants
         self.trace = None
-        # self.graph = traversome_obj.graph
+        self._set_bracket_depth(self.traversome.kwargs.get("mc_bracket_depth", 10000))
+
+    @staticmethod
+    def _set_bracket_depth(depth=10000):
+        if try_gcc_option():
+            pytensor.config.gcc__cxxflags = f"-fbracket-depth={depth}"  # will significantly slow down the compiling
+        else:
+            # According to tests, for some gcc versions (e.g. gxx_linux-64=12.1/2.0),
+            # do not support '-fbracket-depth=N'.
+            # TODO: yet unknown the reason for working without setting '-fbracket-depth=N' under some environment.
+            pass
 
     def run_mcmc(self, n_generations, n_burn, chosen_ids: typingODict[int, bool] = None):
         logger.info("{} subpaths in total".format(len(self.traversome.all_sub_paths)))
@@ -70,7 +89,8 @@ class ModelFitBayesian(object):
                 n_generations,
                 tune=n_burn,
                 discard_tuned_samples=True,
-                cores=1,
+                chains=4,
+                cores=1,   #self.traversome.num_processes, # TODO -fbracket-depth was not yet passed in multi-processing
                 init='adapt_diag',
                 # start=start,
                 return_inferencedata=True)
@@ -81,4 +101,5 @@ class ModelFitBayesian(object):
             axes = az.plot_trace(self.trace)
             fig = axes.ravel()[0].figure
             fig.savefig(os.path.join(self.traversome.outdir, "mcmc.trace_plot.pdf"))
+            logger.info("MCMC sampling finished.")
         return OrderedDict([(_c_id, _prop) for _c_id, _prop in zip(chosen_ids, summary["mean"])])
