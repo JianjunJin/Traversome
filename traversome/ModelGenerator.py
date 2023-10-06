@@ -10,6 +10,7 @@ class PathMultinomialModel:
         self.variant_sizes = variant_sizes
         self.num_put_variants = len(variant_sizes)
         self.all_sub_paths = all_sub_paths
+        self.sample_size = None
 
     def get_like_formula(self, variant_percents, log_func, within_variant_ids: Set = None):
         """
@@ -104,6 +105,6 @@ class PathMultinomialModel:
         for go_sp, obs in enumerate(observations):
             loglike_expression += log_func(this_sbp_prob[go_sp]) * obs
         variable_size = len(within_variant_ids) if within_variant_ids else self.num_put_variants
-        sample_size = sum(observations)
+        self.sample_size = sum(observations)
 
-        return LogLikeFormulaInfo(loglike_expression, variable_size, sample_size)
+        return LogLikeFormulaInfo(loglike_expression, variable_size, self.sample_size)
