@@ -15,9 +15,8 @@ from collections import OrderedDict
 from traversome.Assembly import Assembly
 from traversome.GraphAlignRecords import GraphAlignRecords
 from traversome.utils import \
-    SubPathInfo, Criterion, VariantSubPathsGenerator, executable, run_graph_aligner  # ProcessingGraphFailed,
+    SubPathInfo, Criterion, VariantSubPathsGenerator, executable, run_graph_aligner, user_paths_reader, setup_logger
 from traversome.ModelFitMaxLike import ModelFitMaxLike
-from traversome.ModelFitBayesian import ModelFitBayesian
 from traversome.PathGenerator import PathGenerator
 from traversome.ModelGenerator import PathMultinomialModel
 # from traversome.CleanGraph import CleanGraph
@@ -41,6 +40,8 @@ class Traversome(object):
             alignment,
             reads_file,
             outdir,
+            var_fixed=None,
+            var_candidate=None,
             num_processes=1,
             force_circular=True,
             out_prob_threshold=0.001,
@@ -54,6 +55,8 @@ class Traversome(object):
         self.alignment_file = alignment
         self.reads_file = reads_file
         self.outdir = outdir
+        self.var_fixed_f = var_fixed
+        self.var_candidate_f = var_candidate
         self.num_processes = num_processes
         self.force_circular = force_circular
         self.out_prob_threshold = out_prob_threshold
@@ -64,7 +67,7 @@ class Traversome(object):
         # init logger
         self.logfile = os.path.join(self.outdir, "traversome.log.txt")
         self.loglevel = loglevel.upper()
-        self.setup_timed_logger(loglevel.upper())
+        setup_logger(loglevel=self.loglevel, timed=True, log_file=self.logfile)
 
         # alignment and graph values
         self.graph = None
@@ -78,6 +81,8 @@ class Traversome(object):
         self.subpath_generator = None
 
         # variant model to be generated
+        self.user_variant_paths = []
+        self.user_variant_fixed_ids = set()
         self.variant_paths = []  # each element is a tuple(path)
         self.variant_sizes = []
         self.num_put_variants = None
@@ -102,15 +107,13 @@ class Traversome(object):
         self.random = random
         self.random.seed(random_seed)
 
-    def run(self, path_gen_scheme="H", uni_chromosome=False):
+    def run(self,
+            # path_gen_scheme="H",
+            uni_chromosome=False):
         """
-        Parse the assembly graph files ...
         """
         logger.info("======== DIGESTING DATA STARTS ========")
         # TODO use json to store env parameters later
-        logger.info("constraint chromosome topology to be circular: " + str(self.force_circular))
-        logger.info("constraint chromosome composition to be single: " + str(uni_chromosome))
-
         self.graph = Assembly(self.graph_gfa)
         self.graph.update_vertex_clusters()
         # choose the component
@@ -120,19 +123,25 @@ class Traversome(object):
         elif isinstance(graph_component_selection, float):
             self.graph.reduce_graph_by_weight(cutoff_to_total=graph_component_selection)
         # merge graph if possible
-        if self.graph.merge_all_possible_vertices():
-            if self.alignment_file:
-                # the graph was changed and cannot be traced back to the names in the alignment
-                # this can also be moved down considering structure, however more computational efficient to be here
-                raise Exception("Graph be simplified by merging all possible nodes ! "
-                                "Please provide the raw reads, or simplify the graph and redo the alignment!")
-            else:
-                logger.info("  graph merged")
-                self.graph_gfa = os.path.join(self.outdir, "processed.gfa")
-                self.graph.write_to_gfa(self.graph_gfa)
-        self.graph.update_vertex_clusters()
+        if self.kwargs.get("keep_graph_redundancy", False):
+            pass
+        else:
+            if self.graph.merge_all_possible_vertices():
+                if self.alignment_file:
+                    # the graph was changed and cannot be traced back to the names in the alignment
+                    # this can also be moved down considering structure, however more computational efficient to be here
+                    raise Exception("Graph be simplified by merging all possible nodes ! "
+                                    "Please provide the raw reads, or simplify the graph and redo the alignment,"
+                                    "or use (NOT RECOMMENDED) '--keep-graph-redundancy' to skip!")
+                else:
+                    logger.info("  graph merged")
+                    self.graph_gfa = os.path.join(self.outdir, "processed.gfa")
+                    self.graph.write_to_gfa(self.graph_gfa)
+            self.graph.update_vertex_clusters()
         logger.info("  #contigs in total: {}".format(len(self.graph.vertex_info)))
         logger.info("  #contigs in each component: {}".format(sorted([len(cls) for cls in self.graph.vertex_clusters])))
+
+        self.load_user_paths()
 
         if not self.alignment_file:
             if self.resume and os.path.exists(os.path.join(self.outdir, "alignment.gaf")):
@@ -176,14 +185,18 @@ class Traversome(object):
         logger.info("======== VARIANTS SEARCHING STARTS ========")
         # logger.debug("Cleaning graph ...")
         # self.clean_graph()
-        logger.debug("Generating candidate variant paths ...")
-        self.gen_candidate_paths(
-            path_generator=path_gen_scheme,
-            min_num_search=self.kwargs.get("min_valid_search", 1000),
-            max_num_search=self.kwargs.get("max_valid_search", 100000),
-            num_processes=self.num_processes,
-            uni_chromosome=uni_chromosome
-        )
+        if self.kwargs.get("max_valid_search", 100000) == 0:
+            self.variant_paths = list(self.user_variant_paths)
+            self._update_params_for_variants()
+        else:
+            logger.debug("Generating candidate variant paths ...")
+            self.gen_candidate_paths(
+                # path_generator=path_gen_scheme,
+                min_num_search=self.kwargs.get("min_valid_search", 1000),
+                max_num_search=self.kwargs.get("max_valid_search", 100000),
+                num_processes=self.num_processes,
+                uni_chromosome=uni_chromosome
+            )
 
         if self.num_put_variants == 0:
             logger.error("No candidate variants found!")
@@ -205,18 +218,56 @@ class Traversome(object):
                 criterion=self.kwargs["model_criterion"])
             # update candidate info according to the result of reverse model selection
             # assure self.repr_to_merged_variants was generated
-            if len([repr_v for repr_v in self.variant_proportions if repr_v in self.repr_to_merged_variants]) > 1:
+            if self.kwargs["n_generations"] > 0 and \
+                    len([repr_v for repr_v in self.variant_proportions if repr_v in self.repr_to_merged_variants]) > 1:
                 logger.debug("Estimating candidate variant frequencies using Bayesian MCMC ...")
                 self.variant_proportions = self.fit_model_using_bayesian_mcmc(chosen_ids=self.variant_proportions)
             logger.info("======== MODEL SELECTION & FITTING ENDS ========\n")
 
         self.output_seqs()
 
+    def load_user_paths(self):
+        added_paths = set()
+        count_fixed = 0
+        count_total = 0
+        if self.var_fixed_f:
+            for var_path in user_paths_reader(self.var_fixed_f):
+                if self.graph.contain_path(var_path):
+                    # TODO: update the code if circular become an attribute later
+                    # var_path = self.graph.get_standardized_path(var_path)
+                    var_path = self.graph.get_standardized_path_circ(self.graph.roll_path(var_path))
+                    if var_path not in added_paths:
+                        self.user_variant_paths.append(var_path)
+                        self.user_variant_fixed_ids.add(count_fixed)
+                        count_fixed += 1
+                else:
+                    logger.warning(f"{count_total + 1}th variant in {self.var_fixed_f} is incompatible with the graph!")
+                count_total += 1
+        if self.var_candidate_f:
+            count_2 = 0
+            for var_path in user_paths_reader(self.var_candidate_f):
+                count_2 += 1
+                if self.graph.contain_path(var_path):
+                    # TODO: update the code if circular become an attribute later
+                    var_path = self.graph.get_standardized_path_circ(self.graph.roll_path(var_path))
+                    if var_path not in added_paths:
+                        self.user_variant_paths.append(var_path)
+                else:
+                    logger.warning(f"{count_2}th variant in {self.var_candidate_f} is incompatible with the graph!")
+                count_total += 1
+        if len(self.user_variant_paths):
+            logger.info(
+                f"{len(self.user_variant_paths)} unique valid variants "
+                f"out of {count_total} user assigned variants loaded.")
+
     def generate_read_paths(self, graph_alignment, filter_by_graph=True):
         align_len_at_path = []
         if filter_by_graph:
             for go_record, record in enumerate(graph_alignment.raw_records):
                 this_path = self.graph.get_standardized_path(record.path)
+                if len(this_path) == 0:
+                    logger.warning(f"Record {go_record} is empty")
+                    continue
                 if this_path not in self.read_paths:
                     if self.graph.contain_path(this_path):
                         self.read_paths[this_path] = [go_record]
@@ -278,7 +329,7 @@ class Traversome(object):
 
     def gen_candidate_paths(
             self,
-            path_generator="H",
+            # path_generator="H",
             min_num_search=1000,
             max_num_search=100000,
             num_processes=1,
@@ -286,22 +337,31 @@ class Traversome(object):
         """
         generate candidate variant paths from the graph
         """
-        if path_generator == "H":
-            generator = PathGenerator(
-                traversome_obj=self,
-                min_num_valid_search=min_num_search,
-                max_num_valid_search=max_num_search,
-                num_processes=num_processes,
-                force_circular=self.force_circular,
-                uni_chromosome=uni_chromosome,
-                temp_dir=fpath(self.outdir).joinpath("paths"),
-                resume=self.resume,
-                )
-            generator.generate_heuristic_paths()
-            self.variant_paths = generator.variants
-        self.__update_params_for_variants()
+        # if path_generator == "H":
+        generator = PathGenerator(
+            traversome_obj=self,
+            min_num_valid_search=min_num_search,
+            max_num_valid_search=max_num_search,
+            num_processes=num_processes,
+            force_circular=self.force_circular,
+            uni_chromosome=uni_chromosome,
+            temp_dir=fpath(self.outdir).joinpath("paths"),
+            resume=self.resume,
+            )
+        generator.generate_heuristic_paths()
+        # TODO add self.user_variant_paths during heuristic search instead of here
+        self.variant_paths = list(self.user_variant_paths)
+        user_v_p_set = set(self.user_variant_paths)
+        for go_v, g_variant in enumerate(generator.variants):
+            if g_variant not in user_v_p_set:
+                self.variant_paths.append(g_variant)
+            else:
+                logger.info(f"searched variant {go_v + 1} existed in user designed.")
+        # self.variant_paths = self.user_variant_paths + generator.variants
+        # self.variant_paths = generator.variants
+        self._update_params_for_variants()
 
-    def __update_params_for_variants(self):
+    def _update_params_for_variants(self):
         self.variant_sizes = [self.graph.get_path_length(variant_p, check_valid=False, adjust_for_cyclic=True)
                               for variant_p in self.variant_paths]
         self.num_put_variants = len(self.variant_paths)
@@ -323,7 +383,7 @@ class Traversome(object):
     def get_variant_sub_paths(self, variant_path):
         return self.subpath_generator.gen_subpaths(variant_path)
 
-    def gen_all_informative_sub_paths(self):
+    def gen_all_informative_sub_paths(self, skip_shared=True):
         """
         generate all sub paths and their occurrences for each candidate variant
         """
@@ -364,15 +424,16 @@ class Traversome(object):
                     self.all_sub_paths[this_sub_path] = SubPathInfo()
                 self.all_sub_paths[this_sub_path].from_variants[go_variant] = this_sub_count
 
-        # to simplify downstream calculation, remove shared sub-paths (with same counts) shared by all variants
-        for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
-            if len(this_sub_path_info.from_variants) == self.num_put_variants and \
-                    len(set(this_sub_path_info.from_variants.values())) == 1:
-                for variant_p, sub_paths_group in self.variant_subpath_counters.items():
-                    # TODO: using simulated data to check what if sub_paths_group is empty
-                    #       it should be fine though
-                    del sub_paths_group[this_sub_path]
-                del self.all_sub_paths[this_sub_path]
+        if skip_shared:
+            # to simplify downstream calculation, remove shared sub-paths (with same counts) shared by all variants
+            for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
+                if len(this_sub_path_info.from_variants) == self.num_put_variants and \
+                        len(set(this_sub_path_info.from_variants.values())) == 1:
+                    for variant_p, sub_paths_group in self.variant_subpath_counters.items():
+                        # TODO: using simulated data to check what if sub_paths_group is empty
+                        #       it should be fine though
+                        del sub_paths_group[this_sub_path]
+                    del self.all_sub_paths[this_sub_path]
 
         if not self.all_sub_paths:
             logger.error("No valid subpath found!")
@@ -812,7 +873,8 @@ class Traversome(object):
             be_unidentifiable_to=self.be_unidentifiable_to,
             loglevel=self.loglevel)
         return self.max_like_fit.reverse_model_selection(
-            n_proc=self.num_processes, criterion=criterion, chosen_ids=chosen_ids)
+            n_proc=self.num_processes, criterion=criterion, chosen_ids=chosen_ids,
+            user_fixed_ids=self.user_variant_fixed_ids)
 
     # def update_candidate_info(self, ext_component_proportions: typingODict[int, float] = None):
     #     """
@@ -838,6 +900,7 @@ class Traversome(object):
     #     for
 
     def fit_model_using_bayesian_mcmc(self, chosen_ids: typingODict[int, bool] = None):
+        from traversome.ModelFitBayesian import ModelFitBayesian
         self.bayesian_fit = ModelFitBayesian(self)
         return self.bayesian_fit.run_mcmc(self.kwargs["n_generations"], self.kwargs["n_burn"], chosen_ids=chosen_ids)
 
@@ -894,38 +957,4 @@ class Traversome(object):
         self.random.shuffle(sorted_list)
         return sorted_list
 
-    def setup_timed_logger(self, loglevel="INFO"):
-        """
-        Configure Loguru to log to stdout and logfile.
-        """
-        # add stdout logger
-        timed_config = {
-            "handlers": [
-                {
-                    "sink": sys.stdout, 
-                    "format": (
-                        "{time:YYYY-MM-DD-HH:mm:ss.SS} | "
-                        "<magenta>{file: >20} | </magenta>"
-                        "<cyan>{function: <30} | </cyan>"
-                        "<level>{message}</level>"
-                    ),
-                    "level": loglevel,
-                    },
-                {
-                    "sink": self.logfile,                   
-                    "format": "{time:YYYY-MM-DD-HH:mm:ss.SS} | "
-                              "<magenta>{file: >20} | </magenta>"
-                              "<cyan>{function: <30} | </cyan>"
-                              "<level>{message}</level>",
-                    "level": loglevel,
-                    }
-            ]
-        }
-        logger.configure(**timed_config)
-        logger.enable("traversome")
-
-        # # if logfile exists then reset it.
-        # if os.path.exists(self.logfile):
-        #     logger.debug('Clearing previous log file.')
-        #     open(self.logfile, 'w').close()
 
