@@ -11,6 +11,7 @@ import traceback
 # import pickle
 import dill
 from typing import OrderedDict as typingODict
+from typing import Union
 # from math import inf
 np.seterr(divide="ignore", invalid="ignore")
 
@@ -133,7 +134,8 @@ class ModelFitMaxLike(object):
                                 n_proc,
                                 criterion=Criterion.AIC,
                                 chosen_ids: typingODict[int, bool] = None,
-                                random_size: int = 100):
+                                random_size: int = 100,
+                                user_fixed_ids: Union[list, tuple, set, None] = None):
         """
         :param n_proc: number of processes
         :param criterion:
@@ -145,6 +147,8 @@ class ModelFitMaxLike(object):
             instead of testing all of them like.
             Choose 0 to disable this process.
             # TODO further info required
+        :param user_fixed_ids:
+            user fixed variant ids that will not be dropped during model selection.
         """
         # TODO: tolerance can be larger
         if random_size != 0 and n_proc > random_size:
@@ -188,7 +192,10 @@ class ModelFitMaxLike(object):
         self.__drop_zero_variants(chosen_ids, previous_prop, previous_echo, diff_tolerance)
         # if one component is identified as indispensable in the n-dimension model,
         # it will be indispensable for subsequent (n-m)-dimension models
-        indispensable_ids = {}
+        if user_fixed_ids:  # in the case of user assigned fixed 'indispensable' variant id(s)
+            indispensable_ids = {u_id: True for u_id in user_fixed_ids}
+        else:
+            indispensable_ids = {}
         # stepwise
         while len(chosen_ids) > 1:
             logger.debug("Trying dropping {} variant(s) ..".format(self.num_put_variants - len(chosen_ids) + 1))
@@ -232,6 +239,8 @@ class ModelFitMaxLike(object):
                     pool_obj = Pool(processes=n_proc)
                     job_list = []
                     for go_w in range(len(this_rd_ids)):
+                        # TODO: to fix the issue that the behaviour of the logger in the worker become be different
+                        #       sim.alignment.new.100k.300k.100x.traversome-bic-N1000-user-p
                         logger.debug("assigning job to worker {}".format(go_w + 1))
                         job_list.append(pool_obj.apply_async(run_dill_encoded, (payload,)))
                         logger.debug("assigned job to worker {}".format(go_w + 1))
@@ -425,11 +434,14 @@ class ModelFitMaxLike(object):
             logger.debug("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in echo_prop.items()]))
             logger.debug("Log-likelihood: %s" % this_like)
             if criteria == "aic":
+                logger.debug("len_param: %s" % neg_loglike_func_obj.variable_size)
                 this_criteria = aic(
                     loglike=this_like,
                     len_param=neg_loglike_func_obj.variable_size)
                 logger.debug("%s: %s" % (criteria, this_criteria))
             elif criteria == "bic":
+                logger.debug("len_param: %s" % neg_loglike_func_obj.variable_size)
+                logger.debug("len_data: %s" % neg_loglike_func_obj.sample_size)
                 this_criteria = bic(
                     loglike=this_like,
                     len_param=neg_loglike_func_obj.variable_size,
