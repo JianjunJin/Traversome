@@ -49,7 +49,7 @@ class SimpleSimulator(object):
             self.mean, self.std_dev = 13000, 10000
         elif length_distribution == "hifi":  # ? approximately 12~24 kb
             self.mean, self.std_dev = 15000, 10000
-        elif length_distribution == tuple and len(length_distribution) == 2:
+        elif isinstance(length_distribution, (tuple, list)) and len(length_distribution) == 2:
             self.mean, self.std_dev = length_distribution
         else:
             raise ValueError("Invalid input for length_distribution!")
@@ -257,11 +257,17 @@ class SimpleSimulator(object):
             seek_value=align_start + align_len,
             ceiling=True,
             return_gap=True)
-        if start_v_id > end_v_id + 1:
-            raise ValueError(f"start_v_id ({start_v_id}) > end_v_id + 1 ({end_v_id + 1})!")
-        elif start_v_id == end_v_id + 1:
-            # a path is in the overlap between two vertices, randomly choose one of the vertices
-            pick_ = [start_v_id, end_v_id][self._random_01.pop()]
+        if start_v_id > end_v_id:
+            # a path is in the overlap between two or even more vertices, randomly choose one of the vertices
+            # For example following sequential contigs with overlaps
+            # contig_1 |----------------------|
+            # contig_2               |-----------|
+            # contig_3                  |-------------|
+            # read_1                      <-->
+            #    will result start_v_id = end_v_id + 2
+            # raise ValueError(f"start_v_id ({start_v_id}) > end_v_id + 1 ({end_v_id + 1})!\n")
+            middle_id = int((start_v_id + end_v_id)/2.)
+            pick_ = [middle_id, middle_id + 1][self._random_01.pop()]
             new_path = self._variant_template[var_id][pick_: pick_ + 1]
         else:
             new_path = self._variant_template[var_id][start_v_id: end_v_id + 1]
