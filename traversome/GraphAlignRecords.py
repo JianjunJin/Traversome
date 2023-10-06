@@ -11,7 +11,7 @@ import re
 from loguru import logger
 from collections import OrderedDict
 from traversome.Assembly import Assembly  # used here to validate type
-from traversome.utils import REV_DEGENERATE  # ,TO_DEGENERATE, run_dill_encoded
+from traversome.utils import REV_DEGENERATE, gaf_str_to_path  # ,TO_DEGENERATE, run_dill_encoded
 import sympy
 from itertools import product
 from multiprocessing import Manager, Pool
@@ -69,16 +69,7 @@ class GAFRecord(object):
         # self.p_seq = None
 
     def parse_gaf_path(self):
-        path_list = []
-        for segment in re.findall(r".[^\s><]*", self.path_str):
-            # omit the coordinates using .split(":")[0]
-            if segment[0] == ">":
-                path_list.append((segment[1:].split(":")[0], True))
-            elif segment[0] == "<":
-                path_list.append((segment[1:].split(":")[0], False))
-            else:
-                path_list.append((segment.split(":")[0], True))
-        return tuple(path_list)
+        return gaf_str_to_path(self.path_str)
 
     def split_cigar_str(self):
         cigar_str = self.optional_fields['cg']
