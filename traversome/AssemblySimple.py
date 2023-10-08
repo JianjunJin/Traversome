@@ -9,6 +9,7 @@ from collections import OrderedDict
 from traversome.utils import Sequence, SequenceList, ProcessingGraphFailed, complementary_seq
 from hashlib import sha256
 from typing import OrderedDict as typingODict
+from typing import Union
 import os
 
 
@@ -19,6 +20,29 @@ import os
 INF = float("inf")
 DEFAULT_COV = 1
 VERTEX_DIRECTION_BOOL_TO_STR = {True: "+", False: "-"}
+
+
+#######################################################
+###   FUNCTIONS
+#######################################################
+def check_positive_value(
+        value: Union[float, int],
+        flag: str,
+        line_num: int) -> Union[float, int]:
+    """
+    Some values may be negative probably due to issues of other software tools (e.g sometimes Bandage output graph).
+    Automatically converting negative values into positive values with warnings.
+    """
+    if value < 0:
+        logger.warning(
+            "Line %i illegitimate %s value " % (line_num, flag) + str(value) + " adjusted to " + str(-value) + "!")
+        return -value
+    # is zero reasonable?
+    # elif value == 0:
+    #     raise ValueError("Line %i illegitimate %s value " % (line_num, flag) + str(value) + "!")
+    else:
+        return value
+
 
 #######################################################
 ###   CLASSES
@@ -320,8 +344,9 @@ class AssemblySimple(object):
         overlap_values = set()
 
         # iterate over lines in gfa
+        line_count = 0
         for line in gfa_open:
-
+            line_count += 1
             # if the line contains a sequence tag 
             if line.startswith("S\t"):
                 elements = line.strip().split("\t")
@@ -330,6 +355,7 @@ class AssemblySimple(object):
                 sequence = elements.pop(0)
                 seq_len_tag = None
                 kmer_count = None
+                seq_depth = None
                 seq_depth_tag = None
                 sh_256_val = None
                 other_attributes = {}
@@ -342,18 +368,26 @@ class AssemblySimple(object):
                     # get the sequence length
                     if element[0].upper() == "LN":
                         seq_len_tag = int(element[-1])
+                        seq_len_tag = check_positive_value(seq_len_tag, "LN", line_count)
                     
                     # ...
                     elif element[0].upper() == "KC":
                         kmer_count = int(element[-1])
+                        kmer_count = check_positive_value(kmer_count, "KC", line_count)
 
                     # get read counts (as kmer counts)
                     elif element[0].upper() == "RC":
                         kmer_count = int(element[-1])
+                        kmer_count = check_positive_value(kmer_count, "KC", line_count)
 
                     # seqdepth tag ...
                     elif element[0].upper() == "DP":
                         seq_depth_tag = float(element[-1])
+                        seq_depth_tag = check_positive_value(seq_depth_tag, "DP", line_count)
+
+                    elif element[0].upper() == "RD":  # took read depth as seq_depth_tag counts
+                        seq_depth_tag = int(element[-1])
+                        seq_depth_tag = check_positive_value(seq_depth_tag, "RD", line_count)
 
                     # get sequence checksum 
                     elif element[0].upper() == "SH":
@@ -392,10 +426,16 @@ class AssemblySimple(object):
                 if (kmer_count is not None) or (seq_depth_tag is not None):
                     
                     # normalize kmer count to be per-bp
-                    if kmer_count is not None:
-                        seq_depth = kmer_count / float(seq_len)
-                    else:  # seq_depth_tag is not None:
+                    if seq_depth_tag is not None:
                         seq_depth = seq_depth_tag
+                    else:
+                        seq_depth = kmer_count / float(seq_len)
+                    # TODO: SPAdes output graph_after_simplification has equal seq_depth_tag and kmer_count
+                    #       which is weird. Thus, modified into above.
+                    # if kmer_count is not None:
+                    #     seq_depth = kmer_count / float(seq_len)
+                    # else:  # seq_depth_tag is not None:
+                    #     seq_depth = seq_depth_tag
                     
                     # if seqdepth is in suitable range then save data
                     if self.min_cov <= seq_depth <= self.max_cov:
@@ -416,8 +456,11 @@ class AssemblySimple(object):
         # return to beginning of file.
         gfa_open.seek(0)
 
-        # iterate over lines in GFA 
+        # iterate over lines in GFA
+        line_count = 0
         for line in gfa_open:
+
+            line_count += 1
 
             # if the line contains a link tag
             if line.startswith("L\t"):
@@ -473,8 +516,10 @@ class AssemblySimple(object):
         # set for storing kmer results
         overlap_values = set()
 
+        line_count = 0
         # iterate over lines in gfa
         for line in gfa_open:
+            line_count += 1
             if line.startswith("S\t"):
                 elements = line.strip().split("\t")
                 elements.pop(0)  # record_type
@@ -491,10 +536,16 @@ class AssemblySimple(object):
                     # skip RC/FC
                     if element[0].upper() == "KC":
                         kmer_count = int(element[-1])
+                        kmer_count = check_positive_value(kmer_count, "KC", line_count)
                     elif element[0].upper() == "RC":  # took read counts as kmer counts
                         kmer_count = int(element[-1])
+                        kmer_count = check_positive_value(kmer_count, "RC", line_count)
                     elif element[0].upper() == "DP":
                         seq_depth_tag = float(element[-1])
+                        seq_depth_tag = check_positive_value(seq_depth_tag, "DP", line_count)
+                    elif element[0].upper() == "RD":  # took read depth as seq_depth_tag counts
+                        seq_depth_tag = int(element[-1])
+                        seq_depth_tag = check_positive_value(seq_depth_tag, "RD", line_count)
                     elif element[0].upper() == "SH":
                         sh_256_val = ":".join(element[2:])
                     elif element[0].upper() == "UR":
@@ -685,6 +736,7 @@ class AssemblySimple(object):
             out_file += ".gfa"
         if not other_attr:
             other_attr = {}
+        logger.debug("  writing graph to " + str(out_file))
         out_file_handler = open(out_file, "w")
         for vertex_name in self.vertex_info:
             out_file_handler.write("\t".join(

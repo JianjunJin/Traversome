@@ -11,7 +11,7 @@ import re
 from loguru import logger
 from collections import OrderedDict
 from traversome.Assembly import Assembly  # used here to validate type
-from traversome.utils import REV_DEGENERATE  # ,TO_DEGENERATE, run_dill_encoded
+from traversome.utils import REV_DEGENERATE, gaf_str_to_path  # ,TO_DEGENERATE, run_dill_encoded
 import sympy
 from itertools import product
 from multiprocessing import Manager, Pool
@@ -69,16 +69,7 @@ class GAFRecord(object):
         # self.p_seq = None
 
     def parse_gaf_path(self):
-        path_list = []
-        for segment in re.findall(r".[^\s><]*", self.path_str):
-            # omit the coordinates using .split(":")[0]
-            if segment[0] == ">":
-                path_list.append((segment[1:].split(":")[0], True))
-            elif segment[0] == "<":
-                path_list.append((segment[1:].split(":")[0], False))
-            else:
-                path_list.append((segment.split(":")[0], True))
-        return tuple(path_list)
+        return gaf_str_to_path(self.path_str)
 
     def split_cigar_str(self):
         cigar_str = self.optional_fields['cg']
@@ -378,7 +369,7 @@ class GraphAlignRecords(object):
     def __init__(
             self,
             alignment_file,
-            alignment_format="GAF",
+            alignment_format=None,
             gen_multi_hits_prob=False,
             # min_aligned_path_len=0,
             min_align_len=0,
@@ -392,8 +383,11 @@ class GraphAlignRecords(object):
     ):
         # store params to self
         self.alignment_file = alignment_file
-        assert alignment_format in ("GAF", "SPA-TSV"), "Unsupported format {}!".format(alignment_format)  # currently
-        self.alignment_format = alignment_format
+        if alignment_format is None:
+            self.alignment_format = self.parse_alignment_format_from_postfix()
+        else:
+            self.alignment_format = alignment_format
+        assert self.alignment_format in ("GAF", "SPA-TSV"), "Unsupported format {}!".format(alignment_format)
         self.parse_cigar = parse_cigar
         self.min_align_len = min_align_len
         # self.min_aligned_path_len = min_aligned_path_len
@@ -924,6 +918,8 @@ class GraphAlignRecords(object):
             self.parse_alignment_file_single()
         else:
             self.parse_alignment_file_mul(num_proc=num_proc, num_block_lines=_num_block_lines)
+            # # empirically 4 is enough, a greater value will not help
+            # self.parse_alignment_file_mul(num_proc=max(num_proc, 4), num_block_lines=_num_block_lines)
 
     def parse_alignment_file_mul(self, num_proc, num_block_lines=10000):
         """
@@ -1115,6 +1111,15 @@ class GraphAlignRecords(object):
         else:
             # TODO
             pass
+
+    def parse_alignment_format_from_postfix(self):
+        if self.alignment_file.lower().endswith(".gaf"):
+            alignment_format = "GAF"
+        elif self.alignment_file.lower().endswith(".tsv"):
+            alignment_format = "SPA-TSV"
+        else:
+            raise Exception("Please denote the alignment format using adequate postfix (.gaf/.tsv)")
+        return alignment_format
 
     def __iter__(self):
         for query_name, read_record in self.read_records.items():

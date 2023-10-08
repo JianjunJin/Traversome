@@ -8,13 +8,16 @@ import sys
 from copy import deepcopy
 from math import log, inf
 from scipy import stats
-from loguru import logger
 from enum import Enum
 from collections import OrderedDict
 import numpy as np
 import random
+import subprocess
 # from pathos.multiprocessing import ProcessingPool as Pool
 import dill
+from loguru import logger
+from typing import List
+import re
 
 
 # PY VERSION CHECK: only 2.7 and 3.5+ (this could be enforced by pip/conda)
@@ -404,9 +407,15 @@ class WeightedGMMWithEM:
 
 # TODO get subpath adaptive to length=1, more general and less restrictions
 class VariantSubPathsGenerator:
-    def __init__(self, graph, force_circular, min_alignment_len, max_alignment_len, read_paths_hashed):
+    def __init__(
+            self,
+            graph,
+            # force_circular,
+            min_alignment_len,
+            max_alignment_len,
+            read_paths_hashed):
         self.graph = graph
-        self.force_circular = force_circular
+        # self.force_circular = force_circular
         self.min_alignment_len = min_alignment_len
         self.max_alignment_len = max_alignment_len
         self.read_paths_hashed = read_paths_hashed
@@ -422,14 +431,17 @@ class VariantSubPathsGenerator:
             these_sub_paths = dict()
             num_seg = len(variant_path)
             # print("run get")
-            if self.force_circular:
+            # if self.force_circular:
+            if self.graph.is_circular_path(variant_path):
                 for go_start_v, start_segment in enumerate(variant_path):
                     # find the longest sub_path,
                     # that begins with start_segment and be in the range of alignment length
                     this_longest_sub_path = [start_segment]
                     this_internal_path_len = 0
                     go_next = (go_start_v + 1) % num_seg
-                    while this_internal_path_len < self.max_alignment_len:
+                    # keep adding vertex until this_internal_path_len is larger than self.max_alignment_len - 2,
+                    # so that the_longest_sub_path can potentially be covered by observed data
+                    while this_internal_path_len <= self.max_alignment_len - 2:
                         next_n, next_e = variant_path[go_next]
                         next_v_info = self.graph.vertex_info[next_n]
                         pre_n, pre_e = this_longest_sub_path[-1]
@@ -445,9 +457,11 @@ class VariantSubPathsGenerator:
                     # if len(this_longest_sub_path) < 2 \
                     #         or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_len:
                     #     continue
-                    # TODO size of 1 can also be included
-                    if len(this_longest_sub_path) < 2:
-                        continue
+
+                    # size of 1 can also be included
+                    # if len(this_longest_sub_path) < 2:
+                    #     continue
+
                     # print("this_longest_sub_path", this_longest_sub_path, "passed")
 
                     # record shorter sub_paths starting from start_segment
@@ -474,7 +488,9 @@ class VariantSubPathsGenerator:
                     this_longest_sub_path = [start_segment]
                     this_internal_path_len = 0
                     go_next = go_start_v + 1
-                    while go_next < num_seg and this_internal_path_len < self.max_alignment_len:
+                    # keep adding vertex until this_internal_path_len is larger than self.max_alignment_len - 2,
+                    # so that the_longest_sub_path can potentially be covered by observed data
+                    while go_next < num_seg and this_internal_path_len <= self.max_alignment_len - 2:
                         next_n, next_e = variant_path[go_next]
                         next_v_info = self.graph.vertex_info[next_n]
                         pre_n, pre_e = this_longest_sub_path[-1]
@@ -482,9 +498,10 @@ class VariantSubPathsGenerator:
                         this_longest_sub_path.append((next_n, next_e))
                         this_internal_path_len += next_v_info.len - this_overlap
                         go_next += 1
-                    if len(this_longest_sub_path) < 2 \
-                            or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_len:
-                        continue
+                    # size of 1 can also be included
+                    # if len(this_longest_sub_path) < 2 \
+                    #         or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_len:
+                    #     continue
                     # record shorter sub_paths starting from start_segment
                     len_this_sub_p = len(this_longest_sub_path)
                     for skip_tail in range(len_this_sub_p - 1):
@@ -492,8 +509,8 @@ class VariantSubPathsGenerator:
                             self.graph.get_standardized_path_circ(this_longest_sub_path[:len_this_sub_p - skip_tail])
                         if this_sub_path not in self.read_paths_hashed:
                             continue
-                        if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_len:
-                            break
+                        # if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_len:
+                        #     break
                         if this_sub_path not in these_sub_paths:
                             these_sub_paths[this_sub_path] = 0
                         these_sub_paths[this_sub_path] += 1
@@ -955,3 +972,230 @@ def run_dill_encoded(payload):
     fun, args = dill.loads(payload)
     return fun(*args)
 
+
+DEAD_CODES = (2, 126, 127)  # python 3.5+
+
+
+def executable(test_this):
+    return True if subprocess.getstatusoutput(test_this)[0] not in DEAD_CODES else False
+
+
+def run_graph_aligner(
+        graph_file: str,
+        seq_file: str,
+        alignment_file: str,
+        num_processes: int = 1):
+    logger.info("Making alignment using GraphAligner ..")
+    this_command = os.path.join("", "GraphAligner") + \
+                   " -g " + graph_file + " -f " + seq_file + " --multimap-score-fraction 0.95" + \
+                   " -x vg -t " + str(num_processes) + \
+                   " -a " + alignment_file + ".tmp.gaf"
+    logger.debug(this_command)
+    ga_run = subprocess.Popen(this_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
+    output, err = ga_run.communicate()
+    # TODO better adjusted for graphaligner log
+    if "Aborted" in output.decode("utf8"):  # or "(ERR)" in output.decode("utf8"):
+        logger.error(output.decode("utf8"))
+        exit()
+    else:
+        os.rename(alignment_file + ".tmp.gaf", alignment_file)
+
+
+def try_gcc_option() -> bool:
+    """
+    According to tests, for some gcc versions (e.g. gxx_linux-64=12.1/2.0) do not support '-fbracket-depth=N'.
+    This function was for getting this information in advance.
+    Return True if '-fbracket-depth=N' is acceptable.
+    """
+    logger.debug("Test gcc option ..")
+    this_command = os.path.join("", "gcc") + " -fbracket-depth=100 --version"
+    logger.debug(this_command)
+    gcc_run = subprocess.Popen(this_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
+    output, err = gcc_run.communicate()
+    output_decode = output.decode("utf8")
+    # gcc: error: unrecognized command-line option '-fbracket-depth=100'
+    # clang: error: unknown argument: '-fbracket-depth=100'
+    if "-fbracket-depth" in output_decode and "error" in output_decode:
+        return False
+    else:
+        return True
+
+
+def find_id_using_binary_search(
+        s_points: List[int],
+        seek_value: int,
+        ceiling: bool,
+        return_gap: bool = False,
+        ):
+    """
+    Called by Simulator.SimpleSimulator.sim_path
+    Using the increasing lookup table and binary search,
+    find the start id that
+    1) is the index of the smallest number that is larger than seek_value (ceiling=True or say range end id), or
+    2) is the index of the largest number that is smaller than seek_value (ceiling=False or say range start id)
+
+    :param s_points: the increasing lookup table
+    :param seek_value:
+    :param ceiling: False (floor or range start id), True (range end id)
+    :param return_gap: return the gap between seek_value and the value of the index
+    """
+    # initialize the left and right pointers
+    len_table = len(s_points)
+    left, right = 0, len_table - 1
+    while left <= right:
+        # calculate the mid-index
+        mid = left + (right - left) // 2
+        # If the mid-element is equal to seek_value, return mid
+        if s_points[mid] == seek_value:
+            if return_gap:
+                return mid, 0
+            else:
+                return mid
+        # If the mid-element is less than seek_value, move the left pointer to mid + 1
+        elif s_points[mid] < seek_value:
+            left = mid + 1
+        # If the mid-element is greater than seek_value, move the right pointer to mid - 1
+        else:
+            right = mid - 1
+
+    # If seek_value is not found in s_points,
+    if ceiling:
+        # return the index of the smallest number that is larger than seek_value
+        if return_gap:
+            if left < len_table:
+                return left, s_points[left] - seek_value
+            else:
+                return len_table - 1, s_points[-1] - seek_value
+        else:
+            return left if left < len(s_points) else len(s_points) - 1
+    else:
+        # return the index of the largest number that is smaller than seek_value
+        if return_gap:
+            return right, seek_value - s_points[right]
+        else:
+            return right
+# test
+# e_points = [1, 5, 10, 15, 20]
+# find_id_using_binary_search(s_points=e_points, seek_value=21, ceiling=False, return_gap=True)
+
+
+def gaf_str_to_path(
+        path_str: str
+    ):
+    """
+    Convert GAF alignment format str, e.g. >53<45>33
+    into a tuple form of path, e.g. (('53', True), ('45', False), ('33', True))
+    """
+    # TODO: Currently circular status has to be automatically detected using the graph
+    path_list = []
+    for segment in re.findall(r".[^\s><]*", path_str):
+        # omit the coordinates using .split(":")[0]
+        if segment[0] == ">":
+            path_list.append((segment[1:].split(":")[0], True))
+        elif segment[0] == "<":
+            path_list.append((segment[1:].split(":")[0], False))
+        else:
+            path_list.append((segment.split(":")[0], True))
+    return tuple(path_list)
+
+
+def path_to_gaf_str(
+        path
+):
+    """
+    Convert a tuple form of path, e.g. (('53', True), ('45', False), ('33', True))
+    into GAF alignment format str, e.g. >53<45>33
+    """
+    return "".join([f"{'>' if e_ else '<'}{n_}" for n_, e_ in path])
+
+
+def bandage_str_to_path(
+        path_str: str
+    ):
+    """
+    Convert GAF alignment format str 53+,45-,33+(circular)
+    into a tuple form of path (('53', True), ('45', False), ('33', True))
+    """
+    # TODO: Currently circular status has to be automatically detected using the graph
+    path_list = []
+    for segment in path_str.replace("(circular)", "").split(","):
+        if segment[-1] == "+":
+            path_list.append((segment[:-1], True))
+        elif segment[-1] == "-":
+            path_list.append((segment[:-1], False))
+        else:
+            path_list.append((segment, True))
+    return tuple(path_list)
+
+
+def user_paths_reader(
+        user_path_f: str
+    ):
+    paths = []
+    with open(user_path_f, "r") as input_h:
+        count_l = 1
+        for line in input_h:
+            if "+" in line or "-" in line:
+                paths.append(bandage_str_to_path(line.strip()))
+            elif ">" in line or "<" in line:
+                paths.append(gaf_str_to_path(line.strip()))
+            else:
+                raise NotImplementedError(f"path format unrecognized: line {count_l}: {line}")
+            count_l += 1
+    return paths
+
+
+TIMED_FORMAT = "{time:YYYY-MM-DD-HH:mm:ss.SS} | " \
+               "<magenta>{file: >20} | </magenta>" \
+               "<cyan>{function: <30} | </cyan>" \
+               "<level>{message}</level>"
+SIMPLE_FORMAT = "<level>{message}</level>"
+
+
+def setup_logger(loglevel="INFO", timed=True, log_file=None, screen_out=sys.stdout):
+    """
+    Configure Loguru to log to stdout and logfile.
+    param: sink_list e.g. [sys.stdout, logfile]
+    """
+    config = {
+        "handlers": [
+            {
+                "sink": sink_obj,
+                "format": TIMED_FORMAT if timed else SIMPLE_FORMAT,
+                "level": loglevel,
+            }
+            for sink_obj in [screen_out, log_file] if sink_obj]
+    }
+    logger.configure(**config)
+    logger.enable("traversome")
+
+#
+# def setup_timed_logger(loglevel="INFO"):
+#     """
+#     Configure Loguru to log to stdout and logfile.
+#     """
+#     # add stdout logger
+#     timed_config = {
+#         "handlers": [
+#             {
+#                 "sink": sys.stdout,
+#                 "format": (
+#                     "{time:YYYY-MM-DD-HH:mm:ss.SS} | "
+#                     "<magenta>{file: >20} | </magenta>"
+#                     "<cyan>{function: <30} | </cyan>"
+#                     "<level>{message}</level>"
+#                 ),
+#                 "level": loglevel,
+#                 },
+#             {
+#                 "sink": self.logfile,
+#                 "format": "{time:YYYY-MM-DD-HH:mm:ss.SS} | "
+#                           "<magenta>{file: >20} | </magenta>"
+#                           "<cyan>{function: <30} | </cyan>"
+#                           "<level>{message}</level>",
+#                 "level": loglevel,
+#                 }
+#         ]
+#     }
+#     logger.configure(**timed_config)
+#     logger.enable("traversome")

@@ -603,8 +603,9 @@ class Assembly(AssemblySimple):
                         self.remove_vertex([this_vertex, next_vertex], update_cluster=False)
                         break
 
-        # update the clusters now that some vertices have been merged.
-        self.update_vertex_clusters()
+        if merged:
+            # update the clusters
+            self.update_vertex_clusters()
 
         # return boolean of whether anything was merged.
         return merged
@@ -1243,46 +1244,6 @@ class Assembly(AssemblySimple):
             here_standardized_variant.append(standard_part)
 
         return corrected_variant, tuple(sorted(here_standardized_variant))  # , key=lambda x: smart_trans_for_sort(x)
-
-    def get_num_of_possible_alignment_start_points(self, read_len_aligned, align_to_path, path_internal_len):
-        """
-        If a read with certain length could be aligned to a path,
-        calculate how many possible start points could this alignment happen.
-
-        Example:
-        ----------------------------------------
-        |      \                               |
-        |     b \          e          / a      |
-        |        \___________________/         |
-        |        /                   \         |
-        |     c /                     \ d      |
-        |      /                       \       |
-        |     /                         \      |
-        |                                \     |
-        ----------------------------------------
-        for graph(a=2,b=3,c=4,d=5,e=6), if read has length of 11 and be aligned to b->e->d,
-        then there could be 3 possible alignment start points
-
-        :param read_len_aligned:
-        :param align_to_path:
-        :param path_internal_len:
-        :return:
-        """
-        # uni_overlap = self.__uni_overlap if self.__uni_overlap else 0
-        maximum_num_cat = read_len_aligned - path_internal_len - 2
-        # trim left
-        left_n1, left_e1 = align_to_path[0]
-        left_n2, left_e2 = align_to_path[1]
-        left_info = self.vertex_info[left_n1]
-        left_overlap = left_info.connections[left_e1][(left_n2, not left_e2)]
-        left_trim = max(maximum_num_cat - left_info.len - left_overlap, 0)
-        # trim right
-        right_n1, right_e1 = align_to_path[-1]
-        right_n2, right_e2 = align_to_path[-2]
-        right_info = self.vertex_info[right_n1]
-        right_overlap = right_info.connections[not right_e1][(right_n2, right_e2)]
-        right_trim = max(maximum_num_cat - right_info.len - right_overlap, 0)
-        return maximum_num_cat - left_trim - right_trim
 
     def get_branching_ends(self):
         branching_ends = set()

@@ -15,9 +15,8 @@ from collections import OrderedDict
 from traversome.Assembly import Assembly
 from traversome.GraphAlignRecords import GraphAlignRecords
 from traversome.utils import \
-    SubPathInfo, Criterion, VariantSubPathsGenerator  # ProcessingGraphFailed,
+    SubPathInfo, Criterion, VariantSubPathsGenerator, executable, run_graph_aligner, user_paths_reader, setup_logger
 from traversome.ModelFitMaxLike import ModelFitMaxLike
-from traversome.ModelFitBayesian import ModelFitBayesian
 from traversome.PathGenerator import PathGenerator
 from traversome.ModelGenerator import PathMultinomialModel
 # from traversome.CleanGraph import CleanGraph
@@ -39,7 +38,10 @@ class Traversome(object):
             self,
             graph,
             alignment,
+            reads_file,
             outdir,
+            var_fixed=None,
+            var_candidate=None,
             num_processes=1,
             force_circular=True,
             out_prob_threshold=0.001,
@@ -51,8 +53,10 @@ class Traversome(object):
         # store input files and params
         self.graph_gfa = graph
         self.alignment_file = alignment
-        self.alignment_format = self.parse_alignment_format_from_postfix()
+        self.reads_file = reads_file
         self.outdir = outdir
+        self.var_fixed_f = var_fixed
+        self.var_candidate_f = var_candidate
         self.num_processes = num_processes
         self.force_circular = force_circular
         self.out_prob_threshold = out_prob_threshold
@@ -63,13 +67,13 @@ class Traversome(object):
         # init logger
         self.logfile = os.path.join(self.outdir, "traversome.log.txt")
         self.loglevel = loglevel.upper()
-        self.setup_timed_logger(loglevel.upper())
+        setup_logger(loglevel=self.loglevel, timed=True, log_file=self.logfile)
 
         # alignment and graph values
         self.graph = None
         # self.alignment = None
         self.align_len_at_path_sorted = None
-        self.__align_len_lookup_table = {}
+        self.__align_len_id_lookup_table = {}
         self.max_alignment_length = None
         self.min_alignment_length = None
         self.read_paths = OrderedDict()
@@ -77,6 +81,8 @@ class Traversome(object):
         self.subpath_generator = None
 
         # variant model to be generated
+        self.user_variant_paths = []
+        self.user_variant_fixed_ids = set()
         self.variant_paths = []  # each element is a tuple(path)
         self.variant_sizes = []
         self.num_put_variants = None
@@ -87,7 +93,7 @@ class Traversome(object):
         self.be_unidentifiable_to = {}
         # use the merged variants to represent each set of variants.
         # within each set the variants are unidentifiable to each other
-        self.merged_variants = {}
+        self.repr_to_merged_variants = {}
         # The result of model fitting using ml/mc, the base to update above model information for a second fitting run
         # {variant_id: percent}
         self.variant_proportions = OrderedDict()
@@ -101,33 +107,66 @@ class Traversome(object):
         self.random = random
         self.random.seed(random_seed)
 
-    def run(self, path_gen_scheme="H", hetero_chromosomes=True):
+    def run(self,
+            # path_gen_scheme="H",
+            uni_chromosome=False):
         """
-        Parse the assembly graph files ...
         """
         logger.info("======== DIGESTING DATA STARTS ========")
+        # TODO use json to store env parameters later
         self.graph = Assembly(self.graph_gfa)
         self.graph.update_vertex_clusters()
+        # choose the component
         graph_component_selection = self.kwargs.get("graph_component_selection", 0)
         if isinstance(graph_component_selection, int) or isinstance(graph_component_selection, slice):
             self.graph.reduce_graph_by_weight(component_ids=graph_component_selection)
         elif isinstance(graph_component_selection, float):
             self.graph.reduce_graph_by_weight(cutoff_to_total=graph_component_selection)
+        # merge graph if possible
+        if self.kwargs.get("keep_graph_redundancy", False):
+            pass
+        else:
+            if self.graph.merge_all_possible_vertices():
+                if self.alignment_file:
+                    # the graph was changed and cannot be traced back to the names in the alignment
+                    # this can also be moved down considering structure, however more computational efficient to be here
+                    raise Exception("Graph be simplified by merging all possible nodes ! "
+                                    "Please provide the raw reads, or simplify the graph and redo the alignment,"
+                                    "or use (NOT RECOMMENDED) '--keep-graph-redundancy' to skip!")
+                else:
+                    logger.info("  graph merged")
+                    self.graph_gfa = os.path.join(self.outdir, "processed.gfa")
+                    self.graph.write_to_gfa(self.graph_gfa)
+            self.graph.update_vertex_clusters()
         logger.info("  #contigs in total: {}".format(len(self.graph.vertex_info)))
         logger.info("  #contigs in each component: {}".format(sorted([len(cls) for cls in self.graph.vertex_clusters])))
 
+        self.load_user_paths()
+
+        if not self.alignment_file:
+            if self.resume and os.path.exists(os.path.join(self.outdir, "alignment.gaf")):
+                self.alignment_file = os.path.join(self.outdir, "alignment.gaf")
+            elif executable("GraphAligner"):  # TODO: add path option
+                self.alignment_file = os.path.join(self.outdir, "alignment.gaf")
+                # TODO: pass options to GraphAligner
+                run_graph_aligner(
+                    graph_file=self.graph_gfa,
+                    seq_file=self.reads_file,
+                    alignment_file=self.alignment_file,
+                    num_processes=self.num_processes)
+            else:
+                raise Exception("GraphAligner not available or damaged!")
         alignment = GraphAlignRecords(
             self.alignment_file,
-            alignment_format=self.alignment_format,
             min_align_len=self.kwargs.get("min_alignment_len_cutoff", 100),
-            min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.8),
+            min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.85),
         )
         self.generate_read_paths(
             graph_alignment=alignment,
             filter_by_graph=True)
         self.subpath_generator = VariantSubPathsGenerator(
             graph=self.graph,
-            force_circular=self.force_circular,
+            # force_circular=self.force_circular,
             min_alignment_len=self.min_alignment_length,
             max_alignment_len=self.max_alignment_length,
             read_paths_hashed=set(self.read_paths))
@@ -146,23 +185,29 @@ class Traversome(object):
         logger.info("======== VARIANTS SEARCHING STARTS ========")
         # logger.debug("Cleaning graph ...")
         # self.clean_graph()
-        logger.debug("Generating candidate variant paths ...")
-        self.gen_candidate_paths(
-            path_generator=path_gen_scheme,
-            min_num_search=self.kwargs.get("min_valid_search", 1000),
-            max_num_search=self.kwargs.get("max_valid_search", 100000),
-            num_processes=self.num_processes,
-            hetero_chromosomes=hetero_chromosomes
-        )
-        logger.info("======== VARIANTS SEARCHING ENDS ========\n")
+        if self.kwargs.get("max_valid_search", 100000) == 0:
+            self.variant_paths = list(self.user_variant_paths)
+            self._update_params_for_variants()
+        else:
+            logger.debug("Generating candidate variant paths ...")
+            self.gen_candidate_paths(
+                # path_generator=path_gen_scheme,
+                min_num_search=self.kwargs.get("min_valid_search", 1000),
+                max_num_search=self.kwargs.get("max_valid_search", 100000),
+                num_processes=self.num_processes,
+                uni_chromosome=uni_chromosome
+            )
 
-        logger.info("======== MODEL SELECTION & FITTING STARTS ========")
         if self.num_put_variants == 0:
             logger.error("No candidate variants found!")
+            logger.info("======== VARIANTS SEARCHING ENDS ========\n")
             raise SystemExit(0)
-        elif self.num_put_variants == 1:
+        elif self.num_put_variants == 1 or len(self.repr_to_merged_variants) == 1:
             self.variant_proportions[0] = 1.
+            logger.info("======== VARIANTS SEARCHING ENDS ========\n")
         else:
+            logger.info("======== VARIANTS SEARCHING ENDS ========\n")
+            logger.info("======== MODEL SELECTION & FITTING STARTS ========")
             logger.debug("Estimating candidate variant frequencies using Maximum Likelihood...")
             # if self.kwargs["criterion"] == "single":
             #     # single point estimate
@@ -172,27 +217,57 @@ class Traversome(object):
             self.variant_proportions = self.fit_model_using_reverse_model_selection(
                 criterion=self.kwargs["model_criterion"])
             # update candidate info according to the result of reverse model selection
-            if len(self.variant_proportions) > 1:
+            # assure self.repr_to_merged_variants was generated
+            if self.kwargs["n_generations"] > 0 and \
+                    len([repr_v for repr_v in self.variant_proportions if repr_v in self.repr_to_merged_variants]) > 1:
                 logger.debug("Estimating candidate variant frequencies using Bayesian MCMC ...")
                 self.variant_proportions = self.fit_model_using_bayesian_mcmc(chosen_ids=self.variant_proportions)
-        logger.info("======== MODEL SELECTION & FITTING ENDS ========\n")
+            logger.info("======== MODEL SELECTION & FITTING ENDS ========\n")
 
         self.output_seqs()
 
-    def parse_alignment_format_from_postfix(self):
-        if self.alignment_file.lower().endswith(".gaf"):
-            alignment_format = "GAF"
-        elif self.alignment_file.lower().endswith(".tsv"):
-            alignment_format = "SPA-TSV"
-        else:
-            raise Exception("Please denote the alignment format using adequate postfix (.gaf/.tsv)")
-        return alignment_format
+    def load_user_paths(self):
+        added_paths = set()
+        count_fixed = 0
+        count_total = 0
+        if self.var_fixed_f:
+            for var_path in user_paths_reader(self.var_fixed_f):
+                if self.graph.contain_path(var_path):
+                    # TODO: update the code if circular become an attribute later
+                    # var_path = self.graph.get_standardized_path(var_path)
+                    var_path = self.graph.get_standardized_path_circ(self.graph.roll_path(var_path))
+                    if var_path not in added_paths:
+                        self.user_variant_paths.append(var_path)
+                        self.user_variant_fixed_ids.add(count_fixed)
+                        count_fixed += 1
+                else:
+                    logger.warning(f"{count_total + 1}th variant in {self.var_fixed_f} is incompatible with the graph!")
+                count_total += 1
+        if self.var_candidate_f:
+            count_2 = 0
+            for var_path in user_paths_reader(self.var_candidate_f):
+                count_2 += 1
+                if self.graph.contain_path(var_path):
+                    # TODO: update the code if circular become an attribute later
+                    var_path = self.graph.get_standardized_path_circ(self.graph.roll_path(var_path))
+                    if var_path not in added_paths:
+                        self.user_variant_paths.append(var_path)
+                else:
+                    logger.warning(f"{count_2}th variant in {self.var_candidate_f} is incompatible with the graph!")
+                count_total += 1
+        if len(self.user_variant_paths):
+            logger.info(
+                f"{len(self.user_variant_paths)} unique valid variants "
+                f"out of {count_total} user assigned variants loaded.")
 
     def generate_read_paths(self, graph_alignment, filter_by_graph=True):
         align_len_at_path = []
         if filter_by_graph:
             for go_record, record in enumerate(graph_alignment.raw_records):
                 this_path = self.graph.get_standardized_path(record.path)
+                if len(this_path) == 0:
+                    logger.warning(f"Record {go_record} is empty")
+                    continue
                 if this_path not in self.read_paths:
                     if self.graph.contain_path(this_path):
                         self.read_paths[this_path] = [go_record]
@@ -254,30 +329,39 @@ class Traversome(object):
 
     def gen_candidate_paths(
             self,
-            path_generator="H",
+            # path_generator="H",
             min_num_search=1000,
             max_num_search=100000,
             num_processes=1,
-            hetero_chromosomes=True):
+            uni_chromosome=False):
         """
         generate candidate variant paths from the graph
         """
-        if path_generator == "H":
-            generator = PathGenerator(
-                traversome_obj=self,
-                min_num_valid_search=min_num_search,
-                max_num_valid_search=max_num_search,
-                num_processes=num_processes,
-                force_circular=self.force_circular,
-                hetero_chromosome=hetero_chromosomes,
-                temp_dir=fpath(self.outdir).joinpath("paths"),
-                resume=self.resume,
-                )
-            generator.generate_heuristic_paths()
-            self.variant_paths = generator.variants
-        self.__update_params_for_variants()
+        # if path_generator == "H":
+        generator = PathGenerator(
+            traversome_obj=self,
+            min_num_valid_search=min_num_search,
+            max_num_valid_search=max_num_search,
+            num_processes=num_processes,
+            force_circular=self.force_circular,
+            uni_chromosome=uni_chromosome,
+            temp_dir=fpath(self.outdir).joinpath("paths"),
+            resume=self.resume,
+            )
+        generator.generate_heuristic_paths()
+        # TODO add self.user_variant_paths during heuristic search instead of here
+        self.variant_paths = list(self.user_variant_paths)
+        user_v_p_set = set(self.user_variant_paths)
+        for go_v, g_variant in enumerate(generator.variants):
+            if g_variant not in user_v_p_set:
+                self.variant_paths.append(g_variant)
+            else:
+                logger.info(f"searched variant {go_v + 1} existed in user designed.")
+        # self.variant_paths = self.user_variant_paths + generator.variants
+        # self.variant_paths = generator.variants
+        self._update_params_for_variants()
 
-    def __update_params_for_variants(self):
+    def _update_params_for_variants(self):
         self.variant_sizes = [self.graph.get_path_length(variant_p, check_valid=False, adjust_for_cyclic=True)
                               for variant_p in self.variant_paths]
         self.num_put_variants = len(self.variant_paths)
@@ -292,7 +376,7 @@ class Traversome(object):
         elif self.num_put_variants == 0:
             logger.warning("No valid configuration found for the input assembly graph.")
         else:
-            # self.merged_variants = OrderedDict([(0, [0])])
+            # self.repr_to_merged_variants = OrderedDict([(0, [0])])
             logger.warning("Only one genomic configuration found for the input assembly graph.")
 
     # TODO get subpath adaptive to length=1, more general and less restrictions
@@ -307,8 +391,9 @@ class Traversome(object):
         # this_overlap = self.graph.uni_overlap()
         # self.variant_subpath_counters = OrderedDict()
         for this_var_p in self.variant_paths:
-            foo = self.get_variant_sub_paths(this_var_p)
-        self.variant_subpath_counters = self.subpath_generator.variant_subpath_counters
+            # foo = self.get_variant_sub_paths(this_var_p)
+            self.variant_subpath_counters[this_var_p] = self.get_variant_sub_paths(this_var_p)
+        # self.variant_subpath_counters should be only a subset of self.subpath_generator.variant_subpath_counters
 
         # create unidentifiable table
         self.be_unidentifiable_to = OrderedDict()
@@ -322,11 +407,11 @@ class Traversome(object):
                             self.variant_subpath_counters[self.variant_paths[represent_iso_id]]:
                         self.be_unidentifiable_to[check_iso_id] = represent_iso_id
         # logger.info(str(self.be_unidentifiable_to))
-        self.merged_variants = \
+        self.repr_to_merged_variants = \
             OrderedDict([(rps_id, []) for rps_id in sorted(set(self.be_unidentifiable_to.values()))])
         for check_iso_id, rps_iso_id in self.be_unidentifiable_to.items():
-            self.merged_variants[rps_iso_id].append(check_iso_id)
-        for unidentifiable_ids in self.merged_variants.values():
+            self.repr_to_merged_variants[rps_iso_id].append(check_iso_id)
+        for unidentifiable_ids in self.repr_to_merged_variants.values():
             if len(unidentifiable_ids) > 1:
                 logger.warning("Mutually unidentifiable paths in current alignment: %s" % unidentifiable_ids)
 
@@ -339,26 +424,27 @@ class Traversome(object):
                     self.all_sub_paths[this_sub_path] = SubPathInfo()
                 self.all_sub_paths[this_sub_path].from_variants[go_variant] = this_sub_count
 
-        # to simplify downstream calculation, remove shared sub-paths shared by all variants
-        for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
-            if len(this_sub_path_info.from_variants) == self.num_put_variants and \
-                    len(set(this_sub_path_info.from_variants.values())) == 1:
-                for variant_p, sub_paths_group in self.variant_subpath_counters.items():
-                    # TODO: using simulated data to check what if sub_paths_group is empty
-                    #       it should be fine though
-                    del sub_paths_group[this_sub_path]
-                del self.all_sub_paths[this_sub_path]
+        # shared sub-paths (with the same counts) are also informative because their frequencies may vary
+        #     upon the change of averaged genome size after the change of proportions
+        # WRONG: to simplify downstream calculation, remove shared sub-paths (with same counts) shared by all variants
+        # for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
+        #     if len(this_sub_path_info.from_variants) == self.num_put_variants and \
+        #             len(set(this_sub_path_info.from_variants.values())) == 1:
+        #         for variant_p, sub_paths_group in self.variant_subpath_counters.items():
+        #             del sub_paths_group[this_sub_path]
+        #         del self.all_sub_paths[this_sub_path]
 
         if not self.all_sub_paths:
             logger.error("No valid subpath found!")
-            raise SystemExit(0)
+            # raise SystemExit(0)
             # sys.exit(1)
+            return
 
         # match graph alignments to all_sub_paths
         for read_path, record_ids in self.read_paths.items():
             if read_path in self.all_sub_paths:
                 self.all_sub_paths[read_path].mapped_records = record_ids
-        # # remove sp with zero observations, commented because we have added constraits above
+        # # remove sp with zero observations, commented because we have added constraints above
         # for this_sub_path in list(self.all_sub_paths):
         #     if not self.all_sub_paths[this_sub_path].mapped_records:
         #         del self.all_sub_paths[this_sub_path]
@@ -389,7 +475,7 @@ class Traversome(object):
         #     use_median = False
         # use_median = False
 
-        self.__generate_align_len_lookup_table()
+        self.__generate_align_len_id_lookup_table()
 
         if self.num_processes == 1:
             for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
@@ -415,7 +501,7 @@ class Traversome(object):
                     del self.all_sub_paths[this_sub_path]
 
         # clear memory
-        self.__align_len_lookup_table = {}
+        self.__align_len_id_lookup_table = {}
 
         # 2023-03-14 commented out
         # for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
@@ -432,9 +518,9 @@ class Traversome(object):
         #     external_len = self.graph.get_path_length(this_sub_path, check_valid=False, adjust_for_cyclic=False)
         #     # 0.15802343183582341
         #     # left_id, right_id = get_id_range_in_increasing_values(
-        #     #     min_num=internal_len + 2, max_num=external_len_without_overlap,
+        #     #     min_len=internal_len + 2, max_len=external_len_without_overlap,
         #     #     increasing_numbers=self.align_len_at_path_sorted)
-        #     left_id, right_id = self.__get_id_range_in_increasing_values(min_num=internal_len + 2, max_num=external_len)
+        #     left_id, right_id = self.__get_id_range_in_increasing_values(min_len=internal_len + 2, max_len=external_len)
         #     if left_id > right_id:
         #         # no read found within this scope
         #         logger.trace("Remove {} after pruning contig overlap ..".format(this_sub_path))
@@ -479,65 +565,120 @@ class Traversome(object):
         # and will not be recorded in the path.
         # Thus, the start point can be the path length not the uni_overlap-trimmed one.
         external_len = self.graph.get_path_length(this_sub_path, check_valid=False, adjust_for_cyclic=False)
-        left_id, right_id = self.__get_id_range_in_increasing_values(min_num=internal_len + 2, max_num=external_len)
+        left_id, right_id = self.__get_id_range_in_increasing_lengths(min_len=internal_len + 2, max_len=external_len)
         if left_id > right_id:
             # no read found within this scope
             logger.trace("Remove {} after pruning contig overlap ..".format(this_sub_path))
             del self.all_sub_paths[this_sub_path]
             return 0, 0
-        # 7.611977815628052
-        # maybe slightly precise than above, assessed
-        # this can be super time consuming in case of many subpaths, e.g.
+
+        if len(this_sub_path) > 1:
+            # prepare the end stats for the path
+            left_n1, left_e1 = this_sub_path[0]
+            left_n2, left_e2 = this_sub_path[1]
+            left_info = self.graph.vertex_info[left_n1]
+            left_1_len = left_info.len
+            left_12_overlap = left_info.connections[left_e1][(left_n2, not left_e2)]
+            right_n1, right_e1 = this_sub_path[-1]
+            right_n2, right_e2 = this_sub_path[-2]
+            right_info = self.graph.vertex_info[right_n1]
+            right_1_len = right_info.len
+            right_12_overlap = right_info.connections[not right_e1][(right_n2, right_e2)]
+
+            def get_num_of_possible_alignment_start_points(read_len_aligned):
+                """
+                If a read with certain length could be aligned to a path (size>=2),
+                calculate how many possible start points could this alignment happen.
+
+                Example:
+                ----------------------------------------
+                |      \                               |
+                |     b \          e          / a      |
+                |        \___________________/         |
+                |        /                   \         |
+                |     c /                     \ d      |
+                |      /                       \       |
+                |     /                         \      |
+                |                                \     |
+                ----------------------------------------
+                for graph(a=2,b=3,c=4,d=5,e=6), if read has length of 11 and be aligned to b->e->d,
+                then there could be 3 possible alignment start points
+
+                :param read_len_aligned:
+                :return:
+                """
+                # when a, b, c, d is longer than the read_len_aligned,
+                # the result is the maximum_num_cat without trimming
+                maximum_num_cat = read_len_aligned - internal_len - 2
+                # trim left
+                left_trim = max(maximum_num_cat - left_1_len - left_12_overlap, 0)
+                # trim right
+                right_trim = max(maximum_num_cat - right_1_len - right_12_overlap, 0)
+                return maximum_num_cat - left_trim - right_trim
+        else:
+            def get_num_of_possible_alignment_start_points(read_len_aligned):
+                """
+                If a read with certain length could be aligned to a path (size==1),
+                the start points can be simply calculated as follows
+                """
+                return external_len - read_len_aligned + 1
+
         num_possible_Xs = {}
         align_len_id = left_id
         while align_len_id <= right_id:
             this_len = self.align_len_at_path_sorted[align_len_id]
-            this_x = self.graph.get_num_of_possible_alignment_start_points(
-                read_len_aligned=this_len, align_to_path=this_sub_path, path_internal_len=internal_len)
+            this_x = get_num_of_possible_alignment_start_points(read_len_aligned=this_len)
             if this_len not in num_possible_Xs:
                 num_possible_Xs[this_len] = 0
             num_possible_Xs[this_len] += this_x
             align_len_id += 1
+            # each alignment record will be counted once, if the next align_len_id has the same length
             while align_len_id <= right_id and self.align_len_at_path_sorted[align_len_id] == this_len:
                 num_possible_Xs[this_len] += this_x
                 align_len_id += 1
+        # num_in_range is the total number of alignments (observations) in range
         num_in_range = right_id + 1 - left_id
+        # sum_Xs is the numerator for generating the distribution rate,
+        # with the denominator approximating the genome size
         sum_Xs = sum(num_possible_Xs.values())
+
         return num_in_range, sum_Xs
 
-    def __generate_align_len_lookup_table(self):
+    def __generate_align_len_id_lookup_table(self):
         """
         called by generate_sub_path_stats
-        to speed up align len id looking up
+        to speed up self.__get_id_range_in_increasing_lengths
         """
         its_left_id = 0
         its_right_id = 0
         max_id = len(self.align_len_at_path_sorted) - 1
-        self.__align_len_lookup_table = \
+        self.__align_len_id_lookup_table = \
             {potential_len: {"as_left_lim_id": None, "as_right_lim_id": None}
              for potential_len in range(self.min_alignment_length, self.max_alignment_length + 1)}
         for potential_len in range(self.min_alignment_length, self.max_alignment_length + 1):
             if potential_len == self.align_len_at_path_sorted[its_right_id]:
-                self.__align_len_lookup_table[potential_len]["as_left_lim_id"] = its_left_id = its_right_id
+                self.__align_len_id_lookup_table[potential_len]["as_left_lim_id"] = its_left_id = its_right_id
                 while potential_len == self.align_len_at_path_sorted[its_right_id]:
-                    self.__align_len_lookup_table[potential_len]["as_right_lim_id"] = its_right_id
+                    self.__align_len_id_lookup_table[potential_len]["as_right_lim_id"] = its_right_id
                     if its_right_id == max_id:
                         break
                     else:
                         its_left_id = its_right_id
                         its_right_id += 1
             else:
-                self.__align_len_lookup_table[potential_len]["as_left_lim_id"] = its_right_id
-                self.__align_len_lookup_table[potential_len]["as_right_lim_id"] = its_left_id
+                self.__align_len_id_lookup_table[potential_len]["as_left_lim_id"] = its_right_id
+                self.__align_len_id_lookup_table[potential_len]["as_right_lim_id"] = its_left_id
 
-    def __get_id_range_in_increasing_values(self, min_num, max_num):
-        """
-        called by __generate_align_len_lookup_table
+    def __get_id_range_in_increasing_lengths(self, min_len, max_len):
+        """Given a range of length (min_len, max_len), return the len_id of them,
+        which helps quickly count the number of reads and number of possible matches given a subpath
+
+        called by self.__subpath_info_filler.
         replace get_id_range_in_increasing_values func in utils.py
         """
-        left_id = self.__align_len_lookup_table.get(min_num, {}).\
+        left_id = self.__align_len_id_lookup_table.get(min_len, {}).\
             get("as_left_lim_id", 0)
-        right_id = self.__align_len_lookup_table.get(max_num, {}).\
+        right_id = self.__align_len_id_lookup_table.get(max_len, {}).\
             get("as_right_lim_id", len(self.align_len_at_path_sorted) - 1)
         return left_id, right_id
 
@@ -713,7 +854,7 @@ class Traversome(object):
             all_sub_paths=self.all_sub_paths,
             variant_subpath_counters=self.variant_subpath_counters,
             sbp_to_sbp_id=self.sbp_to_sbp_id,
-            merged_variants=self.merged_variants,
+            repr_to_merged_variants=self.repr_to_merged_variants,
             be_unidentifiable_to=self.be_unidentifiable_to,
             loglevel=self.loglevel)
         return self.max_like_fit.point_estimate(chosen_ids=chosen_ids)
@@ -727,11 +868,12 @@ class Traversome(object):
             all_sub_paths=self.all_sub_paths,
             variant_subpath_counters=self.variant_subpath_counters,
             sbp_to_sbp_id=self.sbp_to_sbp_id,
-            merged_variants=self.merged_variants,
+            repr_to_merged_variants=self.repr_to_merged_variants,
             be_unidentifiable_to=self.be_unidentifiable_to,
             loglevel=self.loglevel)
         return self.max_like_fit.reverse_model_selection(
-            n_proc=self.num_processes, criterion=criterion, chosen_ids=chosen_ids)
+            n_proc=self.num_processes, criterion=criterion, chosen_ids=chosen_ids,
+            user_fixed_ids=self.user_variant_fixed_ids)
 
     # def update_candidate_info(self, ext_component_proportions: typingODict[int, float] = None):
     #     """
@@ -752,11 +894,12 @@ class Traversome(object):
     #     self.be_unidentifiable_to = {}
     #     # use the merged variants to represent each set of variants.
     #     # within each set the variants are unidentifiable to each other
-    #     self.merged_variants = {}
+    #     self.repr_to_merged_variants = {}
     #
     #     for
 
     def fit_model_using_bayesian_mcmc(self, chosen_ids: typingODict[int, bool] = None):
+        from traversome.ModelFitBayesian import ModelFitBayesian
         self.bayesian_fit = ModelFitBayesian(self)
         return self.bayesian_fit.run_mcmc(self.kwargs["n_generations"], self.kwargs["n_burn"], chosen_ids=chosen_ids)
 
@@ -767,15 +910,19 @@ class Traversome(object):
         sorted_rank = sorted(list(self.variant_proportions), key=lambda x: -self.variant_proportions[x])
         # for go_isomer, this_prob in self.ext_component_proportions.items():
         for count_seq, go_variant_set in enumerate(sorted_rank):
+            if self.repr_to_merged_variants and go_variant_set not in self.repr_to_merged_variants:
+                # when self.generate_all_informative_sub_paths() was not called,
+                # bool(repr_to_merged_variants)==False - TODO: when?
+                continue
             this_prob = self.variant_proportions[go_variant_set]
             if this_prob > self.out_prob_threshold:
                 this_base_name = "variant.%0{}i".format(out_digit) % (count_seq + 1)
                 seq_file_name = os.path.join(self.outdir, this_base_name + ".fasta")
                 with open(seq_file_name, "w") as output_handler:
-                    if self.merged_variants:
-                        unidentifiable_ids = self.merged_variants[go_variant_set]
+                    if self.repr_to_merged_variants:
+                        unidentifiable_ids = self.repr_to_merged_variants[go_variant_set]
                     else:
-                        # when self.generate_all_informative_sub_paths() was not called
+                        # when self.generate_all_informative_sub_paths() was not called - TODO: when?
                         unidentifiable_ids = [go_variant_set]
                     len_un_id = len(unidentifiable_ids)
                     freq_mark = "@{}.".format(count_seq + 1) if len_un_id > 1 else ""
@@ -809,38 +956,4 @@ class Traversome(object):
         self.random.shuffle(sorted_list)
         return sorted_list
 
-    def setup_timed_logger(self, loglevel="INFO"):
-        """
-        Configure Loguru to log to stdout and logfile.
-        """
-        # add stdout logger
-        timed_config = {
-            "handlers": [
-                {
-                    "sink": sys.stdout, 
-                    "format": (
-                        "{time:YYYY-MM-DD-HH:mm:ss.SS} | "
-                        "<magenta>{file: >20} | </magenta>"
-                        "<cyan>{function: <30} | </cyan>"
-                        "<level>{message}</level>"
-                    ),
-                    "level": loglevel,
-                    },
-                {
-                    "sink": self.logfile,                   
-                    "format": "{time:YYYY-MM-DD-HH:mm:ss.SS} | "
-                              "<magenta>{file: >20} | </magenta>"
-                              "<cyan>{function: <30} | </cyan>"
-                              "<level>{message}</level>",
-                    "level": loglevel,
-                    }
-            ]
-        }
-        logger.configure(**timed_config)
-        logger.enable("traversome")
-
-        # # if logfile exists then reset it.
-        # if os.path.exists(self.logfile):
-        #     logger.debug('Clearing previous log file.')
-        #     open(self.logfile, 'w').close()
 
