@@ -383,7 +383,7 @@ class Traversome(object):
     def get_variant_sub_paths(self, variant_path):
         return self.subpath_generator.gen_subpaths(variant_path)
 
-    def gen_all_informative_sub_paths(self, skip_shared=True):
+    def gen_all_informative_sub_paths(self):
         """
         generate all sub paths and their occurrences for each candidate variant
         """
@@ -424,16 +424,15 @@ class Traversome(object):
                     self.all_sub_paths[this_sub_path] = SubPathInfo()
                 self.all_sub_paths[this_sub_path].from_variants[go_variant] = this_sub_count
 
-        if skip_shared:
-            # to simplify downstream calculation, remove shared sub-paths (with same counts) shared by all variants
-            for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
-                if len(this_sub_path_info.from_variants) == self.num_put_variants and \
-                        len(set(this_sub_path_info.from_variants.values())) == 1:
-                    for variant_p, sub_paths_group in self.variant_subpath_counters.items():
-                        # TODO: using simulated data to check what if sub_paths_group is empty
-                        #       it should be fine though
-                        del sub_paths_group[this_sub_path]
-                    del self.all_sub_paths[this_sub_path]
+        # shared sub-paths (with the same counts) are also informative because their frequencies may vary
+        #     upon the change of averaged genome size after the change of proportions
+        # WRONG: to simplify downstream calculation, remove shared sub-paths (with same counts) shared by all variants
+        # for this_sub_path, this_sub_path_info in list(self.all_sub_paths.items()):
+        #     if len(this_sub_path_info.from_variants) == self.num_put_variants and \
+        #             len(set(this_sub_path_info.from_variants.values())) == 1:
+        #         for variant_p, sub_paths_group in self.variant_subpath_counters.items():
+        #             del sub_paths_group[this_sub_path]
+        #         del self.all_sub_paths[this_sub_path]
 
         if not self.all_sub_paths:
             logger.error("No valid subpath found!")
