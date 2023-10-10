@@ -925,29 +925,23 @@ class Traversome(object):
                         # when self.generate_all_informative_sub_paths() was not called - TODO: when?
                         unidentifiable_ids = [go_variant_set]
                     len_un_id = len(unidentifiable_ids)
-                    freq_mark = "@{}.".format(count_seq + 1) if len_un_id > 1 else ""
                     lengths = []
-                    for go_ss, comp_id in enumerate(unidentifiable_ids):
+                    for _ss, comp_id in enumerate(unidentifiable_ids):
                         this_seq = self.graph.export_path(self.variant_paths[comp_id], check_valid=False)
                         this_len = len(this_seq.seq)
                         lengths.append(this_len)
-                        if freq_mark:
-                            seq_label = ">{} freq={:.4f}{}{} len={}bp".format(
-                                this_seq.label, this_prob, freq_mark, go_ss, this_len)
-                            logger.debug("{}.{} path={}".format(this_base_name, go_ss, this_seq.label))
+                        if len_un_id > 1:
+                            seq_label = \
+                                f">{this_seq.label} freq<={this_prob:.4f} len={this_len}bp uid={count_seq + 1}.{_ss}"
+                            logger.debug("{}.{} path={}".format(this_base_name, _ss, this_seq.label))
                         else:
-                            seq_label = ">{} freq={:.4f} len={}bp".format(this_seq.label, this_prob, this_len)
+                            seq_label = \
+                                f">{this_seq.label} freq={this_prob:.4f} len={this_len}bp uid={count_seq + 1}"
                             logger.debug("{} path={}".format(this_base_name, this_seq.label))
                         output_handler.write(seq_label + "\n" + this_seq.seq + "\n")
                         count_seq += 1
-                    logger.info("{}x{} freq:{:.4f} len:{}".format(
-                        this_base_name, len_un_id, this_prob, "/".join([str(_l) for _l in lengths])))
-                    # if len_un_id > 1:
-                    #     logger.info("{} freq:{:.4f} len:{} unidentifiable:{}".format(
-                    #         this_base_name, this_prob, "/".join([str(_l) for _l in lengths]), len_un_id))
-                    # else:
-                    #     logger.info("{} freq:{:.4f} len:{}".format(
-                    #         this_base_name, this_prob, "/".join([str(_l) for _l in lengths])))
+                    logger.info(f"{this_base_name}x{len_un_id} "
+                                f"freq={this_prob:.4f} len={'/'.join([str(_l) for _l in lengths])}")
         logger.info("Output {} seqs (%.4f to %.{}f): ".format(count_seq, len(str(self.out_prob_threshold)) - 2)
                     % (max(self.variant_proportions.values()), self.out_prob_threshold))
 
