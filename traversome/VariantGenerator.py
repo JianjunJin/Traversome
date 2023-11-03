@@ -63,10 +63,7 @@ class SingleTraversal(object):
         :return: a candidate variant path. e.g. [("v0", True), ("v1", True), ("v2", False), ("v3", True)]
         """
         if not path:
-            # randomly choose the read path and the direction
-            # # change the weight (-~ depth) to flatten the search
-            # read_p_freq_reciprocal = [1. / self.__read_paths_counter[r_p] for r_p in self.read_paths]
-            # read_path = random.choices(self.read_paths, weights=read_p_freq_reciprocal)[0]
+            # by default, randomly choose the read path and the direction
             read_path = random.choices(self.read_paths)[0]
             if random.random() > 0.5:
                 read_path = self.graph.reverse_path(read_path)
@@ -312,12 +309,12 @@ class SingleTraversal(object):
                                    for go_c, (r_id, r_strand) in enumerate(candidates)]
                         weights = exp(np.array([log(weights[go_c]) - abs(log(cov / current_ave_coverage))
                                                 for go_c, cov in enumerate(cdd_cov)], dtype=np.float128))
-                    try:
-                        chosen_cdd_id = random.choices(range(len(candidates)), weights=weights)[0]
-                    except ValueError:
-                        print(weights)
-                        print("---------------")
-                        raise Exception
+                    # try:
+                    chosen_cdd_id = random.choices(range(len(candidates)), weights=weights)[0]
+                    # except ValueError:
+                    #     print(weights)
+                    #     print("---------------")
+                    #     raise Exception
                     if like_ls_cached:
                         like_ls_cached = like_ls_cached[chosen_cdd_id]
                     else:
@@ -600,7 +597,7 @@ class SingleTraversal(object):
             return mean
 
 
-class PathGenerator(object):
+class VariantPathGenerator(object):
     """
     generate heuristic variants (isomers & sub-chromosomes) from alignments.
     Here the variants are not necessarily identical in contig composition.
@@ -609,6 +606,7 @@ class PathGenerator(object):
 
     def __init__(self,
                  traversome_obj,
+                 start_strategy="random",
                  min_num_valid_search=1000,
                  max_num_valid_search=100001,
                  num_processes=1,
@@ -623,7 +621,10 @@ class PathGenerator(object):
                  resume=False,
                  temp_dir: fpath = None):
         """
-        :param traversome_obj: traversome object
+        :param traversome_obj: traversome object.
+        :param start_strategy: strategy for choosing the start path.
+            - random: randomly choosing from read aligned paths.
+            - numerate: sequentially numerate from read aligned paths.
         :param min_num_valid_search: minimum number of valid searches
         :param max_num_valid_search: maximum number of valid searches
         :param force_circular: force the generated variant topology to be circular
@@ -657,6 +658,8 @@ class PathGenerator(object):
         assert 100 <= decay_t
         assert 0 <= cov_inert
         assert 0.5 <= min_unit_similarity
+        assert start_strategy in {"random", "numerate"}
+        self.start_strategy = start_strategy
         self.graph = traversome_obj.graph
         # self.alignment = traversome_obj.alignment
         # self.tvs = traversome_obj
@@ -683,6 +686,7 @@ class PathGenerator(object):
         for read_path, loc_ids in traversome_obj.read_paths.items():  # make a simplified copy of tvs.read_paths
             self.read_paths.append(read_path)
             self.__read_paths_counter[read_path] = len(loc_ids)
+        self.len_read_p = len(self.read_paths)
         # self.__vertex_to_readpath = {vertex: set() for vertex in self.graph.vertex_info}
         self.__start_subpath_to_readpaths = {}
         self.__middle_subpath_to_readpaths = {}
@@ -795,10 +799,10 @@ class PathGenerator(object):
             # similar to the lander-waterman model in genome sequencing,
             # our hypothesized coverage (a=N*factor, where N is num_valid_search) and fraction in gaps (p) is
             #     a==-log(p)
-            # we want the fraction in gaps to be smaller than 1/len(self.read_paths), e.g. 0.5/len(self.read_paths)
-            current_ratio = len(path_not_traversed) / len(self.read_paths)
+            # we want the fraction in gaps to be smaller than 1/self.len_read_p, e.g. 0.5/self.len_read_p
+            current_ratio = len(path_not_traversed) / self.len_read_p
             logger.info("uncovered_paths/all_paths = %i/%i = %.4f" %
-                        (len(path_not_traversed), len(self.read_paths), current_ratio))
+                        (len(path_not_traversed), self.len_read_p, current_ratio))
             if not reset_num_valid_search:
                 logger.warning("{} read paths not traversed".format(len(path_not_traversed)))
                 if report_detailed_warning:
@@ -822,12 +826,12 @@ class PathGenerator(object):
                                    "2) unrealistic constraints on the variant topology, or 3) chimeric reads.")
                     return 0, current_ratio, None
                 else:
-                    new_num_valid_search = num_valid_search * log(0.5 / len(self.read_paths)) / log(current_ratio)
+                    new_num_valid_search = num_valid_search * log(0.5 / self.len_read_p) / log(current_ratio)
                     new_num_valid_search = int(new_num_valid_search)
                     logger.info("resetting min_valid_search={}".format(new_num_valid_search))
                     return new_num_valid_search - num_valid_search, current_ratio, previous_un_traversed_ratio_count + 1
             else:
-                new_num_valid_search = num_valid_search * log(0.5 / len(self.read_paths)) / log(current_ratio)
+                new_num_valid_search = num_valid_search * log(0.5 / self.len_read_p) / log(current_ratio)
                 new_num_valid_search = int(new_num_valid_search)
                 logger.info("resetting min_valid_search={}".format(new_num_valid_search))
                 return new_num_valid_search - num_valid_search, current_ratio, 1
@@ -967,7 +971,17 @@ class PathGenerator(object):
         count_debug = 0
         while do_traverse:
             single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
-            single_traversal.run()
+            # to change the weight (-~ depth) to change the search strategy
+            # for instance,
+            # 1.
+            # read_p_freq_reciprocal = [1. / self.__read_paths_counter[r_p] for r_p in self.read_paths]
+            # read_path = random.choices(self.read_paths, weights=read_p_freq_reciprocal)[0]
+            # 2.
+            # prioritize uncovered read paths
+            if self.start_strategy == "random":
+                single_traversal.run()
+            elif self.start_strategy == "numerate":
+                single_traversal.run(self.read_paths[self.count_search % self.len_read_p])
             new_path = single_traversal.result_path
             self.count_search += 1
             logger.debug("    traversal {}: {}".format(self.count_search, self.graph.repr_path(new_path)))
@@ -1082,7 +1096,14 @@ class PathGenerator(object):
                 # TODO to cover all subpaths
                 #      setting start path for traversal, simultaneously solve the random problem
                 single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
-                single_traversal.run()
+                lock.acquire()
+                g_vars.count_search += 1
+                count_search = int(g_vars.count_search)
+                lock.release()
+                if self.start_strategy == "random":
+                    single_traversal.run()
+                elif self.start_strategy == "numerate":
+                    single_traversal.run(self.read_paths[count_search % self.len_read_p])
                 new_path = single_traversal.result_path
                 repr_path = self.graph.repr_path(new_path)
                 is_circular_p = self.graph.is_circular_path(new_path)
@@ -1096,15 +1117,13 @@ class PathGenerator(object):
                         new_path_list = [new_path]
                 else:
                     new_path_list = []
-                # >>>
-                # locking the counts and variants
-                lock.acquire()
-                g_vars.count_search += 1
-                logger.trace("    traversal {}: {}".format(g_vars.count_search, repr_path))
+                logger.trace("    traversal {}: {}".format(count_search, repr_path))
                 if invalid_search:
-                    lock.release()
                     continue
                 else:
+                    # >>>
+                    # locking the counts and variants
+                    lock.acquire()
                     for new_path in new_path_list:
                         g_vars.count_valid += 1
                         if new_path in variants_counts:
@@ -1112,9 +1131,9 @@ class PathGenerator(object):
                             var_id = variant_ids[new_path]
                             self.__save_tmp_counts(var_id, variants_counts[new_path])
                             logger.trace("\t{}/{}/{}/{} uniq/valid/tvs/set variants".format(
-                                len(variants), g_vars.count_valid, g_vars.count_search, g_vars.num_valid_search))
+                                len(variants), g_vars.count_valid, count_search, g_vars.num_valid_search))
                             # logger.trace("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                            #     len(variants), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
+                            #     len(variants), g_vars.count_valid, g_vars.num_valid_search, count_search))
                         else:
                             variants_counts[new_path] = 1
                             variants.append(new_path)
@@ -1122,9 +1141,9 @@ class PathGenerator(object):
                             self.__save_tmp_counts(var_id, 1)
                             self.__save_tmp_path(var_id, new_path)
                             logger.info("\t{}/{}/{}/{} uniq/valid/tvs/set variants".format(
-                                len(variants), g_vars.count_valid, g_vars.count_search, g_vars.num_valid_search))
+                                len(variants), g_vars.count_valid, count_search, g_vars.num_valid_search))
                             # logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
-                            #     len(variants), g_vars.count_valid, g_vars.num_valid_search, g_vars.count_search))
+                            #     len(variants), g_vars.count_valid, g_vars.num_valid_search, count_search))
 
                         if g_vars.count_valid >= g_vars.max_valid_search:
                             # break_traverse = True
