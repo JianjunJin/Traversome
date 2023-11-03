@@ -19,7 +19,7 @@ class PathMultinomialModel:
              input symengine.Symbols for maximum likelihood analysis (scipy),
                  e.g. [Symbol("P" + str(variant_id)) for variant_id in range(self.num_put_variants)].
              input pm.Dirichlet for bayesian analysis (pymc3),
-                 e.g. pm.Dirichlet(name="comp", a=np.ones(variant_num), shape=(variant_num,)).
+                 e.g. pm.Dirichlet(name="vid", a=np.ones(variant_num), shape=(variant_num,)).
         :param log_func:
              input symengine.log for maximum likelihood analysis using scipy,
              input tt.log for bayesian analysis using pymc3
@@ -57,8 +57,8 @@ class PathMultinomialModel:
             if within_variant_ids and not (set(these_sp_info[check_sp].from_variants) & within_variant_ids):
                 del these_sp_info[check_sp]
 
-        # calculate the observations
-        observations = [len(this_sp_info.mapped_records) for this_sp_info in these_sp_info.values()]
+        # get the observations
+        observations = [this_sp_info.num_matched for this_sp_info in these_sp_info.values()]
 
         # sub path possible matches
         logger.debug("  Formulating the subpath probabilities ..")
