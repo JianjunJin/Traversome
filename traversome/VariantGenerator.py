@@ -23,12 +23,19 @@ import sys
 warnings.filterwarnings('ignore')
 
 
+MAX_ADDING_TIMES = 4
+
+
 class SingleTraversal(object):
     """
 
     """
 
-    def __init__(self, path_generator_obj, random_seed):
+    def __init__(self,
+                 path_generator_obj,
+                 flatten_n_parts):
+        """
+        """
         self.graph = path_generator_obj.graph
         self.read_paths = path_generator_obj.read_paths
         self.local_max_alignment_len = path_generator_obj.max_alignment_len
@@ -39,10 +46,10 @@ class SingleTraversal(object):
         self.__read_paths_counter = path_generator_obj.pass_read_paths_counter()
         self.__differ_f = path_generator_obj.pass_differ_f()
         self.__cov_inert = path_generator_obj.pass_cov_inert()
+        self.__flatten_n_parts = flatten_n_parts
         self.__decay_f = path_generator_obj.pass_decay_f()
         self.__decay_t = path_generator_obj.pass_decay_t()
         self.__candidate_single_copy_vs = path_generator_obj.pass_candidate_single_copy_vs()
-        random.seed(random_seed)
         self.result_path = None
 
     def run(self, start_path=None):
@@ -68,7 +75,8 @@ class SingleTraversal(object):
             if random.random() > 0.5:
                 read_path = self.graph.reverse_path(read_path)
             path = list(read_path)
-            logger.trace("      starting path(" + str(len(path)) + "): " + str(path))
+        logger.trace("      starting path(" + str(len(path)) + "): " + str(path))
+        #
         not_do_reverse = False
         while True:
             #
@@ -92,7 +100,7 @@ class SingleTraversal(object):
             # generate the extending candidates
             candidate_ls_list = []
             candidates_list_overlap_c_nums = []
-            for overlap_c_num in range(2, len(path) + 1):  # TODO: set start to be 2 because 1 is like next_connections
+            for overlap_c_num in range(1, len(path) + 1):  # change 2 back to 1 2023-10-11
                 overlap_path = path[-overlap_c_num:]
                 # stop adding extending candidate when the overlap is longer than our longest read alignment
                 # stay within what data can tell
@@ -221,6 +229,8 @@ class SingleTraversal(object):
                     weights = []
                     num_reads_used = 0
                     max_ovl = max(candidates_list_overlap_c_nums)
+                    parts_len = int((max_ovl - 1) / MAX_ADDING_TIMES)
+                    flatten_nums = 1 + int(parts_len * self.__flatten_n_parts)
                     for go_overlap, same_ov_cdd in enumerate(candidate_ls_list):
                         # flatten the candidate_ls_list:
                         # each item in candidate_ls_list is a list of candidates of the same overlap contig
@@ -232,11 +242,20 @@ class SingleTraversal(object):
                         same_ov_w = [self.__read_paths_counter[self.read_paths[read_id]]
                                      for read_id, strand in same_ov_cdd]
                         num_reads_used += sum(same_ov_w)
+                        # the change of a read gets high when its counts competes other read of the same overlap
+                        # which is similar to take the counts over the contig length
+                        # but slightly favors the terminal long overlap ones having fewer counts than intermediate ones
                         same_ov_w = harmony_weights(same_ov_w, diff=self.__differ_f)
-                        # RuntimeWarning: overflow encountered in exp of numpy, or math range error in exp of math
-                        # change to dtype=np.float128?
-                        same_ov_w = exp(np.array(log(same_ov_w) - log(self.__decay_f) * (max_ovl - ovl_c_num),
-                                                 dtype=np.float128))
+                        if ovl_c_num > max(1, max_ovl - flatten_nums):
+                            # make those with 2 and larger overlaps equal for their both harbor info
+                            same_ov_w = exp(np.array(log(same_ov_w), dtype=np.float128))
+                        else:  # 2023-10-12 only apply decay_f to the later overlap ones
+                            # RuntimeWarning: overflow encountered in exp of numpy, or math range error in exp of math
+                            # change to dtype=np.float128
+                            same_ov_w = exp(np.array(log(same_ov_w) -
+                                                     log(self.__decay_f) *
+                                                     max(1, max_ovl - flatten_nums - ovl_c_num),
+                                                     dtype=np.float128))
                         weights.extend(same_ov_w)
                         # To reduce computational burden, only reads that overlap most with current path
                         # will be considered in the extension. Proportions below 1/decay_t which will be neglected
@@ -250,11 +269,11 @@ class SingleTraversal(object):
                         # randomly chose a certain number of candidates to reduce computational burden
                         # then, re-weighting candidates by the likelihood change of adding the extension
                         ######
-                        try:
-                            pool_size = 10  # arbitrary pool size for re-weighting
-                            pool_ids = random.choices(range(len(candidates)), weights=weights, k=pool_size)
-                        except ValueError:  # TODO ValueError: Total of weights must be finite
-                            pool_ids = list(range(len(candidates)))
+                        # try:
+                        pool_size = 10  # arbitrary pool size for re-weighting
+                        pool_ids = random.choices(range(len(candidates)), weights=weights, k=pool_size)
+                        # except ValueError:  # Total of weights must be finite
+                        #     pool_ids = list(range(len(candidates)))
                         pool_ids_set = set(pool_ids)
                         if len(pool_ids_set) == 1:
                             remaining_id = pool_ids_set.pop()
@@ -597,7 +616,7 @@ class SingleTraversal(object):
             return mean
 
 
-class VariantPathGenerator(object):
+class VariantGenerator(object):
     """
     generate heuristic variants (isomers & sub-chromosomes) from alignments.
     Here the variants are not necessarily identical in contig composition.
@@ -608,13 +627,14 @@ class VariantPathGenerator(object):
                  traversome_obj,
                  start_strategy="random",
                  min_num_valid_search=1000,
-                 max_num_valid_search=100001,
+                 max_num_valid_search=10000,
+                 max_num_traversals=50000,
                  num_processes=1,
                  force_circular=True,
                  uni_chromosome=True,
                  differ_f=1.,
                  decay_f=20.,
-                 decay_t=1000,
+                 decay_t=inf,
                  cov_inert=1.,
                  use_alignment_cov=False,
                  min_unit_similarity=0.85,
@@ -627,6 +647,7 @@ class VariantPathGenerator(object):
             - numerate: sequentially numerate from read aligned paths.
         :param min_num_valid_search: minimum number of valid searches
         :param max_num_valid_search: maximum number of valid searches
+        :param max_num_traversals: maximum number of searches
         :param force_circular: force the generated variant topology to be circular
         :param uni_chromosome: a variant is NOT allowed to only traverse part of the graph.
             Different variants must be composed of identical set of contigs if uni_chromosome=True.
@@ -637,7 +658,10 @@ class VariantPathGenerator(object):
         :param decay_f: decay factor [0, INF]
             Chance reduces by which, a read with less overlap with current path will be used to extend current path.
             probs_(N-m) = probs_(N) * decay_f^(-m)
-            A large value leads to strictly following read paths.
+            A large value leads to strictly following read paths with the larger overlap.
+            Normally equal to or larger than 1.
+            Each auto added n-th round of search will fatten the difference among the first n-th largest overlap,
+            allowing for more possiblities.
         :param decay_t: decay threshold for number of reads [100, INF]
             Number of reads. Only reads that overlap most with current path will be considered in the extension.
             # also server as a cutoff version of decay_f
@@ -667,6 +691,7 @@ class VariantPathGenerator(object):
         self.subpath_generator = traversome_obj.subpath_generator
         self.min_valid_search = min_num_valid_search
         self.max_valid_search = max_num_valid_search
+        self.max_num_traversals = max_num_traversals
         self.num_processes = num_processes
         self.resume = resume
         self.temp_dir = temp_dir
@@ -810,20 +835,22 @@ class VariantPathGenerator(object):
                     for go_p, p_n_t in enumerate(sorted(list(path_not_traversed.keys()))):
                         logger.warning("  read path %i (len=%i, reads=%i): %s" %
                                        (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
-                logger.warning("This may due to 1) insufficient num of valid variants (-N), or "
-                               "2) unrealistic constraints on the variant topology, or 3) chimeric reads.")
+                logger.warning("This may due to 1) insufficient num of valid variants (-n/-N), or "
+                               "2) unrealistic constraints on the variant topology, or "
+                               "3) chimeric reads/alignments.")
                 return
             if current_ratio == previous_un_traversed_ratio:
                 # if the same un_traversed ratio occurs more than 2 times, stop searching for variants
-                if previous_un_traversed_ratio_count > 2:
+                if previous_un_traversed_ratio_count >= MAX_ADDING_TIMES:
                     logger.warning("{} read paths not traversed".format(len(path_not_traversed)))
                     if report_detailed_warning:
                         # must use dict.keys() to iterate a manager-dict in a child process
                         for go_p, p_n_t in enumerate(sorted(list(path_not_traversed.keys()))):
                             logger.warning("  read path %i (len=%i, reads=%i): %s" %
                                            (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
-                    logger.warning("This may due to 1) insufficient num of valid variants (-N), or "
-                                   "2) unrealistic constraints on the variant topology, or 3) chimeric reads.")
+                    logger.warning("This may due to 1) insufficient num of valid variants (-n/-N), or "
+                                   "2) unrealistic constraints on the variant topology, or "
+                                   "3) chimeric reads/alignments.")
                     return 0, current_ratio, None
                 else:
                     new_num_valid_search = num_valid_search * log(0.5 / self.len_read_p) / log(current_ratio)
@@ -939,6 +966,7 @@ class VariantPathGenerator(object):
         # while self.count_valid < self.num_valid_search:
         previous_ratio = 1.
         previous_ratio_c = 1
+        flatten_n_parts = 0
         num_valid_search = self.min_valid_search
         variant_ids = {}
         for go_v, variant in enumerate(self.variants):   # variant id is 1-based for easier manual inspection
@@ -968,9 +996,26 @@ class VariantPathGenerator(object):
             # logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
             #     len(self.variants), self.count_valid, self.min_valid_search, "-"))
         do_traverse = True
-        count_debug = 0
+        # count_debug = 0
+
         while do_traverse:
-            single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
+            # access num of traversal in the beginning
+            if self.count_search >= self.max_num_traversals:
+                self.__access_read_path_coverage(
+                    growing_variants=self.variants,
+                    previous_len_variant=self.__previous_len_variant,
+                    num_valid_search=num_valid_search,
+                    path_not_traversed=self.__read_paths_not_in_variants,
+                    previous_un_traversed_ratio=previous_ratio,
+                    previous_un_traversed_ratio_count=previous_ratio_c,
+                    reset_num_valid_search=False)
+                logger.info(f"Hit the max num of traversals limit {self.max_num_traversals}!")
+                break
+            # random_int = self.__random.randint(1, 1e5)
+            # Do not reseed the RNG with the random number generated by the same RNG,
+            #     which make the period very short and generates repeated numbers
+            # single_traversal = SingleTraversal(self, flatten_n_parts, random_int)
+            single_traversal = SingleTraversal(self, flatten_n_parts=flatten_n_parts)
             # to change the weight (-~ depth) to change the search strategy
             # for instance,
             # 1.
@@ -981,7 +1026,11 @@ class VariantPathGenerator(object):
             if self.start_strategy == "random":
                 single_traversal.run()
             elif self.start_strategy == "numerate":
-                single_traversal.run(self.read_paths[self.count_search % self.len_read_p])
+                start_read_path = self.read_paths[self.count_search % self.len_read_p]
+                if self.__random.getrandbits(1):  # generate 0 or 1
+                    single_traversal.run(list(self.graph.reverse_path(start_read_path)))
+                else:
+                    single_traversal.run(list(start_read_path))
             new_path = single_traversal.result_path
             self.count_search += 1
             logger.debug("    traversal {}: {}".format(self.count_search, self.graph.repr_path(new_path)))
@@ -999,8 +1048,9 @@ class VariantPathGenerator(object):
             # forcing the searching to be running until a circular result was found, was tested to be a bad idea
             # switch back to the post searching judge
             if invalid_search:
-                logger.debug("    traversal {} is invalid".format(self.count_search))
-                count_debug += 1
+                logger.debug(f"    traversal {self.count_search} is invalid: "
+                             f"{'acyclic' if self.force_circular and not is_circular_p else 'incomplete'}")
+                # count_debug += 1
                 # if count_debug > 0:
                 #     raise Exception
                 continue
@@ -1016,7 +1066,7 @@ class VariantPathGenerator(object):
                         self.variants_counts[new_path] += 1
                         var_id = variant_ids[new_path]
                         self.__save_tmp_counts(var_id, self.variants_counts[new_path])
-                        logger.debug("\t, {}/{}/{}/{} uniq/valid/tvs/set variants".format(
+                        logger.debug("\t{}/{}/{}/{} uniq/valid/tvs/set variants".format(
                             len(self.variants), self.count_valid, self.count_search, num_valid_search))
                         # logger.debug("  {} unique paths in {}/{} valid paths, {} traversals".format(
                         #     len(self.variants), self.count_valid, num_valid_search, self.count_search))
@@ -1043,6 +1093,7 @@ class VariantPathGenerator(object):
                             previous_un_traversed_ratio_count=previous_ratio_c,
                             reset_num_valid_search=False)
                         do_traverse = False
+                        logger.info("Maximum num of valid searches reached.")
                         break
 
                     if self.count_valid >= num_valid_search:
@@ -1056,6 +1107,9 @@ class VariantPathGenerator(object):
                         if add_search:
                             self.__previous_len_variant = len(self.variants)
                             num_valid_search += add_search
+                            # flatten_n_parts = max(flatten_n_parts, previous_ratio_c)
+                            flatten_n_parts = min(flatten_n_parts + 1, MAX_ADDING_TIMES)
+                            logger.info(f"setting flatten parts to be {flatten_n_parts}")
                         else:
                             do_traverse = False
                             break
@@ -1088,14 +1142,28 @@ class VariantPathGenerator(object):
         single worker of traversal, called by self.get_heuristic_paths_multiprocessing
         starting a new process from dill dumped python object: slow
         """
+        # using a unique number as the new seed for a new worker
+        lock.acquire()
+        g_vars.random_seed += 1
+        self.__random.seed(g_vars.random_seed)
+        lock.release()
         try:
             # break_traverse = False
             while g_vars.count_valid < g_vars.num_valid_search:
+                # access num of traversal in the beginning
+                if g_vars.count_search >= self.max_num_traversals:
+                    g_vars.run_status = "tvs_reached"
+                    event.set()
+                    return
+
                 # move the parallelizable code block before the lock
                 # <<<
                 # TODO to cover all subpaths
                 #      setting start path for traversal, simultaneously solve the random problem
-                single_traversal = SingleTraversal(self, self.__random.randint(1, 1e5))
+                # g_vars.flatten_n_parts is not frequently updating parameter,
+                #   and updating g_vars.flatten_n_parts will always require a lock
+                #   so it should be fine to call it here without lock
+                single_traversal = SingleTraversal(self, flatten_n_parts=g_vars.flatten_n_parts)
                 lock.acquire()
                 g_vars.count_search += 1
                 count_search = int(g_vars.count_search)
@@ -1103,7 +1171,11 @@ class VariantPathGenerator(object):
                 if self.start_strategy == "random":
                     single_traversal.run()
                 elif self.start_strategy == "numerate":
-                    single_traversal.run(self.read_paths[count_search % self.len_read_p])
+                    start_read_path = self.read_paths[count_search % self.len_read_p]
+                    if self.__random.randint.getrandbits(1):  # use getrandbits(1) to generate 0 or 1
+                        single_traversal.run(list(self.graph.reverse_path(start_read_path)))
+                    else:
+                        single_traversal.run(list(start_read_path))
                 new_path = single_traversal.result_path
                 repr_path = self.graph.repr_path(new_path)
                 is_circular_p = self.graph.is_circular_path(new_path)
@@ -1148,11 +1220,9 @@ class VariantPathGenerator(object):
                         if g_vars.count_valid >= g_vars.max_valid_search:
                             # break_traverse = True
                             # kill all other workers
-                            g_vars.run_status = "reached"
+                            g_vars.run_status = "hard_reached"
                             event.set()
                             return
-                            # return "reached"
-                            # raise MaxTraversalReached("")
 
                         if g_vars.count_valid >= g_vars.num_valid_search:
                             # logger.info("max valid search: " + str(g_vars.max_valid_search))
@@ -1169,6 +1239,8 @@ class VariantPathGenerator(object):
                             if add_search:
                                 g_vars.previous_len_variant = len(variants)
                                 g_vars.num_valid_search += add_search
+                                g_vars.flatten_n_parts = min(g_vars.flatten_n_parts + 1, MAX_ADDING_TIMES)
+                                logger.info(f"setting flatten parts to be {g_vars.flatten_n_parts}")
                             else:
                                 # break_traverse = True
                                 # kill all other workers
@@ -1231,6 +1303,10 @@ class VariantPathGenerator(object):
         global_vars.max_valid_search = self.max_valid_search
         global_vars.previous_len_variant = self.__previous_len_variant
         global_vars.previous_ratio = previous_ratio
+        #
+        global_vars.flatten_n_parts = 0
+        # create a start seed
+        global_vars.random_seed = self.__random.randint(1, 1e20)
         # initialize the shared variable for recording the ratio of un-traversed reads
         global_vars.previous_ratio_c = previous_ratio_c
 
@@ -1281,6 +1357,8 @@ class VariantPathGenerator(object):
                         break
                     else:
                         global_vars.num_valid_search += add_search
+                        global_vars.flatten_n_parts = min(global_vars.flatten_n_parts + 1, MAX_ADDING_TIMES)
+                        logger.info(f"setting flatten parts to be {global_vars.flatten_n_parts}")
                         lock.release()
             # for job in jobs:
             #     job.get()  # tracking errors
@@ -1310,12 +1388,14 @@ class VariantPathGenerator(object):
                 logger.error("\n" + "".join(tb))
                 sys.exit(0)
                 # raise error_queue.get()
-            if global_vars.run_status in {"reached", "interrupt"}:
+            if global_vars.run_status in {"hard_reached", "tvs_reached", "interrupt"}:
                 # except MaxTraversalReached:
                 # pool_obj.terminate()
                 # pool_obj.join()  # maybe no need to join
-                if global_vars.run_status == "reached":
+                if global_vars.run_status == "hard_reached":
                     logger.info("maximum num of valid searches reached.")
+                elif global_vars.run_status == "tvs_reached":
+                    logger.info(f"Hit the max num of traversals limit {self.max_num_traversals}!")
                 elif global_vars.run_status == "interrupt":
                     logger.info("<Keyboard interrupt>")
                 self.__access_read_path_coverage(
