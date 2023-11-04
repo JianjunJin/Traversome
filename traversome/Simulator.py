@@ -6,8 +6,9 @@ from typing import Union, List, Tuple
 from numpy.typing import ArrayLike
 from scipy.stats import gamma
 from traversome.Assembly import Assembly
-from traversome.utils import find_id_using_binary_search
+from traversome.utils import find_id_using_binary_search, Sequence
 from loguru import logger
+import gzip
 # from pympler.asizeof import asizeof
 
 
@@ -21,7 +22,8 @@ class SimpleSimulator(object):
             variant_proportions: ArrayLike,  # ArrayLike[float],
             length_distribution: Union[str, Tuple[float]],
             data_size: int,
-            out_file: str,
+            out_gaf: Union[str, None] = None,
+            out_fasta: Union[str, None] = None,
             random_seed: int = 12345):
         """
         :param data_size: total number of bases to simulate
@@ -29,11 +31,13 @@ class SimpleSimulator(object):
             Gamma distribution following https://github.com/rrwick/Badread#fragment-lengths.
         """
         self.graph_obj = graph_obj
-        self.out_file = out_file
+        self.out_gaf = out_gaf
+        self.out_fasta = out_fasta
         assert len(variants) == len(variant_proportions)
         for variant in variants:
             assert graph_obj.contain_path(variant), "{} not found in the graph!".format(variant)
         self.variants = variants
+        self.variant_seqs = []
         self._is_variant_circ = []
         self.variant_lengths = []
         self.variant_sizes = []
@@ -65,7 +69,9 @@ class SimpleSimulator(object):
         self._variant_path_ends_table = []
         self._variant_path_ends_table_m = []
         self._variant_template = []
+        self._variant_seq_template = []
         self._random_01 = []
+        self._cached_path_len = {}
         # self.gaf_records = []
         # # for faster generating end-to-start paths
         # self._cached_concat_units = {}  # {var_id: {num_units(INT): path(TUPLE), ...}}
@@ -96,6 +102,11 @@ class SimpleSimulator(object):
         # random
         self._random_01 = list(np.random.randint(2, size=num_reads))
         # logger.info(f"self._random_01: {asizeof(self._random_01)}")
+        # prepare sequence
+        if self.out_fasta:
+            self.variant_seqs = [self.graph_obj.export_path_seq_str(v_, False) for v_ in self.variants]
+        else:
+            self.variant_seqs = ["" for v_ in self.variants]
         logger.info("initialized")
 
         # generate the start points of the read, start/end lookup table, and prepare the templates
@@ -131,10 +142,12 @@ class SimpleSimulator(object):
                                                         for x_ in self._variant_path_ends_table[var_id]])
                 # generate the template by create max_n_units times of the original variant
                 self._variant_template.append(variant * max_n_units)
+                self._variant_seq_template.append(self.variant_seqs[var_id] * max_n_units)
                 logger.info(f"max_n_units= {max_n_units}")
             else:
                 # keep the variant unchanged
                 self._variant_template.append(variant)
+                self._variant_seq_template.append(self.variant_seqs[var_id])
                 # keep start and end lookup table unchanged
                 # self._variant_path_starts_table_m.append(self._variant_path_starts_table[var_id])
                 self._variant_path_ends_table_m.append(self._variant_path_ends_table[var_id])
@@ -151,33 +164,60 @@ class SimpleSimulator(object):
         n_digits = len(str(num_reads))
         n_echo_bins = 10
         step = num_reads // n_echo_bins
-        with open(self.out_file, "w") as output_h:
-            for go_r, (r_len, var_id) in enumerate(zip(self._r_lengths, variant_ids)):
-                ali_start_p = align_start_points[var_id].pop(0)
-                query_seq_name = f"r{go_r + 1:0{n_digits}d}"
+        output_ali_h = None
+        if self.out_gaf:
+            if self.out_gaf.endswith("gz"):
+                output_ali_h = gzip.open(self.out_gaf, "wt")
+            else:
+                output_ali_h = open(self.out_gaf, "w")
+        output_fas_h = None
+        if self.out_fasta:
+            if self.out_fasta.endswith("gz"):
+                output_fas_h = gzip.open(self.out_fasta, "wt")
+            else:
+                output_fas_h = open(self.out_fasta, "w")
+        for go_r, (r_len, var_id) in enumerate(zip(self._r_lengths, variant_ids)):
+            ali_start_p = align_start_points[var_id].pop(0)
+            query_seq_name = f"r{go_r + 1:0{n_digits}d}"
+            if output_fas_h:
+                # TODO reverse strand, not necessary for now
+                seq = Sequence(label=query_seq_name,
+                               seq=self._variant_seq_template[var_id][ali_start_p: ali_start_p + r_len])
+                output_fas_h.write(f"{seq.fasta_str(interleaved=True)}\n")
+            if output_ali_h:
                 query_seq_len = r_len
                 query_start = 0  # 0-based; closed
                 query_end = r_len  # 0-based; open
+                # TODO reverse strand, not necessary for now
                 strand_relative_to_path = "+"  # strand can be reverse in the pair-end case
                 path_matching, start_on_path, end_on_path = \
                     self.sim_path(var_id, align_start=ali_start_p, align_len=query_seq_len)
                 path_str = "".join([(">" if ve else "<") + vn for vn, ve in path_matching])
-                path_len = query_seq_len  # perfect matching
+                if path_matching in self._cached_path_len:
+                    path_len = self._cached_path_len[path_matching]
+                else:
+                    path_len = self._cached_path_len[path_matching] = \
+                        self.graph_obj.get_path_length(path_matching, False, False)
                 num_match = query_seq_len  # perfect matching
                 align_block_len = query_seq_len  # perfect matching
-                quality = 255  # missing
+                # quality = 255  # missing
+                quality = 60  # great
                 optional_id_f = "id:f:1.0"
                 record = [query_seq_name, query_seq_len, query_start, query_end, strand_relative_to_path,
                           path_str, path_len, start_on_path, end_on_path, num_match, align_block_len, quality,
                           optional_id_f]
                 # self.gaf_records.append(record)
-                output_h.write("\t".join([str(x) for x in record]) + "\n")
-                if (go_r + 1) % step == 0:
-                    percentage = float(go_r + 1) / num_reads * 100.
-                    progress = (go_r + 1) // step
-                    logger.info(f"[{'#' * progress}{' ' * (n_echo_bins - progress)}] {percentage:.1f}%")
+                output_ali_h.write("\t".join([str(x) for x in record]) + "\n")
+            if (go_r + 1) % step == 0:
+                percentage = float(go_r + 1) / num_reads * 100.
+                progress = (go_r + 1) // step
+                logger.info(f"[{'#' * progress}{' ' * (n_echo_bins - progress)}] {percentage:.1f}%")
+        if self.out_gaf:
+            output_ali_h.close()
+        if self.out_fasta:
+            output_fas_h.close()
         logger.info("Simulating reads finished.")
-        # with open(self.out_file, "w") as output_h:
+        # with open(self.out_gaf, "w") as output_h:
         #     for record in self.gaf_records:
         #         output_h.write("\t".join([str(x) for x in record]) + "\n")
 
@@ -272,7 +312,9 @@ class SimpleSimulator(object):
         else:
             new_path = self._variant_template[var_id][start_v_id: end_v_id + 1]
         start_pos_on_path = s_gap  # 0-based according to GAF definition
-        end_pos_on_path = s_gap + align_len - 1  # 0-based according to GAF definition
+        # end_pos_on_path = s_gap + align_len - 1  # 0-based according to GAF definition
+        # open end according to the example
+        end_pos_on_path = s_gap + align_len  # 0-based according to GAF definition
         # for debug: can be removed latter
         # assert s_gap + align_len + e_gap == self.graph_obj.get_path_length(new_path, adjust_for_cyclic=False), \
         #     f"checking failed: {s_gap} + {align_len} + {e_gap} != " \
