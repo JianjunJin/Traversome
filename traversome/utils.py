@@ -192,10 +192,10 @@ class SubPathInfo(object):
     def __init__(self):
         self.from_variants = {}
         self.mapped_records = []
-        self.num_possible_X = -1  # The X in binomial: theoretical num of matched chances
-        self.num_possible_Xs = OrderedDict()  # For generating Xs in multinomial: theoretical num of matched chances
-        self.num_in_range = -1  # The n in binomial: observed num of reads in range
-        self.num_matched = -1  # The x in binomial: observed num of matched reads = len(self.mapped_records)
+        self.num_possible_X = -1  # The X in multinomial: theoretical num of matched chances
+        # self.num_possible_Xs = OrderedDict()  # For generating Xs in multinomial: theoretical num of matched chances
+        self.num_in_range = -1  # The n in multinomial: observed num of reads in range
+        self.num_matched = -1  # The x in multinomial: observed num of matched reads = len(self.mapped_records)
 
 
 class LogLikeFormulaInfo(object):
@@ -405,7 +405,6 @@ class WeightedGMMWithEM:
         return parameters
 
 
-# TODO get subpath adaptive to length=1, more general and less restrictions
 class VariantSubPathsGenerator:
     def __init__(
             self,
@@ -421,7 +420,7 @@ class VariantSubPathsGenerator:
         self.read_paths_hashed = read_paths_hashed
         self.variant_subpath_counters = {}
 
-    @cache
+    # @cache
     def gen_subpaths(self, variant_path):
         if variant_path in self.variant_subpath_counters:
             return self.variant_subpath_counters[variant_path]
@@ -449,35 +448,15 @@ class VariantSubPathsGenerator:
                         this_longest_sub_path.append((next_n, next_e))
                         this_internal_path_len += next_v_info.len - this_overlap
                         go_next = (go_next + 1) % num_seg
-                    # print("this_longest_sub_path", this_longest_sub_path)
-                    # print(self.graph.get_path_internal_length(this_longest_sub_path), self.min_alignment_len)
-                    # when the overlap is long and the contig is short,
-                    # the path with internal_length shorter than tha alignment length can still help
-                    # so remove the condition for min_alignment_len
-                    # if len(this_longest_sub_path) < 2 \
-                    #         or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_len:
-                    #     continue
-
-                    # size of 1 can also be included
-                    # if len(this_longest_sub_path) < 2:
-                    #     continue
-
-                    # print("this_longest_sub_path", this_longest_sub_path, "passed")
-
                     # record shorter sub_paths starting from start_segment
                     len_this_sub_p = len(this_longest_sub_path)
-                    for skip_tail in range(len_this_sub_p - 1):
+                    # for skip_tail in range(len_this_sub_p - 1):
+                    for skip_tail in range(len_this_sub_p):  # 2023-10-18, paths with size of 1 should be included
                         this_sub_path = \
                             self.graph.get_standardized_path(this_longest_sub_path[:len_this_sub_p - skip_tail])
                         # print("checking subpath existence", this_sub_path)
                         if this_sub_path not in self.read_paths_hashed:
                             continue
-                        # print("checking subpath existence", this_sub_path, "passed")
-                        # when the uni_overlap is long and the contig is short,
-                        # the path with internal_length shorter than tha alignment length can still help
-                        # so remove the condition for min_alignment_len
-                        # if self.graph.get_path_internal_length(this_sub_path) < self.min_alignment_len:
-                        #     break
                         if this_sub_path not in these_sub_paths:
                             these_sub_paths[this_sub_path] = 0
                         these_sub_paths[this_sub_path] += 1
@@ -498,13 +477,9 @@ class VariantSubPathsGenerator:
                         this_longest_sub_path.append((next_n, next_e))
                         this_internal_path_len += next_v_info.len - this_overlap
                         go_next += 1
-                    # size of 1 can also be included
-                    # if len(this_longest_sub_path) < 2 \
-                    #         or self.graph.get_path_internal_length(this_longest_sub_path) < self.min_alignment_len:
-                    #     continue
                     # record shorter sub_paths starting from start_segment
                     len_this_sub_p = len(this_longest_sub_path)
-                    for skip_tail in range(len_this_sub_p - 1):
+                    for skip_tail in range(len_this_sub_p):  # 2023-10-18, paths with size of 1 should be included
                         this_sub_path = \
                             self.graph.get_standardized_path_circ(this_longest_sub_path[:len_this_sub_p - skip_tail])
                         if this_sub_path not in self.read_paths_hashed:
