@@ -10,9 +10,9 @@ from copy import deepcopy
 from collections import OrderedDict
 from loguru import logger
 from typing import Union
-from traversome.AssemblySimple import AssemblySimple #, VertexMergingHistory, VertexEditHistory
+from traversome.AssemblySimple import AssemblySimple  #, VertexMergingHistory, VertexEditHistory
 # from traversome.PathGeneratorGraphOnly import PathGeneratorGraphOnly
-from traversome.PathGenerator import PathGenerator
+# from traversome.VariantGenerator import VariantGenerator
 # from traversome.EstMultiplicityFromCov import EstMultiplicityFromCov
 # from traversome.EstMultiplicityPrecise import EstMultiplicityPrecise
 from traversome.utils import (
@@ -955,7 +955,7 @@ class Assembly(AssemblySimple):
     #     :param force_circular
     #     :param hetero_chromosome
     #     """
-    #     generator = PathGenerator(
+    #     generator = VariantGenerator(
     #         assembly_graph_obj=self,
     #         graph_alignment=graph_alignment,
     #         min_valid_search=min_valid_search,
@@ -999,6 +999,7 @@ class Assembly(AssemblySimple):
             len(graph_set), len(path_set), sorted(set(self.vertex_info) - set([_n_ for _n_, _e_ in input_path]))))
         return graph_set == path_set
 
+    # TODO can be cached
     def get_path_length(self, input_path, check_valid=True, adjust_for_cyclic=False):
         # uni_overlap = self.__uni_overlap if self.__uni_overlap else 0
         # circular_len = sum([self.vertex_info[name].len - uni_overlap for name, strand in input_path])
@@ -1018,18 +1019,31 @@ class Assembly(AssemblySimple):
         else:
             return sum(accumulated_lens) + last_v_info.len
 
-    def get_path_internal_length(self, input_path, keep_terminal_overlaps=True):
-        assert len(input_path) > 1, f"input path len cannot be <= 1, this path is {input_path}"
-        # internal_len is allowed to be negative when this_overlap > 0 and len(the_repeat_path) == 2
-        if keep_terminal_overlaps:
-            ovl_list = [self.vertex_info[_n1].connections[_e1][(_n2, not _e2)]
-                        for (_n1, _e1), (_n2, _e2) in zip(input_path[1:-2], input_path[2:-1])]
+    # TODO can be cached
+    def get_path_internal_length(self, input_path, keep_terminal_overlaps=True) -> int:
+        """
+
+        For instance,
+        given path [a, b, c, d] below, It and I are the internal length with and without terminal overlaps.
+        a -----------
+        b         -----------
+        c                  -----------
+        d                          ----------
+        It        --------------------
+        I            --------------
+        """
+        if len(input_path) < 3:
+            return 0
         else:
-            ovl_list = [self.vertex_info[_n1].connections[_e1][(_n2, not _e2)]
-                        for (_n1, _e1), (_n2, _e2) in zip(input_path[:-1], input_path[1:])]
-        inter_ls = [self.vertex_info[_n1].len
-                    for (_n1, _e1) in input_path[1:-1]]
-        return sum(inter_ls) - sum(ovl_list)
+            if keep_terminal_overlaps:
+                ovl_list = [self.vertex_info[_n1].connections[_e1][(_n2, not _e2)]
+                            for (_n1, _e1), (_n2, _e2) in zip(input_path[1:-2], input_path[2:-1])]
+            else:
+                ovl_list = [self.vertex_info[_n1].connections[_e1][(_n2, not _e2)]
+                            for (_n1, _e1), (_n2, _e2) in zip(input_path[:-1], input_path[1:])]
+            inter_ls = [self.vertex_info[_n1].len
+                        for (_n1, _e1) in input_path[1:-1]]
+            return max(sum(inter_ls) - sum(ovl_list), 0)
         # uni_overlap = self.__uni_overlap if self.__uni_overlap else 0
         # internal_len = -uni_overlap
         # for seg_name, seg_strand in input_path[1:-1]:

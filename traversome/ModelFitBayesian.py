@@ -58,7 +58,7 @@ class ModelFitBayesian(object):
             # Because many traversome attributes including subpath information were created using the original variant
             # ids, so here we prefer not making traversome.get_multinomial_like_formula complicated. Instead, we create
             # variant_percents with foo values inserted when that variant id is not in chosen_ids_set.
-            real_percents = pm.Dirichlet(name="comp", a=np.ones(chosen_num), shape=(chosen_num,))
+            real_percents = pm.Dirichlet(name="vid", a=np.ones(chosen_num), shape=(chosen_num,))
             variant_percents = [False] * self.num_of_variants
             for go_id_id, chosen_id in enumerate(chosen_ids):
                 variant_percents[chosen_id] = real_percents[go_id_id]

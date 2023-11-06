@@ -15,6 +15,7 @@ from traversome.utils import REV_DEGENERATE, gaf_str_to_path  # ,TO_DEGENERATE, 
 import sympy
 from itertools import product
 from multiprocessing import Manager, Pool
+import gzip
 # import dill
 
 
@@ -403,7 +404,10 @@ class GraphAlignRecords(object):
         self.read_records = OrderedDict()
 
         # run the parsing function
-        self.parse_alignment_file(num_proc=num_proc, _num_block_lines=kwargs.get("_num_block_lines", 10000))
+        if self.alignment_file.endswith("gz"):  # TODO multiprocess with gzip not implemented yet
+            self.parse_alignment_file(num_proc=1)
+        else:
+            self.parse_alignment_file(num_proc=num_proc, _num_block_lines=kwargs.get("_num_block_lines", 10000))
         self.build_read_records()
 
         # generate the probabilities of multiple hits for each query
@@ -744,7 +748,7 @@ class GraphAlignRecords(object):
     def __cal_alignment_likelihood(self, record, qry_seq, half_kmer, transition_matrix):
         this_likelihood = 1.
         ref_seq = self.__format_modify_ref_seq(
-            path=record.path, p_start=record.p_start, p_end=record.p_end + 1, half_kmer=half_kmer)
+            path=record.path, p_start=record.p_start, p_end=record.p_end, half_kmer=half_kmer)  # p_end is open
         qry_ali, ref_ali = _insert_gaps_to_alignment(
             _q_seq=qry_seq, _q_start=record.q_start, _r_seq=ref_seq, _r_start=half_kmer, _cigar=record.cigar)
         kmer = 2 * half_kmer + 1
@@ -974,15 +978,19 @@ class GraphAlignRecords(object):
     def parse_alignment_file_single(self):
         """
         """
+        if self.alignment_file.endswith("gz"):
+            input_f = gzip.open(self.alignment_file, "rt")
+        else:
+            input_f = open(self.alignment_file)
         if self.alignment_format == "GAF":
             # store a list of GAFRecord objects made for each line in GAF file.
-            with open(self.alignment_file) as input_f:
-                self.raw_records = _gaf_parse_worker(
-                    # csv_lines_gen=csv.reader(input_f, delimiter="\t"),
-                    csv_lines_gen=input_f,
-                    _min_align_len=self.min_align_len,
-                    _min_identity=self.min_identity,
-                    _parse_cigar=self.parse_cigar)
+            self.raw_records = _gaf_parse_worker(
+                # csv_lines_gen=csv.reader(input_f, delimiter="\t"),
+                csv_lines_gen=input_f,
+                _min_align_len=self.min_align_len,
+                _min_identity=self.min_identity,
+                _parse_cigar=self.parse_cigar)
+            input_f.close()
         elif self.alignment_format == "SPA-TSV":
             # store a list of SPAligner SPATSVRecord objects made for each line in TSV file.
             with open(self.alignment_file) as input_f:
@@ -990,7 +998,9 @@ class GraphAlignRecords(object):
                     # csv_lines_gen=csv.reader(input_f, delimiter="\t"),
                     csv_lines_gen=input_f,
                     _min_align_len=self.min_align_len)
+            input_f.close()
         else:
+            input_f.close()
             raise Exception("unsupported format!")
 
         # # filtering raw_records based on min length
@@ -1113,12 +1123,12 @@ class GraphAlignRecords(object):
             pass
 
     def parse_alignment_format_from_postfix(self):
-        if self.alignment_file.lower().endswith(".gaf"):
+        if self.alignment_file.lower().endswith(".gaf") or self.alignment_file.lower().endswith(".gaf.gz"):
             alignment_format = "GAF"
-        elif self.alignment_file.lower().endswith(".tsv"):
+        elif self.alignment_file.lower().endswith(".tsv") or self.alignment_file.lower().endswith(".tsv.gz"):
             alignment_format = "SPA-TSV"
         else:
-            raise Exception("Please denote the alignment format using adequate postfix (.gaf/.tsv)")
+            raise Exception("Please denote the alignment format using adequate postfix (.gaf/.gaf.gz/.tsv/.tsv.gz)")
         return alignment_format
 
     def __iter__(self):

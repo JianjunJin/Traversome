@@ -71,9 +71,10 @@ def main(
     typer.secho(RUNNING_HEAD, fg=typer.colors.MAGENTA, bold=True)
 
 
-# class VarGen(str, Enum):
-#     Heuristic = "H"
-#     Provided = "U"
+class StartStrategy(str, Enum):
+    random = "random"
+    numerate = "numerate"
+    # weighting ?
 
 
 class ModelSelectionMode(str, Enum):
@@ -203,6 +204,7 @@ def thorough(
     alignment_file: Path = typer.Option(
         None, "-a", "--alignment",
         help="GAF format alignment file. "
+             "Gzip-compressed file will be recognized by the postfix. "
              "Conflict with flag `-f`.",
         resolve_path=True,
         ),
@@ -228,16 +230,38 @@ def thorough(
     # var_gen_scheme: VarGen = typer.Option(
     #     VarGen.Heuristic, "-G",
     #     help="Variant generating scheme: H (Heuristic)"),
+    search_start_scheme: StartStrategy = typer.Option(
+        StartStrategy.random, "--sss", "--search-start-strategy",
+        help="random (randomly chosen from read aligned paths, default)\n"
+             "numerate (sequentially numerate from read aligned paths)"),
+    search_decay_factor: float = typer.Option(
+        20., "--sdf", "--search-decay-factor",
+        help="[1, INF]"
+             "Chance reduces by which, a read with less overlap with current path will be used to extend current path. "
+             "A large value leads to strictly following read paths with the largest overlap. "),
     min_valid_search: int = typer.Option(
-        1000, "-n", "--min-val-search",
+        500, "-n", "--min-val-search",
         help="Minimum num of valid traversals for heuristic search."),
     max_valid_search: int = typer.Option(
-        100000, "-N", "--max-val-search",
+        10000, "-N", "--max-val-search",
         help="Maximum num of valid traversals for heuristic search."),
+    max_num_traversals: int = typer.Option(
+        30000, "-M", "--max-traversals",
+        help="Hard bound for total number of searches (traversals). "),
     criterion: ModelSelectionMode = typer.Option(
-        ModelSelectionMode.AIC, "-F", "--func",
-        help="aic (reverse model selection using stepwise AIC, default)\n"
-             "bic (reverse model selection using stepwise BIC)"),
+        ModelSelectionMode.BIC, "-F", "--func",
+        help="aic (reverse model selection using stepwise AIC)\n"
+             "bic (reverse model selection using stepwise BIC, default)"),
+    bootstrap: int = typer.Option(
+        0, "--bs", "--bootstrap",
+        help="The number of repeats used to perform bootstrap analysis. "),
+    # jackknife: int = typer.Option(
+    #     0, "--jk", "--jackknife",
+    #     help="The number of repeats used to perform jackknife analysis. "),
+    # deprecated
+    # fast_bootstrap: int = typer.Option(
+    #     0, "--fbs", "--fast-bootstrap",
+    #     help="Perform fast pseudo bootstrap analysis. "),
     random_seed: int = typer.Option(
         12345, "--rs", "--random-seed", help="Random seed"),
     topology: ChTopology = typer.Option(
@@ -252,18 +276,22 @@ def thorough(
              "single (each single form covers all contigs) / "
              "all (unconstrained, single or multi-chromosomes, RECOMMENDED for most cases)",
         prompt_required=True),
-    out_seq_threshold: float = typer.Option(
-        0.0, "-S",
-        help="Threshold for sequence output",
-        min=0, max=1),
+    # out_seq_threshold: float = typer.Option(
+    #     0.0, "-S",
+    #     help="Threshold for sequence output",
+    #     min=0, max=1),
     min_alignment_identity_cutoff: float = typer.Option(
         0.85, "--min-align-id",
-        help="Threshold for alignment identity, below which the alignment with be discarded. ",
+        help="Threshold for alignment identity, below which the alignment will be discarded. ",
         min=0, max=1),
     min_alignment_len_cutoff: int = typer.Option(
         5000, "--min-align-len",
-        help="Threshold for alignment length, below which the alignment with be discarded. ",
+        help="Threshold for alignment length, below which the alignment will be discarded. ",
         min=100),
+    min_alignment_counts: int = typer.Option(
+        1, "--min-align-counts", min=1,
+        help="Threshold for counts per path, below which the alignment(s) of that path will be discarded. "
+    ),
     graph_component_selection: str = typer.Option(
         "0", "--graph-selection",
         help="Use this if your graph is not manually curated into the target complete graph. "
@@ -286,7 +314,7 @@ def thorough(
         1, "-p", "--processes",
         help="Num of processes. Multiprocessing will lead to non-identical result with the same random seed."),
     n_generations: int = typer.Option(
-        10000, "--mcmc",
+        0, "--mcmc",
         help="MCMC generations. Set '--mcmc 0' to disable mcmc process."),
     n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
     mc_bracket_depth: Optional[int] = typer.Option(
@@ -316,6 +344,9 @@ def thorough(
         raise FileNotFoundError(reads_file)
     elif alignment_file and not alignment_file.exists():
         raise FileNotFoundError(alignment_file)
+    jackknife = 0  # disable jackknife for now
+    if bootstrap and jackknife:
+        sys.stderr.write("Flags `--bootstrap` and `--jackknife` are mutually exclusive!")
 
     from loguru import logger
     initialize(
@@ -365,6 +396,8 @@ def thorough(
                 graph_component_selection = slice(*eval(graph_component_selection))
             except (SyntaxError, TypeError):
                 raise TypeError(str(graph_component_selection) + " is invalid for --graph-selection!")
+        # deprecate the option
+        out_seq_threshold = -1.0
         # TODO: use json file to record parameters
         from traversome.traversome import Traversome
         traverser = Traversome(
@@ -375,10 +408,17 @@ def thorough(
             var_candidate=str(var_candidate) if var_candidate else var_candidate,
             outdir=str(output_dir),
             model_criterion=criterion,
+            bootstrap=bootstrap,
+            jackknife=jackknife,
+            # fast_bootstrap=fast_bootstrap,  # deprecated
             out_prob_threshold=out_seq_threshold,
+            search_start_scheme=search_start_scheme,
+            search_decay_factor=search_decay_factor,
             min_valid_search=min_valid_search,
             max_valid_search=max_valid_search,
+            max_num_traversals=max_num_traversals,
             num_processes=num_processes,
+            uni_chromosome=single_chr,
             force_circular=force_circular,
             n_generations=n_generations,
             n_burn=n_burn,
@@ -387,16 +427,13 @@ def thorough(
             loglevel=log_level,
             min_alignment_identity_cutoff=min_alignment_identity_cutoff,
             min_alignment_len_cutoff=min_alignment_len_cutoff,
+            min_alignment_counts=min_alignment_counts,
             graph_component_selection=graph_component_selection,
             keep_graph_redundancy=keep_graph_redundancy,
             resume=prev_run == "resume",
             mc_bracket_depth=mc_bracket_depth,
         )
-        traverser.\
-            run(
-            # path_gen_scheme=var_gen_scheme,
-            uni_chromosome=single_chr
-        )
+        traverser.run()
         del traverser
     except SystemExit:
         pass
@@ -468,8 +505,12 @@ def simulate(
         ..., "-s", "--data-size",
         help="Expected total number of bases. "),
     output_gaf: Path = typer.Option(
-        './', "-o", "--output",
-        help="Output alignment file (*.gaf)",
+        None, "-a", "--output-ali",
+        help="Output alignment file (*.gaf or *.gaf.gz)",
+        exists=False, resolve_path=True),
+    output_fasta: Path = typer.Option(
+        None, "-f", "--output-fas",
+        help="Output sequence file (*.fasta or *.fasta.gz)",
         exists=False, resolve_path=True),
     random_seed: int = typer.Option(
         12345, "--rs", "--random-seed",
@@ -485,8 +526,12 @@ def simulate(
     assert sum(var_props) == 1.
     length_distribution = len_distribution if len_distribution in {"ont", "pb", "hifi"} \
         else [int(float(l_)) for l_ in len_distribution.split(",")]
+    assert output_gaf or output_fasta, "Select at least one type of output!"
+    if output_gaf:
+        logfile = str(output_gaf).replace(".gaf", "") + ".log"
+    else:
+        logfile = str(output_fasta).replace(".fasta", "") + ".log"
     from loguru import logger
-    logfile = str(output_gaf) + ".log"
     # avoid repeating RUNNING_HEAD in the screen output by typer.secho
     setup_logger(loglevel="INFO", timed=False, log_file=logfile, screen_out=None)
     logger.info(RUNNING_HEAD)
@@ -499,7 +544,8 @@ def simulate(
         variant_proportions=var_props,
         length_distribution=length_distribution,
         data_size=data_size,
-        out_file=str(output_gaf),
+        out_gaf=str(output_gaf),
+        out_fasta=str(output_fasta),
         random_seed=random_seed
         )
     simulator.run()

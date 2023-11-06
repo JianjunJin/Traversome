@@ -66,7 +66,6 @@ class ModelFitMaxLike(object):
     def __init__(self,
                  model,
                  variant_paths,
-                 all_sub_paths,
                  variant_subpath_counters,
                  sbp_to_sbp_id,
                  repr_to_merged_variants,
@@ -75,7 +74,7 @@ class ModelFitMaxLike(object):
         self.model = model
         self.variant_paths = variant_paths
         self.num_put_variants = len(variant_paths)
-        self.all_sub_paths = all_sub_paths
+        self.all_sub_paths = model.all_sub_paths
         self.variant_subpath_counters = variant_subpath_counters
         self.sbp_to_sbp_id = sbp_to_sbp_id
         self.repr_to_merged_variants = repr_to_merged_variants
@@ -171,31 +170,21 @@ class ModelFitMaxLike(object):
                                  for variant_id in range(self.num_put_variants)]
         logger.debug("Test variants {}".format(list(chosen_ids)))
 
-        # # it was originally combined into one function,
-        # # but now in order to parallelize minimize_neg_likelihood(), keep them separated
-        # logger.debug("Generating the likelihood function .. ")
-        # set_chosen_ids = set(chosen_ids_set)
-        # neg_loglike_func_obj = self.get_neg_likelihood_of_var_freq(within_variant_ids=set_chosen_ids)
-        # logger.info("Maximizing the likelihood function for {} variants".format(len(chosen_ids_set)))
-        # success_run = minimize_neg_likelihood(
-        #     neg_loglike_func=neg_loglike_func_obj.loglike_func,
-        #     num_variables=len(chosen_ids_set),
-        #     verbose=self.traversome.loglevel in ("TRACE", "ALL"))
-        # previous_prop, previous_echo, previous_like, previous_criteria = \
-        #     self.__summarize_like_and_criteria(success_run, set_chosen_ids, criterion, neg_loglike_func_obj)
-        previous_prop, previous_echo, previous_like, previous_criteria = \
-            self.__compute_like_and_criteria(chosen_id_set=chosen_ids, criteria=criterion)
-
-        # logger.info("Proportions: %s " % {_iid: previous_prop[_gid] for _gid, _iid in enumerate(chosen_ids_set)})
-        # logger.info("Log-likelihood: %s" % previous_like)
-        # drop zero prob variant
-        self.__drop_zero_variants(chosen_ids, previous_prop, previous_echo, diff_tolerance)
         # if one component is identified as indispensable in the n-dimension model,
         # it will be indispensable for subsequent (n-m)-dimension models
         if user_fixed_ids:  # in the case of user assigned fixed 'indispensable' variant id(s)
             indispensable_ids = {u_id: True for u_id in user_fixed_ids}
         else:
             indispensable_ids = {}
+
+        previous_prop, previous_echo, previous_like, previous_criteria = \
+            self.__compute_like_and_criteria(chosen_id_set=chosen_ids, criteria=criterion)
+
+        # logger.info("Proportions: %s " % {_iid: previous_prop[_gid] for _gid, _iid in enumerate(chosen_ids_set)})
+        # logger.info("Log-likelihood: %s" % previous_like)
+        # drop zero prob variant
+        self.__drop_zero_variants(chosen_ids, previous_prop, previous_echo, diff_tolerance, indispensable_ids)
+
         # stepwise
         while len(chosen_ids) > 1:
             logger.debug("Trying dropping {} variant(s) ..".format(self.num_put_variants - len(chosen_ids) + 1))
@@ -268,18 +257,20 @@ class ModelFitMaxLike(object):
                         previous_prop = test_id_res[best_drop_id]["prop"]
                         previous_echo = test_id_res[best_drop_id]["echo"]
                         chosen_ids.remove(best_drop_id)
-                        logger.info("Drop id_{}".format(self.__str_rep_id(best_drop_id)))
+                        # drop candidate id that minimize criteria
+                        logger.info("Drop {}".format(self.__str_rep_id(best_drop_id)))
                         logger.info("Proportions: " +
                                     ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
                         logger.info("Log-likelihood: %s" % previous_like)
-                        self.__drop_zero_variants(chosen_ids, previous_prop, previous_echo, diff_tolerance)
+                        self.__drop_zero_variants(
+                            chosen_ids, previous_prop, previous_echo, diff_tolerance, indispensable_ids)
                         changed = True
                         break
                     # for var_id in list(chosen_ids_set):
                     #     if abs(previous_prop[var_id] - 0.) < diff_tolerance:
                     #         del chosen_ids_set[var_id]
-                    #         for uid_var_id in self.traversome.repr_to_merged_variants[var_id]:
-                    #             del previous_prop[uid_var_id]
+                    #         for cid_var_id in self.traversome.repr_to_merged_variants[var_id]:
+                    #             del previous_prop[cid_var_id]
                     #         del previous_echo[self.__str_rep_id(var_id)]
                     #         logger.info("Drop {}".format(self.__str_rep_id(var_id)))
                 # else:
@@ -297,14 +288,18 @@ class ModelFitMaxLike(object):
         logger.info("Log-likelihood: %s" % previous_like)
         return previous_prop
 
-    def __drop_zero_variants(self, chosen_ids, representative_props, echo_props, diff_tolerance):
+    def __drop_zero_variants(self, chosen_ids, representative_props, echo_props, diff_tolerance, indispensable_ids):
         for var_id in list(chosen_ids):
+            # do not drop a candidate variant if it is fixed either by the user or by a read path
+            if var_id in indispensable_ids:
+                continue
             if abs(representative_props[var_id] - 0.) < diff_tolerance:
                 chosen_ids.remove(var_id)
-                for uid_var_id in self.repr_to_merged_variants[var_id]:
-                    del representative_props[uid_var_id]
+                for cid_var_id in self.repr_to_merged_variants[var_id]:
+                    del representative_props[cid_var_id]
                 del echo_props[self.__str_rep_id(var_id)]
-                logger.info("Drop id_{}".format(self.__str_rep_id(var_id)))
+                # drop candidate id that has estimated proportion of zero
+                logger.info("Drop {}".format(self.__str_rep_id(var_id)))
 
     def __test_one_drop(self, var_id, chosen_ids: set, sorted_chosen_ids, criterion, test_id_res, indispensable_ids):
         if var_id not in indispensable_ids:
@@ -461,13 +456,13 @@ class ModelFitMaxLike(object):
             echo_prop[self.__str_rep_id(representatives[go])] = this_prop
             unidentifiable_var_ids = self.repr_to_merged_variants[representatives[go]]
             this_prop /= len(unidentifiable_var_ids)
-            for uid_var_id in unidentifiable_var_ids:
-                prop_dict[uid_var_id] = this_prop
+            for cid_var_id in unidentifiable_var_ids:
+                prop_dict[cid_var_id] = this_prop
         use_prop = OrderedDict([(_id, prop_dict[_id]) for _id in sorted(prop_dict)])
         return use_prop, echo_prop
 
     def __str_rep_id(self, rep_id):
-        return "+".join([str(_uid_var_id) for _uid_var_id in self.repr_to_merged_variants[rep_id]])
+        return "+".join([f"cid_{(_cid_var_id + 1)}" for _cid_var_id in self.repr_to_merged_variants[rep_id]])
 
     def get_neg_likelihood_of_var_freq(self, within_variant_ids: set = None, scipy_style=True):
         # log_like_formula = self.traversome.get_likelihood_binomial_formula(
