@@ -2,7 +2,7 @@
 from loguru import logger
 from scipy import optimize
 from collections import OrderedDict
-from traversome.utils import LogLikeFuncInfo, Criterion, aic, bic, run_dill_encoded
+from traversome.utils import LogLikeFuncInfo, Criterion, aic, bic, run_dill_encoded, setup_logger
 import numpy as np
 import symengine
 from multiprocessing import Manager, Pool
@@ -11,7 +11,7 @@ import traceback
 # import pickle
 import dill
 from typing import OrderedDict as typingODict
-from typing import Union
+from typing import Union, Set
 # from math import inf
 np.seterr(divide="ignore", invalid="ignore")
 
@@ -70,7 +70,8 @@ class ModelFitMaxLike(object):
                  sbp_to_sbp_id,
                  repr_to_merged_variants,
                  be_unidentifiable_to,
-                 loglevel):
+                 loglevel="INFO",
+                 bootstrap_mode=False):
         self.model = model
         self.variant_paths = variant_paths
         self.num_put_variants = len(variant_paths)
@@ -80,7 +81,7 @@ class ModelFitMaxLike(object):
         self.repr_to_merged_variants = repr_to_merged_variants
         self.be_unidentifiable_to = be_unidentifiable_to
         self.loglevel = loglevel
-
+        self.bootstrap_mode = bootstrap_mode
         # self.graph = traversome_obj.graph
         # self.variant_sizes = traversome_obj.variant_sizes
         # self.align_len_at_path_sorted = traversome_obj.align_len_at_path_sorted
@@ -90,12 +91,12 @@ class ModelFitMaxLike(object):
         self.observed_sbp_id_set = set()
 
         # res without model selection
-        self.pe_neg_loglike_function = None
+        self.pe_neg_loglike_obj = None
         self.pe_best_proportions = None
 
     def point_estimate(self,
-                       chosen_ids: set = None):
-                       # chosen_ids_set: typingODict[int, bool] = None):
+                       chosen_ids: set = None,
+                       criterion=Criterion.BIC):
         # self.variant_percents = [sympy.Symbol("P" + str(variant_id)) for variant_id in range(self.num_put_variants)]
         if chosen_ids:
             # chosen_ids_set = OrderedDict([(self.be_unidentifiable_to[variant_id], True)
@@ -109,31 +110,36 @@ class ModelFitMaxLike(object):
         # variant_percents with foo values inserted when that variant id is not in chosen_ids_set.
         self.variant_percents = [symengine.Symbol("P" + str(variant_id)) if variant_id in chosen_ids else False
                                  for variant_id in range(self.num_put_variants)]
-        logger.info("Generating the likelihood function .. ")
-        self.pe_neg_loglike_function = self.get_neg_likelihood_of_var_freq(
-            within_variant_ids=chosen_ids)\
-            .loglike_func
-        logger.info("Maximizing the likelihood function .. ")
+        if self.bootstrap_mode:
+            logger.debug("Generating the likelihood function .. ")
+        else:
+            logger.info("Generating the likelihood function .. ")
+        self.pe_neg_loglike_obj = self.get_neg_likelihood_of_var_freq(
+            within_variant_ids=chosen_ids)
+        if self.bootstrap_mode:
+            logger.debug("Maximizing the likelihood function .. ")
+        else:
+            logger.info("Maximizing the likelihood function .. ")
         success_run = minimize_neg_likelihood(
-            neg_loglike_func=self.pe_neg_loglike_function,
+            neg_loglike_func=self.pe_neg_loglike_obj.loglike_func,
             num_variables=len(chosen_ids),
             verbose=self.loglevel in ("TRACE", "ALL"))
         # TODO: we added chosen_ids_set at 2022-11-15, the result may be need to be checked
         if success_run:
-            # for run_res in sorted(success_runs, key=lambda x: x.fun):
-            #     logger.info(str(run_res.fun) + str([round(m, 8) for m in run_res.x]))
-            self.pe_best_proportions, echo_prop = self.__summarize_run_prop(success_run, within_var_ids=chosen_ids)
-            logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in echo_prop.items()]))
-            logger.info("Log-likelihood: %s" % (-success_run.fun))
-            return self.pe_best_proportions
+            use_prop, echo_prop, this_like, this_criteria = \
+                self.__summarize_like_and_criteria(success_run, chosen_ids, criterion, self.pe_neg_loglike_obj)
+            # self.pe_best_proportions, echo_prop = self.__summarize_run_prop(success_run, within_var_ids=chosen_ids)
+            # logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in echo_prop.items()]))
+            # logger.info("Log-likelihood: %s" % (-success_run.fun))
+            return use_prop, this_like, this_criteria
         else:
             raise Exception("Likelihood maximization failed.")
 
     def reverse_model_selection(self,
                                 n_proc,
-                                criterion=Criterion.AIC,
-                                chosen_ids: typingODict[int, bool] = None,
-                                random_size: int = 100,
+                                criterion=Criterion.BIC,
+                                chosen_ids: Union[typingODict[int, bool], Set] = None,
+                                random_size: int = 20,
                                 user_fixed_ids: Union[list, tuple, set, None] = None):
         """
         :param n_proc: number of processes
@@ -222,7 +228,10 @@ class ModelFitMaxLike(object):
                     global_vars.finished_w = 0
                     global_vars.indispensable_ids = manager.dict()
                     global_vars.indispensable_ids.update(indispensable_ids)
-                    logger.info("Serializing traversome for multiprocessing ..")
+                    if self.bootstrap_mode:
+                        logger.debug("Serializing traversome for multiprocessing ..")
+                    else:
+                        logger.info("Serializing traversome for multiprocessing ..")
                     payload = dill.dumps((self.__test_one_drop_worker,
                                           (this_rd_ids, chosen_ids, criterion, global_vars, lock, event, error_queue)))
                     pool_obj = Pool(processes=n_proc)
@@ -258,10 +267,16 @@ class ModelFitMaxLike(object):
                         previous_echo = test_id_res[best_drop_id]["echo"]
                         chosen_ids.remove(best_drop_id)
                         # drop candidate id that minimize criteria
-                        logger.info("Drop {}".format(self.__str_rep_id(best_drop_id)))
-                        logger.info("Proportions: " +
-                                    ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
-                        logger.info("Log-likelihood: %s" % previous_like)
+                        if self.bootstrap_mode:
+                            logger.debug("Drop {}".format(self.__str_rep_id(best_drop_id)))
+                            logger.debug("Proportions: " +
+                                         ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
+                            logger.debug("Log-likelihood: %s" % previous_like)
+                        else:
+                            logger.info("Drop {}".format(self.__str_rep_id(best_drop_id)))
+                            logger.info("Proportions: " +
+                                        ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
+                            logger.info("Log-likelihood: %s" % previous_like)
                         self.__drop_zero_variants(
                             chosen_ids, previous_prop, previous_echo, diff_tolerance, indispensable_ids)
                         changed = True
@@ -280,13 +295,36 @@ class ModelFitMaxLike(object):
                 #     return previous_prop
 
             if not changed:
-                logger.info("Proportions: " +
-                            ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
-                logger.info("Log-likelihood: %s" % previous_like)
-                return previous_prop
-        logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
-        logger.info("Log-likelihood: %s" % previous_like)
-        return previous_prop
+                # if self.bootstrap_str:
+                #     logger.info(f"{self.bootstrap_str} Proportions: " +
+                #                 ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
+                #     logger.debug("Log-likelihood: %s" % previous_like)
+                # else:
+                #     logger.info("Proportions: " +
+                #                 ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
+                #     logger.info("Log-likelihood: %s" % previous_like)
+                self.__echo_res(previous_echo, previous_like)
+                return previous_prop, previous_like, previous_criteria
+        # use a slightly higher log level
+        # logger.log("RES", "Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
+        # if self.bootstrap_str:
+        #     logger.info(f"{self.bootstrap_str} Proportions: " +
+        #                 ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
+        #     logger.debug("Log-likelihood: %s" % previous_like)
+        # else:
+        #     logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
+        #     logger.info("Log-likelihood: %s" % previous_like)
+        self.__echo_res(previous_echo, previous_like)
+        return previous_prop, previous_like, previous_criteria
+
+    def __echo_res(self, previous_echo, previous_like):
+        if self.bootstrap_mode:
+            logger.info(f"{self.bootstrap_mode} Proportions: " +
+                        ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
+            logger.debug("Log-likelihood: %s" % previous_like)
+        else:
+            logger.info("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in previous_echo.items()]))
+            logger.info("Log-likelihood: %s" % previous_like)
 
     def __drop_zero_variants(self, chosen_ids, representative_props, echo_props, diff_tolerance, indispensable_ids):
         for var_id in list(chosen_ids):
@@ -299,7 +337,10 @@ class ModelFitMaxLike(object):
                     del representative_props[cid_var_id]
                 del echo_props[self.__str_rep_id(var_id)]
                 # drop candidate id that has estimated proportion of zero
-                logger.info("Drop {}".format(self.__str_rep_id(var_id)))
+                if self.bootstrap_mode:
+                    logger.debug("Drop {}".format(self.__str_rep_id(var_id)))
+                else:
+                    logger.info("Drop {}".format(self.__str_rep_id(var_id)))
 
     def __test_one_drop(self, var_id, chosen_ids: set, sorted_chosen_ids, criterion, test_id_res, indispensable_ids):
         if var_id not in indispensable_ids:
@@ -403,7 +444,10 @@ class ModelFitMaxLike(object):
     def __compute_like_and_criteria(self, chosen_id_set, criteria):
         logger.debug("Generating the likelihood function .. ")
         neg_loglike_func_obj = self.get_neg_likelihood_of_var_freq(within_variant_ids=chosen_id_set)
-        logger.info("Maximizing the likelihood function for {} variants".format(len(chosen_id_set)))
+        if self.bootstrap_mode:
+            logger.debug("Maximizing the likelihood function for {} variants".format(len(chosen_id_set)))
+        else:
+            logger.info("Maximizing the likelihood function for {} variants".format(len(chosen_id_set)))
         success_run = minimize_neg_likelihood(
             neg_loglike_func=neg_loglike_func_obj.loglike_func,
             num_variables=len(chosen_id_set),
@@ -428,13 +472,13 @@ class ModelFitMaxLike(object):
             use_prop, echo_prop = self.__summarize_run_prop(success_run, chosen_id_set)
             logger.debug("Proportions: " + ", ".join(["%s:%.4f" % (_id, _p) for _id, _p, in echo_prop.items()]))
             logger.debug("Log-likelihood: %s" % this_like)
-            if criteria == "aic":
+            if criteria == "AIC":
                 logger.debug("len_param: %s" % neg_loglike_func_obj.variable_size)
                 this_criteria = aic(
                     loglike=this_like,
                     len_param=neg_loglike_func_obj.variable_size)
                 logger.debug("%s: %s" % (criteria, this_criteria))
-            elif criteria == "bic":
+            elif criteria == "BIC":
                 logger.debug("len_param: %s" % neg_loglike_func_obj.variable_size)
                 logger.debug("len_data: %s" % neg_loglike_func_obj.sample_size)
                 this_criteria = bic(
@@ -462,7 +506,7 @@ class ModelFitMaxLike(object):
         return use_prop, echo_prop
 
     def __str_rep_id(self, rep_id):
-        return "+".join([f"cid_{(_cid_var_id + 1)}" for _cid_var_id in self.repr_to_merged_variants[rep_id]])
+        return "+".join([f"cid_{_cid_var_id}" for _cid_var_id in self.repr_to_merged_variants[rep_id]])
 
     def get_neg_likelihood_of_var_freq(self, within_variant_ids: set = None, scipy_style=True):
         # log_like_formula = self.traversome.get_likelihood_binomial_formula(
