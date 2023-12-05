@@ -17,6 +17,7 @@ import subprocess
 import dill
 from loguru import logger
 from typing import List
+from itertools import product
 import re
 
 
@@ -213,8 +214,8 @@ class LogLikeFuncInfo(object):
 
 
 class Criterion(str, Enum):
-    AIC = "aic"
-    BIC = "bic"  # BIC is actually unnecessary in this framework because observations will be always the same.
+    AIC = "AIC"
+    BIC = "BIC"
 
 
 class WeightedGMMWithEM:
@@ -259,8 +260,8 @@ class WeightedGMMWithEM:
         self.minimum_cluster = min(self.freedom_dat_item, minimum_cluster)
         self.maximum_cluster = min(self.freedom_dat_item, maximum_cluster)
 
-    def run(self, criteria="bic"):
-        assert criteria in ("aic", "bic")
+    def run(self, criteria="BIC"):
+        assert criteria in ("AIC", "BIC")
         results = []
         for total_cluster_num in range(self.minimum_cluster, self.maximum_cluster + 1):
             # initialization
@@ -307,8 +308,8 @@ class WeightedGMMWithEM:
                 labels = self.assign_cluster_labels(self.data_array, self.data_weights, best_parameter, None)
                 results.append({"loglike": best_loglike, "iterates": count_iterations, "cluster_num": total_cluster_num,
                                 "parameters": best_parameter, "labels": labels,
-                                "aic": aic(prev_loglike, 2 * total_cluster_num),
-                                "bic": bic(prev_loglike, 2 * total_cluster_num, self.data_len)})
+                                "AIC": aic(prev_loglike, 2 * total_cluster_num),
+                                "BIC": bic(prev_loglike, 2 * total_cluster_num, self.data_len)})
             except TypeError as e:
                 logger.error("This error might be caused by outdated version of scipy!")
                 raise e
@@ -805,8 +806,8 @@ def weighted_gmm_with_em_aic(
             labels = assign_cluster_labels(data_array, data_weights, best_parameter, None)
             results.append({"loglike": best_loglike, "iterates": count_iterations, "cluster_num": total_cluster_num,
                             "parameters": best_parameter, "labels": labels,
-                            "aic": aic(prev_loglike, 2 * total_cluster_num),
-                            "bic": bic(prev_loglike, 2 * total_cluster_num, data_len)})
+                            "AIC": aic(prev_loglike, 2 * total_cluster_num),
+                            "BIC": bic(prev_loglike, 2 * total_cluster_num, data_len)})
         except TypeError as e:
             if log_handler:
                 log_handler.error("This error might be caused by outdated version of scipy!")
@@ -818,7 +819,7 @@ def weighted_gmm_with_em_aic(
             log_handler.info(str(results))
         else:
             sys.stdout.write(str(results) + "\n")
-    best_scheme = sorted(results, key=lambda x: x["bic"])[0]
+    best_scheme = sorted(results, key=lambda x: x["BIC"])[0]
     return best_scheme
 
 
@@ -962,7 +963,7 @@ def run_graph_aligner(
         num_processes: int = 1):
     logger.info("Making alignment using GraphAligner ..")
     this_command = os.path.join("", "GraphAligner") + \
-                   " -g " + graph_file + " -f " + seq_file + " --multimap-score-fraction 0.95" + \
+                   " -g " + graph_file + " -f " + seq_file + " --precise-clipping 0.95" + \
                    " -x vg -t " + str(num_processes) + \
                    " -a " + alignment_file + ".tmp.gaf"
     logger.debug(this_command)
@@ -1123,8 +1124,10 @@ def user_paths_reader(
 TIMED_FORMAT = "{time:YYYY-MM-DD-HH:mm:ss.SS} | " \
                "<magenta>{file: >20} | </magenta>" \
                "<cyan>{function: <30} | </cyan>" \
+               "<level>{level: <4}</level> | " \
                "<level>{message}</level>"
 SIMPLE_FORMAT = "<level>{message}</level>"
+logger.level("RES", no=25)  # , color="<black>"
 
 
 def setup_logger(loglevel="INFO", timed=True, log_file=None, screen_out=sys.stdout):
@@ -1132,6 +1135,7 @@ def setup_logger(loglevel="INFO", timed=True, log_file=None, screen_out=sys.stdo
     Configure Loguru to log to stdout and logfile.
     param: sink_list e.g. [sys.stdout, logfile]
     """
+    logger.remove()
     config = {
         "handlers": [
             {
@@ -1174,3 +1178,48 @@ def setup_logger(loglevel="INFO", timed=True, log_file=None, screen_out=sys.stdo
 #     }
 #     logger.configure(**timed_config)
 #     logger.enable("traversome")
+
+
+def random_product(*sizes, num_samples):
+    """
+
+    This function checks if the sampling without replacement is possible for each range
+    and adjusts the sampling method accordingly to avoid memory issues.
+
+    :param sizes: A variable number of arguments, each representing the size of a range.
+    :param num_samples: The number of random samples to generate.
+    :return: A numpy array with each column representing samples from the respective ranges.
+    """
+    samples_list = []
+    for size in sizes:
+        # # not necessary in the graph case
+        # # If the size is extremely large, avoid using np.random.choice to prevent MemoryError
+        # if size > 1e8:  # Threshold for using randint
+        #     samples = np.random.randint(0, size, num_samples)
+        # else:
+        # check if the requested number of samples is more than the size, then replacement must occur
+        replace = num_samples > size
+        # generate samples for the current size with or without replacement
+        samples = np.random.choice(size, num_samples, replace=replace)
+        samples_list.append(samples)
+    # combine the samples from each range into a single array of tuples
+    samples = np.column_stack(samples_list)
+    return samples
+
+
+def comb_indices(*sizes):
+    """
+    Generates unique indices product from a list of ranges using numpy for efficiency.
+    -----
+    :param sizes: A variable number of arguments, each representing the size of a range.
+    """
+    # arbitrary value for computational feasibility
+    enumerate_threshold = 1000
+    total_prod = 1
+    for size in sizes:
+        total_prod *= size
+    if total_prod > enumerate_threshold:
+        # do random sampling if the total number of combinations is too big
+        return random_product(*sizes, num_samples=enumerate_threshold)
+    else:
+        return product(*[range(size) for size in sizes])
