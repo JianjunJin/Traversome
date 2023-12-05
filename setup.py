@@ -30,10 +30,10 @@ else:
         "dill",
         "numpy",
         "scipy",
-    	"pymc>=4",
         "symengine",
         "sympy",
-        "matplotlib",
+        # "pymc>=4",  # make mcmc optional
+        # "matplotlib",
         "typer",
         "loguru",
     ]
