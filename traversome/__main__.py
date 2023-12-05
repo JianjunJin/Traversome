@@ -78,9 +78,9 @@ class StartStrategy(str, Enum):
 
 
 class ModelSelectionMode(str, Enum):
-    AIC = "aic"
-    BIC = "bic"
-    Single = "single"
+    AIC = "AIC"
+    BIC = "BIC"
+    # Single = "single"
 
 
 class ChTopology(str, Enum):
@@ -217,14 +217,14 @@ def thorough(
         help="A file containing user assigned variant paths "
              "that will remain after model selection process. "
              "Each line contains a variant path in Bandage path format, "
-             "e.g. 53+,45-,33+(circular) or in GAF alignment format, e.g. >53<45>33"
+             "e.g. '53+,45-,33+(circular)' or in GAF alignment format, e.g. '>53<45>33'"
         ),
     var_candidate: Path = typer.Option(
         None, "--vc", "--variant-candidate",
         help="A file containing user proposed candidate variant paths "
              "that will be compared during model selection process. "
              "Each line contains a variant path in Bandage path format, "
-             "e.g. 53+,45-,33+(circular) or in GAF alignment format, e.g. >53<45>33"
+             "e.g. '53+,45-,33+(circular)' or in GAF alignment format, e.g. '>53<45>33'"
     ),
     # Currently there is no other searching scheme implemented
     # var_gen_scheme: VarGen = typer.Option(
@@ -248,12 +248,16 @@ def thorough(
     max_num_traversals: int = typer.Option(
         30000, "-M", "--max-traversals",
         help="Hard bound for total number of searches (traversals). "),
+    max_uniq_traversal: int = typer.Option(
+        200, "--max-unique", "--max-unique-search",
+        help="Hard bound for number of unique valid traversals for heuristic search. "
+             "Too many unique candidates will cost computational resources and usually indicate bad dataset. "),
     criterion: ModelSelectionMode = typer.Option(
         ModelSelectionMode.BIC, "-F", "--func",
-        help="aic (reverse model selection using stepwise AIC)\n"
-             "bic (reverse model selection using stepwise BIC, default)"),
+        help="AIC (reverse model selection using stepwise AIC)\n"
+             "BIC (reverse model selection using stepwise BIC, default)"),
     bootstrap: int = typer.Option(
-        0, "--bs", "--bootstrap",
+        100, "--bs", "--bootstrap",
         help="The number of repeats used to perform bootstrap analysis. "),
     # jackknife: int = typer.Option(
     #     0, "--jk", "--jackknife",
@@ -276,20 +280,20 @@ def thorough(
              "single (each single form covers all contigs) / "
              "all (unconstrained, single or multi-chromosomes, RECOMMENDED for most cases)",
         prompt_required=True),
-    # out_seq_threshold: float = typer.Option(
-    #     0.0, "-S",
-    #     help="Threshold for sequence output",
-    #     min=0, max=1),
+    out_seq_threshold: float = typer.Option(
+        0.00, "-S",
+        help="Threshold for sequence output. Use 2 to disable.",
+        min=0, max=2),
     min_alignment_identity_cutoff: float = typer.Option(
-        0.85, "--min-align-id",
+        0.80, "--min-align-id",
         help="Threshold for alignment identity, below which the alignment will be discarded. ",
         min=0, max=1),
     min_alignment_len_cutoff: int = typer.Option(
-        5000, "--min-align-len",
+        100, "--min-align-len",
         help="Threshold for alignment length, below which the alignment will be discarded. ",
         min=100),
     min_alignment_counts: int = typer.Option(
-        1, "--min-align-counts", min=1,
+        2, "--min-align-counts", min=1,
         help="Threshold for counts per path, below which the alignment(s) of that path will be discarded. "
     ),
     graph_component_selection: str = typer.Option(
@@ -396,8 +400,6 @@ def thorough(
                 graph_component_selection = slice(*eval(graph_component_selection))
             except (SyntaxError, TypeError):
                 raise TypeError(str(graph_component_selection) + " is invalid for --graph-selection!")
-        # deprecate the option
-        out_seq_threshold = -1.0
         # TODO: use json file to record parameters
         from traversome.traversome import Traversome
         traverser = Traversome(
@@ -417,6 +419,7 @@ def thorough(
             min_valid_search=min_valid_search,
             max_valid_search=max_valid_search,
             max_num_traversals=max_num_traversals,
+            max_uniq_traversal=max_uniq_traversal,
             num_processes=num_processes,
             uni_chromosome=single_chr,
             force_circular=force_circular,
@@ -467,7 +470,7 @@ def initialize(output_dir, loglevel, previous):
     """
     os.makedirs(str(output_dir), exist_ok=previous in ("overwrite", "resume"))
     if previous == "overwrite" and os.path.isdir(output_dir):
-        rmdir(output_dir.joinpath("paths"), ignore_errors=True)
+        rmdir(output_dir.joinpath("tmp.candidates"), ignore_errors=True)
         rmdir(output_dir.joinpath("theano.cache"), ignore_errors=True)
         for exist_f in output_dir.glob("*.*"):
             os.remove(exist_f)
