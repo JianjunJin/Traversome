@@ -13,17 +13,20 @@ from copy import deepcopy
 from pathlib import Path as fpath
 from collections import OrderedDict
 from traversome.Assembly import Assembly
+from traversome.PanGenome import PanGenome
 from traversome.GraphAlignRecords import GraphAlignRecords
 from traversome.utils import \
-    SubPathInfo, Criterion, VariantSubPathsGenerator, executable, run_graph_aligner, user_paths_reader, setup_logger
+    SubPathInfo, Criterion, VariantSubPathsGenerator, executable, run_graph_aligner, user_paths_reader, setup_logger, \
+    path_to_gaf_str
 from traversome.ModelFitMaxLike import ModelFitMaxLike
 from traversome.VariantGenerator import VariantGenerator
 from traversome.ModelGenerator import PathMultinomialModel
 # from traversome.CleanGraph import CleanGraph
 from typing import OrderedDict as typingODict
-from typing import Set
+from typing import Set, Union
 from multiprocessing import Manager, Pool
 import gc
+import numpy as np
 # import time
 
 
@@ -104,6 +107,13 @@ class Traversome(object):
         # The result of model fitting using ml/mc, the base to update above model information for a second fitting run
         # {variant_id: percent}
         self.variant_proportions = OrderedDict()
+        self.res_loglike = None
+        self.res_criterion = None
+        self.variant_proportions_reps = []
+        self.vp_unique_results = {}
+        self.vp_unique_results_sorted = []
+        self.cid_to_fid = OrderedDict()
+        self.variant_proportions_best = OrderedDict()
 
         # self.pal_len_sbp_Xs = OrderedDict()
         # self.sbp_Xs = []
@@ -204,23 +214,24 @@ class Traversome(object):
                 min_num_search=self.kwargs.get("min_valid_search"),
                 max_num_search=self.kwargs.get("max_valid_search"),
                 max_num_traversals=self.kwargs.get("max_num_traversals"),
+                max_uniq_traversal=self.kwargs.get("max_uniq_traversal"),
                 num_processes=self.num_processes,
                 uni_chromosome=self.uni_chromosome
             )
 
         self.num_put_variants = len(self.variant_paths)
+        self.variant_sizes = [self.graph.get_path_length(variant_p, check_valid=False, adjust_for_cyclic=True)
+                              for variant_p in self.variant_paths]
         if self.num_put_variants == 0:
             logger.error("No candidate variants found!")
             logger.info("======== VARIANTS SEARCHING ENDS ========\n")
             raise SystemExit(0)
         elif self.num_put_variants == 1 or len(self.repr_to_merged_variants) == 1:
-            self.variant_proportions[0] = 1.
+            self.variant_proportions_best[0] = self.variant_proportions[0] = 1.
             logger.info("======== VARIANTS SEARCHING ENDS ========\n")
         else:
             logger.info("======== VARIANTS SEARCHING ENDS ========\n")
             logger.info("======== MODEL SELECTION & FITTING STARTS ========")
-            self.variant_sizes = [self.graph.get_path_length(variant_p, check_valid=False, adjust_for_cyclic=True)
-                                  for variant_p in self.variant_paths]
             for go_p, path in enumerate(self.variant_paths):
                 logger.debug("PATH{}: {}".format(go_p, self.graph.repr_path(path)))
 
@@ -229,68 +240,253 @@ class Traversome(object):
             self.generate_sub_path_stats(self.all_sub_paths, self.align_len_at_path_sorted)
             # build an index
             sbp_to_sbp_id = self.update_sp_to_sp_id_dict(self.all_sub_paths)
-            # TODO: check the number
+            # difference between this number and total number of sub-paths
+            #            will happen when the current variants cannot cover all read paths
+            #                     or when an alignable path is not informative
             logger.info("Generated {} valid informative sub-paths".format(len(self.all_sub_paths)))
 
             logger.debug("Estimating candidate variant frequencies using Maximum Likelihood...")
             self.model = PathMultinomialModel(variant_sizes=self.variant_sizes, all_sub_paths=self.all_sub_paths)
-            self.variant_proportions = self.fit_model_using_reverse_model_selection(
-                model=self.model,
-                sbp_to_sbp_id=sbp_to_sbp_id,
-                criterion=self.kwargs["model_criterion"])
+            self.variant_proportions, self.res_loglike, self.res_criterion = \
+                self.fit_model_using_reverse_model_selection(
+                    model=self.model,
+                    sbp_to_sbp_id=sbp_to_sbp_id,
+                    criterion=self.kwargs["model_criterion"])
+            logger.info("======== MODEL SELECTION & FITTING ENDS ========\n")
 
-            # TODO, not urgent, parallelize bootstrap if necessary
             if self.kwargs.get("bootstrap", 0) or self.kwargs.get("jackknife", 0):
-                self._prepare_for_sampling()
-                n_replicate = self.kwargs.get("bootstrap", 0) \
-                    if self.kwargs.get("bootstrap", 0) else self.kwargs.get("jackknife", 0)
-                for go_bs in range(n_replicate):
-                    logger.info(f"Sampling {go_bs + 1} --------")
-                    logger.info("Generating sub-paths ..")
-                    if self.kwargs.get("bootstrap", 0):
-                        sampled_sub_paths, align_len_at_path_sorted = \
-                            self._sample_sub_paths(bootstrap_size=self.num_valid_records)
-                    else:
-                        sampled_sub_paths, align_len_at_path_sorted = \
-                            self._sample_sub_paths(
-                                jackknife_size=int(self.num_valid_records/float(n_replicate)))
-                    # self.gen_all_informative_sub_paths()
-                    self.generate_sub_path_stats(sampled_sub_paths, align_len_at_path_sorted=align_len_at_path_sorted)
-                    sbp_to_sbp_id = self.update_sp_to_sp_id_dict(sampled_sub_paths)
-                    logger.info("Generated {} valid informative sub-paths".format(len(sampled_sub_paths)))
-                    sampled_model = PathMultinomialModel(
-                        variant_sizes=self.variant_sizes, all_sub_paths=sampled_sub_paths)
-                    variant_proportions = self.fit_model_using_reverse_model_selection(
-                        model=sampled_model,
-                        sbp_to_sbp_id=sbp_to_sbp_id,
-                        criterion=self.kwargs["model_criterion"],
-                        init_self_max_like=False)
-                    # logger.info(str(variant_proportions))
+                logger.info("======== BOOTSTRAPPING STARTS ========")
+                self.do_subsampling()
+                logger.info("======== BOOTSTRAPPING ENDS ========\n")
 
-            # # TODO, this is pseudo bootstrap!
-            if self.kwargs.get("fast_bootstrap", 0):
-                self._prepare_for_pseudo_bs()
-                for go_bs in range(self.kwargs.get("fast_bootstrap")):
-                    logger.info(f"Pseudo-bootstrap {go_bs + 1} --------")
-                    sampled_sub_paths = self._pseudo_sample_sub_paths()
-                    sampled_model = PathMultinomialModel(
-                        variant_sizes=self.variant_sizes, all_sub_paths=sampled_sub_paths)
-                    variant_proportions = self.fit_model_using_reverse_model_selection(
-                        model=sampled_model,
-                        sbp_to_sbp_id=sbp_to_sbp_id,
-                        criterion=self.kwargs["model_criterion"],
-                        init_self_max_like=False)
-                    # logger.info(str(variant_proportions))
+            if not self.variant_proportions_best:  # if it is not modified during subsampling
+                self.variant_proportions_best = deepcopy(self.variant_proportions)
 
             # update candidate info according to the result of reverse model selection
             # assure self.repr_to_merged_variants was generated
             if self.kwargs["n_generations"] > 0 and \
-                    len([repr_v for repr_v in self.variant_proportions if repr_v in self.repr_to_merged_variants]) > 1:
+                    len([repr_v
+                         for repr_v in self.variant_proportions_best
+                         if repr_v in self.repr_to_merged_variants]) > 1:
+                # TODO add mcmc result to the summary table
+                logger.info("======== BAYESIAN ESTIMATION STARTS ========")
                 logger.debug("Estimating candidate variant frequencies using Bayesian MCMC ...")
-                self.variant_proportions = self.fit_model_using_bayesian_mcmc(chosen_ids=self.variant_proportions)
-            logger.info("======== MODEL SELECTION & FITTING ENDS ========\n")
+                self.variant_proportions_best = \
+                    self.fit_model_using_bayesian_mcmc(chosen_ids=self.variant_proportions_best)
+                logger.info("======== BAYESIAN ESTIMATION ENDS ========\n")
 
+        logger.info("======== OUTPUT FILES STARTS ========")
+        self.output_variant_info()
+        self.output_sampling_info()
+        self.output_result_info()
+        self.output_pangenome_graph()
         self.output_seqs()
+        logger.info("======== OUTPUT FILES ENDS ========\n")
+
+    def do_subsampling(self):
+        """
+        using bootstrap or jackknife
+        """
+        # TODO, not urgent, parallelize bootstrap if necessary
+        self._prepare_for_sampling()
+        n_replicate = self.kwargs.get("bootstrap", 0) \
+            if self.kwargs.get("bootstrap", 0) else self.kwargs.get("jackknife", 0)
+        self.variant_proportions_reps = []
+        n_digit = len(str(n_replicate))
+        for go_bs in range(n_replicate):
+            logger.debug(f"Sampling {go_bs + 1} --------")
+            logger.debug("Generating sub-paths ..")
+            if self.kwargs.get("bootstrap", 0):
+                sampled_sub_paths, align_len_at_path_sorted = \
+                    self._sample_sub_paths(bootstrap_size=self.num_valid_records)
+            else:
+                sampled_sub_paths, align_len_at_path_sorted = \
+                    self._sample_sub_paths(
+                        jackknife_size=int(self.num_valid_records / float(n_replicate)))
+            # self.gen_all_informative_sub_paths()
+            self.generate_sub_path_stats(sampled_sub_paths, align_len_at_path_sorted=align_len_at_path_sorted)
+            sbp_to_sbp_id = self.update_sp_to_sp_id_dict(sampled_sub_paths)
+            logger.debug("Generated {} valid informative sub-paths".format(len(sampled_sub_paths)))
+            sampled_model = PathMultinomialModel(
+                variant_sizes=self.variant_sizes, all_sub_paths=sampled_sub_paths)
+            v_prop, *foo = self.fit_model_using_reverse_model_selection(
+                model=sampled_model,
+                sbp_to_sbp_id=sbp_to_sbp_id,
+                criterion=self.kwargs["model_criterion"],
+                init_self_max_like=False,
+                bootstrap_str=f"BS{go_bs + 1: 0{n_digit}d}")
+            self.variant_proportions_reps.append(v_prop)
+            # self.res_loglike_reps.append(loglike)
+            # self.res_criteria_reps.append(criteria)
+
+        # if loglevel is reset, set it back
+        setup_logger(loglevel=self.loglevel, timed=True, log_file=self.logfile)
+        # if there are replicates, summarize the replicates
+        logger.info("Summarizing the replicates ..")
+        if self.variant_proportions_reps:
+            num_reps = len(self.variant_proportions_reps)
+            self.vp_unique_results = {}
+            for go_r, v_prop in enumerate(self.variant_proportions_reps):
+                tuple_v_chosen = tuple(v_prop.keys())
+                tuple_v_props = tuple(v_prop.values())
+                if tuple_v_chosen not in self.vp_unique_results:
+                    self.vp_unique_results[tuple_v_chosen] = {"rep_ids": [], "support": None, "values": []}
+                self.vp_unique_results[tuple_v_chosen]["rep_ids"].append(go_r)
+                self.vp_unique_results[tuple_v_chosen]["values"].append(tuple_v_props)
+            # calculate supports
+            for res_info in self.vp_unique_results.values():
+                support = len(res_info["rep_ids"]) / float(num_reps)
+                res_info["support"] = support
+            # sort by supports AND whether concordant with the estimate from raw dataset
+            raw_res = tuple(self.variant_proportions.keys())
+            self.vp_unique_results_sorted = \
+                sorted(self.vp_unique_results, key=lambda x: (-self.vp_unique_results[x]["support"], x != raw_res, x))
+
+            # use the entire dataset to recalculate loglike and criterion
+            # for these results with bootstrap larger than 0.1 (arbitrarily)
+            logger.info("Re-evaluate the supported models using whole dataset ..")
+            sbp_to_sbp_id = self.update_sp_to_sp_id_dict(self.all_sub_paths)
+            for go_s, tuple_v_chosen in enumerate(self.vp_unique_results_sorted):
+                chosen_dict = self.vp_unique_results[tuple_v_chosen]
+                if tuple_v_chosen == raw_res:
+                    raw_prop, raw_like, raw_criterion = \
+                        self.variant_proportions, self.res_loglike, self.res_criterion
+                else:
+                    if chosen_dict["support"] > 0.05 or go_s == 0:  # the first one
+                        raw_prop, raw_like, raw_criterion = self.fit_model_using_point_maximum_likelihood(
+                            model=self.model,
+                            sbp_to_sbp_id=sbp_to_sbp_id,
+                            criterion=self.kwargs["model_criterion"],
+                            chosen_ids=set(tuple_v_chosen),
+                            init_self_max_like=False)
+                    else:  # skip minor results
+                        raw_prop, raw_like, raw_criterion = "*", "*", "*"
+                chosen_dict["raw_prop"] = raw_prop
+                chosen_dict["raw_like"] = raw_like
+                chosen_dict["raw_criterion"] = raw_criterion
+                # reset the best result to be the best supported by replicates (go_s == 0) given other conditions
+                # mcmc (if requested) will be based on the new best result
+                if go_s == 0 and tuple_v_chosen != raw_res and chosen_dict["support"] > 0.05:
+                    self.variant_proportions_best = raw_prop
+
+    def output_pangenome_graph(self):
+        """
+        # TODO can be improved later
+        # TODO, isolated as an independent module
+        """
+        # prepare sorted output
+        out_paths = [self.variant_paths[cid] for cid in self.variant_proportions_best]
+        out_path_prop = [prop for prop in self.variant_proportions_best.values()]
+        out_fids = [self.cid_to_fid[cid] for cid in self.variant_proportions_best]
+        sort_indices = np.argsort(out_fids)
+        out_paths = [out_paths[idx] for idx in sort_indices]
+        out_path_prop = OrderedDict([(new_idx, out_path_prop[old_idx]) for new_idx, old_idx in enumerate(sort_indices)])
+        out_fids = [out_fids[idx] for idx in sort_indices]
+        ##
+        pangenome = PanGenome(
+            original_graph=self.graph,
+            variant_paths_sorted=out_paths,
+            variant_props_ordered=out_path_prop,
+            variant_labels=out_fids)
+        logger.info("Constructing the pangenome ..")
+        pangenome.gen_raw_pan_graph()
+        pangenome.pan_graph.write_to_gfa(os.path.join(self.outdir, "pangenome.gfa"))
+
+    def output_result_info(self):
+        with open(os.path.join(self.outdir, f"final.result.tab"), "w") as output_h:
+            criterion = self.kwargs["model_criterion"].value
+            met_str = "BOOTSTRAP" if self.kwargs.get("bootstrap", 0) else "JACKKNIFE"
+            num_fids = len(self.cid_to_fid)
+            output_h.write(f"SOLUTIONS\t{met_str}_SUPPORT\tLOGLIKELIHOOD\t{criterion}\t" +
+                           "\t".join([f"fid_{_id + 1}" for _id in range(num_fids)]) +
+                           f"\tFREQ_STD_OF_{met_str}\n")  # TODO add mcmc range column here and below
+            raw_res = tuple(self.variant_proportions.keys())
+            if raw_res in self.vp_unique_results:
+                num_solutions = len(self.vp_unique_results)
+            else:
+                num_solutions = len(self.vp_unique_results) + 1
+            s_digit = len(str(num_solutions))
+            for go_s, tuple_v_chosen in enumerate(self.vp_unique_results_sorted):
+                chosen_dict = self.vp_unique_results[tuple_v_chosen]
+                if len(chosen_dict['values']) > 1:
+                    replicate_std = np.std(chosen_dict['values'], axis=0, ddof=1)  # ddof=1 for a sample taken full
+                    replicate_std_str = ",".join([f"{std_:.4f}" for std_ in replicate_std])
+                else:
+                    replicate_std_str = ",".join(["*" for foo_ in chosen_dict['values'][0]])
+                this_line = [f"{go_s + 1:0{s_digit}d}"
+                             f"\t{chosen_dict['support']}"
+                             f"\t{chosen_dict['raw_like']}"
+                             f"\t{chosen_dict['raw_criterion']}"] + \
+                            ["-" for _id in range(num_fids)] + \
+                            [replicate_std_str]
+                if chosen_dict["raw_prop"] == "*":  # low bootstrap support ones without re-assessment
+                    for cid in tuple_v_chosen:
+                        this_line[self.cid_to_fid[cid]] = "*"
+                else:
+                    for cid, prop_val in chosen_dict["raw_prop"].items():
+                        this_line[self.cid_to_fid[cid]] = f"{prop_val:.4f}"  # given that fid is 1-based
+                output_h.write("\t".join(this_line) + "\n")
+            if not self.vp_unique_results_sorted:
+                this_line = [f"{num_solutions:0{s_digit}d}"
+                             f"\t1.0"
+                             f"\t-"
+                             f"\t-"] + \
+                            ["-" for _id in range(num_fids)] + \
+                            ["-"]
+                for cid, prop_val in self.variant_proportions.items():
+                    this_line[self.cid_to_fid[cid]] = f"{prop_val:.4f}"  # given that fid is 1-based
+                output_h.write("\t".join(this_line) + "\n")
+            elif raw_res not in self.vp_unique_results:  # if there is no support for the raw-dataset-based best result
+                this_line = [f"{num_solutions:0{s_digit}d}"
+                             f"\t0"
+                             f"\t{self.res_loglike}"
+                             f"\t{self.res_criterion}"] + \
+                            ["-" for _id in range(num_fids)] + \
+                            ["-"]
+                for cid, prop_val in self.variant_proportions.items():
+                    this_line[self.cid_to_fid[cid]] = f"{prop_val:.4f}"  # given that fid is 1-based
+                output_h.write("\t".join(this_line) + "\n")
+
+    def output_sampling_info(self):
+        """
+        output bootstrap results
+        """
+        if self.variant_proportions_reps:
+            met_str = "bootstraps" if self.kwargs.get("bootstrap", 0) else "jackknife"
+            with open(os.path.join(self.outdir, f"{met_str}.replicates.tab"), "w") as output_h:
+                num_fids = len(self.cid_to_fid)
+                output_h.write(f"{met_str.upper()} ID\t" +
+                               "\t".join([f"fid_{_id + 1}" for _id in range(num_fids)]) + "\n")
+                s_digit = len(str(len(self.variant_proportions_reps)))
+                for go_r, v_prop in enumerate(self.variant_proportions_reps):
+                    this_line = [f"{met_str}_{go_r:0{s_digit}d}"] + ["-" for _id in range(num_fids)]
+                    for cid, prop_val in v_prop.items():
+                        this_line[self.cid_to_fid[cid]] = f"{prop_val:.4f}"  # given that fid is 1-based
+                    output_h.write("\t".join(this_line) + "\n")
+
+    def output_variant_info(self):
+        self.cid_to_fid = OrderedDict()
+        count_fid = 0
+        # find candidate path ids chosen in all replicates and export them as final path ids
+        for tuple_v_prop in self.vp_unique_results_sorted:
+            for cid in tuple_v_prop:
+                if cid not in self.cid_to_fid:
+                    count_fid += 1  # fid is therefore 1-based
+                    self.cid_to_fid[cid] = count_fid
+        # if the result from raw dataset does not show in any of the replicates, which is terrible
+        for cid in self.variant_proportions:
+            if cid not in self.cid_to_fid:
+                count_fid += 1
+                self.cid_to_fid[cid] = count_fid
+        # output information
+        with open(os.path.join(self.outdir, "variants.info.tab"), "w") as output_v_h:
+            output_v_h.write("FID\tCID\tUnidentifiable_to_cid\tCONTIGS\tBASES\tPATH\n")
+            for cid, fid in self.cid_to_fid.items():
+                uid = self.be_unidentifiable_to.get(cid, cid)
+                uid = "-" if uid == cid else uid
+                this_vp = self.variant_paths[cid]
+                this_size = self.variant_sizes[cid]
+                output_v_h.write(f"{fid}\t{cid}\t{uid}\t{len(this_vp)}\t{this_size}\t{path_to_gaf_str(this_vp)}\n")
 
     def load_user_paths(self):
         added_paths = set()
@@ -432,6 +628,7 @@ class Traversome(object):
             min_num_search=1000,
             max_num_search=10000,
             max_num_traversals=50000,
+            max_uniq_traversal=200,
             num_processes=1,
             uni_chromosome=False,
             **kwargs):
@@ -445,11 +642,12 @@ class Traversome(object):
             min_num_valid_search=min_num_search,
             max_num_valid_search=max_num_search,
             max_num_traversals=max_num_traversals,
+            max_uniq_traversal=max_uniq_traversal,
             num_processes=num_processes,
             force_circular=self.force_circular,
             uni_chromosome=uni_chromosome,
             decay_f=kwargs.get("search_decay_factor"),
-            temp_dir=fpath(self.outdir).joinpath("paths"),
+            temp_dir=fpath(self.outdir).joinpath("tmp.candidates"),
             resume=self.resume,
             )
         generator.generate_heuristic_paths()
@@ -461,13 +659,13 @@ class Traversome(object):
                 self.variant_paths.append(g_variant)
             else:
                 logger.info(f"searched variant {go_v + 1} existed in user designed.")
-        # self.variant_paths = self.user_variant_paths + generator.variants
-        # self.variant_paths = generator.variants
+        # self.variant_paths_sorted = self.user_variant_paths + generator.variants
+        # self.variant_paths_sorted = generator.variants
 
     # def update_params_for_variants(self):
     #     self.variant_sizes = [self.graph.get_path_length(variant_p, check_valid=False, adjust_for_cyclic=True)
-    #                           for variant_p in self.variant_paths]
-    #     for go_p, path in enumerate(self.variant_paths):
+    #                           for variant_p in self.variant_paths_sorted]
+    #     for go_p, path in enumerate(self.variant_paths_sorted):
     #         logger.debug("PATH{}: {}".format(go_p, self.graph.repr_path(path)))
     #
     #     # generate subpaths: the binomial sets
@@ -554,7 +752,7 @@ class Traversome(object):
             if read_path in self.all_sub_paths:
                 self.all_sub_paths[read_path].mapped_records = record_ids
             # else:  # DEBUG
-            #     for go_variant, variant_path in enumerate(self.variant_paths):
+            #     for go_variant, variant_path in enumerate(self.variant_paths_sorted):
             #         sub_paths_group = self.variant_subpath_counters[variant_path]
             #         if read_path in sub_paths_group:
             #             print("found", len(record_ids), read_path)
@@ -652,10 +850,10 @@ class Traversome(object):
             self._prepare_for_sampling()
         if bootstrap_size:
             # TODO move the info to the run() function
-            logger.info("Using bootstrap.")
+            logger.debug("Using bootstrap.")
             new_records_pool = self.random.choices(self.records_pool_sorted, k=bootstrap_size)
         elif jackknife_size:
-            logger.info(f"Using Jackknife: leave-{jackknife_size}-out.")
+            logger.debug(f"Using Jackknife: leave-{jackknife_size}-out.")
             keep_ids = self.random.sample(range(self.num_valid_records), k=self.num_valid_records - jackknife_size)
             new_records_pool = [self.records_pool_sorted[s_id_] for s_id_ in keep_ids]
         else:
@@ -689,49 +887,6 @@ class Traversome(object):
         # generate new align_len_at_path_sorted
         align_len_at_path_sorted = sorted([self.align_len_at_path_map[rec_id] for rec_id in new_records_pool])
         return new_sub_paths, align_len_at_path_sorted
-
-    def _prepare_for_pseudo_bs(self):
-        """
-        Generate records pool in the form of read path ids
-        """
-        logger.info("Generate records pool for fast bootstrapping ..")
-        self.records_pool_in_sbp_ids = []
-        for go_sbp, sp_info in enumerate(self.all_sub_paths.values()):
-            self.records_pool_in_sbp_ids.extend([go_sbp for foo_ in range(sp_info.num_matched)])
-
-    def _pseudo_sample_sub_paths(self):
-        """
-        Bootstrapping aligned records among sub_paths without distinguishing records of the same read path
-        """
-        if not self.records_pool_in_sbp_ids:
-            self._prepare_for_pseudo_bs()
-        new_records_pool = self.random.choices(self.records_pool_in_sbp_ids, k=self.num_valid_records)
-        # count new pool
-        counts = {}
-        for sbp_id in new_records_pool:
-            if sbp_id in counts:
-                counts[sbp_id] += 1
-            else:
-                counts[sbp_id] = 1
-        # create new all_sub_paths
-        new_sub_paths = OrderedDict()
-        for go_sbp, (read_path, sbp_info) in enumerate(self.all_sub_paths.items()):
-            new_sbp_info = SubPathInfo()
-            new_sbp_info.from_variants = sbp_info.from_variants
-            # ignore new_sbp_info.mapped_records,
-            # which is no more correct due to bootstrap and also useless in following analysis
-            # new_sbp_info.mapped_records = []
-            # The X in binomial: theoretical num of matched chances
-            new_sbp_info.num_possible_X = sbp_info.num_possible_X
-            # The n in binomial: observed num of reads in range
-            # This is the reason why it's called pseudo bootstrap
-            # We assume that the local length is not changing at all, which is not true
-            new_sbp_info.num_in_range = sbp_info.num_in_range
-            # The x in binomial: observed num of matched reads = len(self.mapped_records)
-            # to be updated with bootstrap res
-            new_sbp_info.num_matched = counts.get(go_sbp, 0)
-            new_sub_paths[read_path] = new_sbp_info
-        return new_sub_paths
 
     def __subpath_info_filler(
             self, this_sub_path, align_len_at_path_sorted, align_len_id_lookup_table, all_sub_paths):
@@ -874,23 +1029,10 @@ class Traversome(object):
 
     def fit_model_using_point_maximum_likelihood(self,
                                                  model,
-                                                 chosen_ids: typingODict[int, bool] = None):
-        self.max_like_fit = ModelFitMaxLike(
-            model=model,
-            variant_paths=self.variant_paths,
-            variant_subpath_counters=self.variant_subpath_counters,
-            sbp_to_sbp_id=self.sbp_to_sbp_id,
-            repr_to_merged_variants=self.repr_to_merged_variants,
-            be_unidentifiable_to=self.be_unidentifiable_to,
-            loglevel=self.loglevel)
-        return self.max_like_fit.point_estimate(chosen_ids=chosen_ids)
-
-    def fit_model_using_reverse_model_selection(self,
-                                                model,
-                                                sbp_to_sbp_id,
-                                                criterion=Criterion.AIC,
-                                                chosen_ids: typingODict[int, bool] = None,
-                                                init_self_max_like: bool = True):
+                                                 sbp_to_sbp_id,
+                                                 criterion=Criterion.BIC,
+                                                 chosen_ids: Union[typingODict[int, bool], Set] = None,
+                                                 init_self_max_like: bool = True):
         max_like_fit = ModelFitMaxLike(
             model=model,
             variant_paths=self.variant_paths,
@@ -899,6 +1041,38 @@ class Traversome(object):
             repr_to_merged_variants=self.repr_to_merged_variants,
             be_unidentifiable_to=self.be_unidentifiable_to,
             loglevel=self.loglevel)
+        if init_self_max_like:
+            self.max_like_fit = max_like_fit
+        use_prop, this_like, this_criterion =\
+            self.max_like_fit.point_estimate(chosen_ids=chosen_ids, criterion=criterion)
+        return use_prop, this_like, this_criterion
+
+    def fit_model_using_reverse_model_selection(self,
+                                                model,
+                                                sbp_to_sbp_id,
+                                                criterion=Criterion.BIC,
+                                                chosen_ids: Union[typingODict[int, bool], Set] = None,
+                                                init_self_max_like: bool = True,
+                                                bootstrap_str: str = ""):
+        """
+        :param bootstrap_str: turn on to only print simple information and mark the bootstrap id
+        """
+        # intermediate level of RES is not working properly in different environments
+        # if bootstrap_str and logger.level(self.loglevel).no >= 20:  # not in {"TRACE", "DEBUG"}:
+        #     new_log_level = "RES"  # set the level to be higher
+        #     setup_logger(loglevel=new_log_level, timed=True, log_file=self.logfile)
+        # else:
+        #     new_log_level = self.loglevel
+        # run fit
+        max_like_fit = ModelFitMaxLike(
+            model=model,
+            variant_paths=self.variant_paths,
+            variant_subpath_counters=self.variant_subpath_counters,
+            sbp_to_sbp_id=sbp_to_sbp_id,
+            repr_to_merged_variants=self.repr_to_merged_variants,
+            be_unidentifiable_to=self.be_unidentifiable_to,
+            loglevel=self.loglevel,
+            bootstrap_mode=bootstrap_str)
         if init_self_max_like:
             self.max_like_fit = max_like_fit
         return max_like_fit.reverse_model_selection(
@@ -913,7 +1087,7 @@ class Traversome(object):
     #         assert isinstance(ext_component_proportions, OrderedDict)
     #         self.variant_proportions = ext_component_proportions
     #
-    #     self.variant_paths = []  # each element is a tuple(path)
+    #     self.variant_paths_sorted = []  # each element is a tuple(path)
     #     self.variant_sizes = []
     #     self.num_put_variants = None
     #     self.variant_subpath_counters = OrderedDict()  # each value is a dict(sub_path->sub_path_counts)
@@ -934,30 +1108,33 @@ class Traversome(object):
         return self.bayesian_fit.run_mcmc(self.kwargs["n_generations"], self.kwargs["n_burn"], chosen_ids=chosen_ids)
 
     def output_seqs(self):
-        out_seq_num = len([x for x in self.variant_proportions.values() if x > self.out_prob_threshold])
-        out_digit = len(str(out_seq_num))
+        out_seq_file_num = len([x for x in self.variant_proportions_best.values() if x >= self.out_prob_threshold])
+        if not out_seq_file_num:
+            return
+        out_digit = len(str(out_seq_file_num))
         count_seq = 0
-        sorted_rank = sorted(list(self.variant_proportions), key=lambda x: -self.variant_proportions[x])
+        # sorted_rank = sorted(list(self.variant_proportions_best), key=lambda x: -self.variant_proportions_best[x])
         # for go_isomer, this_prob in self.ext_component_proportions.items():
-        for count_seq, go_variant_set in enumerate(sorted_rank):
-            if self.repr_to_merged_variants and go_variant_set not in self.repr_to_merged_variants:
+        for count_out, cid in enumerate(self.variant_proportions_best):
+            if self.repr_to_merged_variants and cid not in self.repr_to_merged_variants:
                 # when self.generate_all_informative_sub_paths() was not called,
-                # bool(repr_to_merged_variants)==False - TODO: when?
+                # bool(repr_to_merged_variants)==False - TODO
                 continue
-            this_prob = self.variant_proportions[go_variant_set]
-            if this_prob > self.out_prob_threshold:
-                this_base_name = "variant.%0{}i".format(out_digit) % (count_seq + 1)
+            this_prob = self.variant_proportions_best[cid]
+            if this_prob >= self.out_prob_threshold:
+                this_base_name = "variant.%0{}i".format(out_digit) % count_out
                 seq_file_name = os.path.join(self.outdir, this_base_name + ".fasta")
                 with open(seq_file_name, "w") as output_handler:
                     if self.repr_to_merged_variants:
-                        unidentifiable_ids = self.repr_to_merged_variants[go_variant_set]
+                        unidentifiable_ids = self.repr_to_merged_variants[cid]
                     else:
-                        # when self.generate_all_informative_sub_paths() was not called - TODO: when?
-                        unidentifiable_ids = [go_variant_set]
+                        # when self.generate_all_informative_sub_paths() was not called - TODO
+                        unidentifiable_ids = [cid]
                     len_un_id = len(unidentifiable_ids)
                     lengths = []
                     for _ss, comp_id in enumerate(unidentifiable_ids):
                         this_seq = self.graph.export_path(self.variant_paths[comp_id], check_valid=False)
+                        this_seq.label = self.cid_to_fid[comp_id]  # simplify the output fasta head
                         this_len = len(this_seq.seq)
                         lengths.append(this_len)
                         if len_un_id > 1:
@@ -970,11 +1147,12 @@ class Traversome(object):
                             logger.debug("{} path={}".format(this_base_name, this_seq.label))
                         output_handler.write(seq_label + "\n" + this_seq.seq + "\n")
                         count_seq += 1
-                    logger.info(f"{this_base_name}x{len_un_id} "
-                                f"freq={this_prob:.4f} len={'/'.join([str(_l) for _l in lengths])}")
+                    logger.log("RES",
+                               f"{this_base_name}x{len_un_id} "
+                               f"freq={this_prob:.4f} len={'/'.join([str(_l) for _l in lengths])}")
         # logger.info("Output {} seqs (%.4f to %.{}f): ".format(count_seq, len(str(self.out_prob_threshold)) - 2)
         #             % (max(self.variant_proportions.values()), self.out_prob_threshold))
-        logger.info("Output {} seqs".format(count_seq))
+        logger.info("Output {} seqs in {} files".format(count_seq, out_seq_file_num))
 
     def shuffled(self, sorted_list):
         sorted_list = deepcopy(sorted_list)
