@@ -275,6 +275,9 @@ class AssemblySimple(object):
             else:
                 self.parse_fastg()
 
+        # paths, 2023-11-16 added as temporary solution
+        self.paths = OrderedDict()  # label -> {"path" -> [], "prop" -> float, "circular" -> bool}
+
     def __repr__(self):
         """
         Human readable desciptive output of the Assembly object
@@ -511,6 +514,7 @@ class AssemblySimple(object):
             self.__uni_overlap = overlap_values.pop()
 
     def parse_gfa_v2(self, gfa_open):
+        # TODO: to be updated
         "GFA VERSION 2 PARSING"
 
         # set for storing kmer results
@@ -728,6 +732,7 @@ class AssemblySimple(object):
 
     def write_to_gfa(self, out_file, check_postfix=True, other_attr=None):
         """
+        GFA1
         :param out_file: str
         :param check_postfix: bool
         :param other_attr: dict, e.g. {"CL":"z", "C2":"z"}
@@ -738,6 +743,7 @@ class AssemblySimple(object):
             other_attr = {}
         logger.debug("  writing graph to " + str(out_file))
         out_file_handler = open(out_file, "w")
+        out_file_handler.write("H\tVN:Z:1.0\n")
         for vertex_name in self.vertex_info:
             out_file_handler.write("\t".join(
                 [
@@ -760,4 +766,65 @@ class AssemblySimple(object):
                             "L", vertex_name, ("-", "+")[this_end], next_v, ("-", "+")[not next_e],
                             str(this_overlap) + "M"
                         ]) + "\n")
+        # temporary solution
+        for p_id, path_dict in self.paths.items():
+            path_str_list = []
+            overlap_list = []
+            this_path = path_dict["path"]
+            len_p = len(this_path)
+            for go_v, (this_vertex, this_end) in enumerate(this_path):
+                path_str_list.append(this_vertex + ("-", "+")[this_end])
+                if go_v == len_p - 1:
+                    if path_dict["circular"]:
+                        next_id = 0
+                    else:
+                        break
+                else:
+                    next_id = go_v + 1
+                next_v, next_e = this_path[next_id]
+                overlap_list.append(f"{self.vertex_info[this_vertex].connections[this_end][(next_v, not next_e)]}M")
+            ot_attr = []
+            for att, at_val in path_dict.items():
+                if att not in {"path", "circular"}:
+                    ot_attr.append(f"\t{att}:{type(at_val).__name__}:{at_val}")
+            out_file_handler.write(f"P\tv{p_id}\t{','.join(path_str_list)}\t{','.join(overlap_list)}"
+                                   f"{''.join(ot_attr)}\n")
+        out_file_handler.close()
 
+    # def write_to_gfa2(self, out_file, check_postfix=True, other_attr=None):
+    #     """
+    #     TODO GFA2
+    #     :param out_file: str
+    #     :param check_postfix: bool
+    #     :param other_attr: dict, e.g. {"CL":"z", "C2":"z"}
+    #     """
+    #     if check_postfix and not out_file.endswith(".gfa"):
+    #         out_file += ".gfa"
+    #     if not other_attr:
+    #         other_attr = {}
+    #     logger.debug("  writing graph to " + str(out_file))
+    #     out_file_handler = open(out_file, "w")
+    #     out_file_handler.write("H\tVN:Z:2.0")
+    #     for vertex_name in self.vertex_info:
+    #         out_file_handler.write("\t".join(
+    #             [
+    #                 "S", vertex_name, self.vertex_info[vertex_name].seq[True],
+    #                 "LN:i:" + str(self.vertex_info[vertex_name].len),
+    #                 "RC:i:" + str(int(self.vertex_info[vertex_name].len * self.vertex_info[vertex_name].cov))] +
+    #             [
+    #                 "%s:%s:%s" % (attr_name, attr_type, self.vertex_info[vertex_name].other_attr.get(attr_name, ""))
+    #                 for attr_name, attr_type in other_attr.items()
+    #                 if self.vertex_info[vertex_name].other_attr.get(attr_name, False)
+    #             ]) + "\n")
+    #     recorded_connections = set()
+    #     for vertex_name in self.vertex_info:
+    #         for this_end in (False, True):
+    #             for (next_v, next_e), this_overlap in self.vertex_info[vertex_name].connections[this_end].items():
+    #                 this_con = tuple(sorted([(vertex_name, this_end), (next_v, next_e)]))
+    #                 if this_con not in recorded_connections:
+    #                     recorded_connections.add(this_con)
+    #                     out_file_handler.write("\t".join([
+    #                         "E", vertex_name, ("-", "+")[this_end], next_v, ("-", "+")[not next_e],
+    #                         str(this_overlap) + "M"
+    #                     ]) + "\n")
+    #     out_file_handler.close()
