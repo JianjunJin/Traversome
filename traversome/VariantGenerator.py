@@ -629,6 +629,7 @@ class VariantGenerator(object):
                  min_num_valid_search=1000,
                  max_num_valid_search=10000,
                  max_num_traversals=50000,
+                 max_uniq_traversal=200,
                  num_processes=1,
                  force_circular=True,
                  uni_chromosome=True,
@@ -648,6 +649,7 @@ class VariantGenerator(object):
         :param min_num_valid_search: minimum number of valid searches
         :param max_num_valid_search: maximum number of valid searches
         :param max_num_traversals: maximum number of searches
+        :param max_uniq_traversal: maximum number of unique valid searches
         :param force_circular: force the generated variant topology to be circular
         :param uni_chromosome: a variant is NOT allowed to only traverse part of the graph.
             Different variants must be composed of identical set of contigs if uni_chromosome=True.
@@ -692,6 +694,7 @@ class VariantGenerator(object):
         self.min_valid_search = min_num_valid_search
         self.max_valid_search = max_num_valid_search
         self.max_num_traversals = max_num_traversals
+        self.max_uniq_search = max_uniq_traversal
         self.num_processes = num_processes
         self.resume = resume
         self.temp_dir = temp_dir
@@ -739,6 +742,8 @@ class VariantGenerator(object):
             if sum(self.variants_counts.values()) >= self.max_valid_search:  # hit the hard bound
                 logger.info("Maximum num of valid searches reached.")
                 return
+            if len(self.variants) >= self.max_uniq_search:
+                logger.info("Maximum num of unique valid searches reached. ")
 
         self.index_readpaths_subpaths()
 
@@ -807,14 +812,13 @@ class VariantGenerator(object):
                     # logger.debug("check subpath", sub_path)
                     if sub_path in path_not_traversed:
                         del path_not_traversed[sub_path]
-                # the current get_variant_sub_paths function only consider subpaths with length > 1
-                # TODO: get subpath adaptive to length=1, more general and less restrictions
-                # TODO: important!!!!
-                # after which the following block can be removed
-                for single_v, single_e in variant_path:
-                    single_sbp = ((single_v, False),)
-                    if single_sbp in path_not_traversed:
-                        del path_not_traversed[single_sbp]
+                # # the current get_variant_sub_paths function only consider subpaths with length > 1
+                # # TODO: get subpath adaptive to length=1, more general and less restrictions
+                # # after which the following block can be removed
+                # for single_v, single_e in variant_path:
+                #     single_sbp = ((single_v, False),)
+                #     if single_sbp in path_not_traversed:
+                #         del path_not_traversed[single_sbp]
                 if not path_not_traversed:
                     return 0, 0, None
             if not path_not_traversed:
@@ -1083,7 +1087,7 @@ class VariantGenerator(object):
                         #     len(self.variants), self.count_valid, num_valid_search, self.count_search))
 
                     # hard bound
-                    if self.count_valid >= self.max_valid_search:
+                    if self.count_valid >= self.max_valid_search or len(self.variants) >= self.max_uniq_search:
                         self.__access_read_path_coverage(
                             growing_variants=self.variants,
                             previous_len_variant=self.__previous_len_variant,
@@ -1093,7 +1097,10 @@ class VariantGenerator(object):
                             previous_un_traversed_ratio_count=previous_ratio_c,
                             reset_num_valid_search=False)
                         do_traverse = False
-                        logger.info("Maximum num of valid searches reached.")
+                        if self.count_valid >= self.max_valid_search:
+                            logger.info("Maximum num of valid searches reached.")
+                        else:
+                            logger.info("Maximum num of unique valid searches reached.")
                         break
 
                     if self.count_valid >= num_valid_search:
@@ -1221,6 +1228,11 @@ class VariantGenerator(object):
                             # break_traverse = True
                             # kill all other workers
                             g_vars.run_status = "hard_reached"
+                            event.set()
+                            return
+
+                        if len(variants) >= self.max_uniq_search:
+                            g_vars.run_status = "uniq_reached"
                             event.set()
                             return
 
@@ -1388,12 +1400,14 @@ class VariantGenerator(object):
                 logger.error("\n" + "".join(tb))
                 sys.exit(0)
                 # raise error_queue.get()
-            if global_vars.run_status in {"hard_reached", "tvs_reached", "interrupt"}:
+            if global_vars.run_status in {"hard_reached", "tvs_reached", "uniq_reached", "interrupt"}:
                 # except MaxTraversalReached:
                 # pool_obj.terminate()
                 # pool_obj.join()  # maybe no need to join
                 if global_vars.run_status == "hard_reached":
                     logger.info("maximum num of valid searches reached.")
+                elif global_vars.run_status == "uniq_reached":
+                    logger.info("maximum num of unique valid searches reached.")
                 elif global_vars.run_status == "tvs_reached":
                     logger.info(f"Hit the max num of traversals limit {self.max_num_traversals}!")
                 elif global_vars.run_status == "interrupt":
