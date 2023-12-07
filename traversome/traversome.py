@@ -79,8 +79,8 @@ class Traversome(object):
         # self.alignment = None
         self.align_len_at_path_map = {}
         self.num_valid_records = 0
-        self.align_len_at_path_sorted = None
-        self.max_alignment_length = None
+        # self.align_len_at_path_sorted = None
+        self.max_alignment_length = None  # only used in the variant proposal, not in latter model fitting
         self.min_alignment_length = None
         self.read_paths = OrderedDict()
         self.read_paths_masked = set()
@@ -241,17 +241,21 @@ class Traversome(object):
             logger.info("Generating sub-paths ..")
             self.gen_all_informative_sub_paths()
             # ONLY apply self.read_paths_masked to model selection and fitting
-            sampled_sub_paths, align_len_at_path_sorted = \
+            filtered_sub_paths, align_len_at_path_sorted = \
                 self.sample_sub_paths(masking=self.read_paths_masked)
-            logger.info("Indexing {} valid informative sub-paths after masking ".format(len(sampled_sub_paths)))
-            self.generate_sub_path_stats(sampled_sub_paths, align_len_at_path_sorted)
+            logger.info("Indexing {} valid informative sub-paths after masking ".format(len(filtered_sub_paths)))
+            max_len, min_len = max(align_len_at_path_sorted), min(align_len_at_path_sorted)
+            logger.info("Alignment length range at path: [{}, {}]".format(min_len, max_len))
+            logger.info("Alignment max size at path: {}".format(self.get_max_read_path_size(filtered_sub_paths)))
+            self.all_sub_paths = filtered_sub_paths  # assign the post-filter sub_paths
+            self.generate_sub_path_stats(filtered_sub_paths, align_len_at_path_sorted)
             # build an index
-            sbp_to_sbp_id = self.update_sp_to_sp_id_dict(sampled_sub_paths)
+            sbp_to_sbp_id = self.update_sp_to_sp_id_dict(filtered_sub_paths)
             # difference between this number and total number of sub-paths
             #            will happen when the current variants cannot cover all read paths
             #                     or when an alignable path is not informative
             logger.debug("Estimating candidate variant frequencies using Maximum Likelihood...")
-            self.model = PathMultinomialModel(variant_sizes=self.variant_sizes, all_sub_paths=sampled_sub_paths)
+            self.model = PathMultinomialModel(variant_sizes=self.variant_sizes, all_sub_paths=filtered_sub_paths)
             self.variant_proportions, self.res_loglike, self.res_criterion = \
                 self.fit_model_using_reverse_model_selection(
                     model=self.model,
@@ -590,17 +594,15 @@ class Traversome(object):
             for go_record in records:
                 self.align_len_at_path_map[go_record] = graph_alignment.raw_records[go_record].p_align_len
         self.num_valid_records = len(self.align_len_at_path_map)
-        self.align_len_at_path_sorted = sorted(self.align_len_at_path_map.values())
+        align_len_at_path_sorted = sorted(self.align_len_at_path_map.values())
         # store min/max value
-        self.min_alignment_length = self.align_len_at_path_sorted[0]
-        self.max_alignment_length = self.align_len_at_path_sorted[-1]
-        self.generate_maximum_read_path_size()
+        self.min_alignment_length = align_len_at_path_sorted[0]
+        self.max_alignment_length = align_len_at_path_sorted[-1]
+        self.max_read_path_size = self.get_max_read_path_size(self.read_paths)
 
-    def generate_maximum_read_path_size(self):
+    def get_max_read_path_size(self, paths):
         assert bool(self.read_paths), "empty read paths!"
-        self.max_read_path_size = 0
-        for this_read_path in self.read_paths:
-            self.max_read_path_size = max(self.max_read_path_size, len(this_read_path))
+        return max([len(rp) for rp in paths])
 
     # def clean_graph(self, min_effective_count=10, ignore_ratio=0.001):
     #     """ deprecated for now"""
