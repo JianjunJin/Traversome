@@ -83,6 +83,7 @@ class Traversome(object):
         self.max_alignment_length = None
         self.min_alignment_length = None
         self.read_paths = OrderedDict()
+        self.read_paths_masked = set()
         self.max_read_path_size = None
         self.subpath_generator = None
 
@@ -177,16 +178,11 @@ class Traversome(object):
             min_align_len=self.kwargs.get("min_alignment_len_cutoff", 100),
             min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.85),
         )
+        min_alignment_counts = self.kwargs.get("min_alignment_counts", 1)
         self.generate_read_paths(
             graph_alignment=alignment,
             filter_by_graph=True,
-            min_alignment_counts=self.kwargs.get("min_alignment_counts", 1))
-        self.subpath_generator = VariantSubPathsGenerator(
-            graph=self.graph,
-            # force_circular=self.force_circular,
-            min_alignment_len=self.min_alignment_length,
-            max_alignment_len=self.max_alignment_length,
-            read_paths_hashed=set(self.read_paths))
+            min_alignment_counts=min_alignment_counts)
         logger.info("  #reads aligned: %i" % len(alignment.read_records))
         logger.info("  #records aligned: %i" % len(alignment.raw_records))
         logger.info("  #read paths: %i" % len(self.read_paths))
@@ -194,9 +190,16 @@ class Traversome(object):
         logger.info(
             "Alignment length range at path: [{}, {}]".format(self.min_alignment_length, self.max_alignment_length))
         logger.info("Alignment max size at path: {}".format(self.max_read_path_size))
+        logger.info("  #read paths masked: %i" % len(self.read_paths_masked))
         # free memory to reduce the burden for potential downstream parallelization
         del alignment
         gc.collect()
+        self.subpath_generator = VariantSubPathsGenerator(
+            graph=self.graph,
+            # force_circular=self.force_circular,
+            min_alignment_len=self.min_alignment_length,
+            max_alignment_len=self.max_alignment_length,
+            read_paths_hashed=set(self.read_paths))
         logger.info("======== DIGESTING DATA ENDS ========\n")
 
         logger.info("======== VARIANTS SEARCHING STARTS ========")
@@ -237,16 +240,18 @@ class Traversome(object):
 
             logger.info("Generating sub-paths ..")
             self.gen_all_informative_sub_paths()
-            self.generate_sub_path_stats(self.all_sub_paths, self.align_len_at_path_sorted)
+            # ONLY apply self.read_paths_masked to model selection and fitting
+            sampled_sub_paths, align_len_at_path_sorted = \
+                self.sample_sub_paths(masking=self.read_paths_masked)
+            logger.info("Indexing {} valid informative sub-paths after masking ".format(len(sampled_sub_paths)))
+            self.generate_sub_path_stats(sampled_sub_paths, align_len_at_path_sorted)
             # build an index
-            sbp_to_sbp_id = self.update_sp_to_sp_id_dict(self.all_sub_paths)
+            sbp_to_sbp_id = self.update_sp_to_sp_id_dict(sampled_sub_paths)
             # difference between this number and total number of sub-paths
             #            will happen when the current variants cannot cover all read paths
             #                     or when an alignable path is not informative
-            logger.info("Generated {} valid informative sub-paths".format(len(self.all_sub_paths)))
-
             logger.debug("Estimating candidate variant frequencies using Maximum Likelihood...")
-            self.model = PathMultinomialModel(variant_sizes=self.variant_sizes, all_sub_paths=self.all_sub_paths)
+            self.model = PathMultinomialModel(variant_sizes=self.variant_sizes, all_sub_paths=sampled_sub_paths)
             self.variant_proportions, self.res_loglike, self.res_criterion = \
                 self.fit_model_using_reverse_model_selection(
                     model=self.model,
@@ -293,20 +298,23 @@ class Traversome(object):
             if self.kwargs.get("bootstrap", 0) else self.kwargs.get("jackknife", 0)
         self.variant_proportions_reps = []
         n_digit = len(str(n_replicate))
-        for go_bs in range(n_replicate):
+        go_bs = 0
+        while go_bs < n_replicate:
             logger.debug(f"Sampling {go_bs + 1} --------")
             logger.debug("Generating sub-paths ..")
             if self.kwargs.get("bootstrap", 0):
                 sampled_sub_paths, align_len_at_path_sorted = \
-                    self._sample_sub_paths(bootstrap_size=self.num_valid_records)
+                    self.sample_sub_paths(bootstrap_size=self.num_valid_records, masking=self.read_paths_masked)
             else:
                 sampled_sub_paths, align_len_at_path_sorted = \
-                    self._sample_sub_paths(
-                        jackknife_size=int(self.num_valid_records / float(n_replicate)))
-            # self.gen_all_informative_sub_paths()
+                    self.sample_sub_paths(
+                        jackknife_size=int(self.num_valid_records / float(n_replicate)),
+                        masking=self.read_paths_masked)
+            logger.debug("Indexing {} valid informative sub-paths after masking ".format(len(sampled_sub_paths)))
+            if not sampled_sub_paths:
+                continue
             self.generate_sub_path_stats(sampled_sub_paths, align_len_at_path_sorted=align_len_at_path_sorted)
             sbp_to_sbp_id = self.update_sp_to_sp_id_dict(sampled_sub_paths)
-            logger.debug("Generated {} valid informative sub-paths".format(len(sampled_sub_paths)))
             sampled_model = PathMultinomialModel(
                 variant_sizes=self.variant_sizes, all_sub_paths=sampled_sub_paths)
             v_prop, *foo = self.fit_model_using_reverse_model_selection(
@@ -318,6 +326,7 @@ class Traversome(object):
             self.variant_proportions_reps.append(v_prop)
             # self.res_loglike_reps.append(loglike)
             # self.res_criteria_reps.append(criteria)
+            go_bs += 1
 
         # if loglevel is reset, set it back
         setup_logger(loglevel=self.loglevel, timed=True, log_file=self.logfile)
@@ -548,9 +557,10 @@ class Traversome(object):
         if min_alignment_counts > 1:
             for this_path in list(self.read_paths):
                 if len(self.read_paths[this_path]) < min_alignment_counts:
-                    del self.read_paths[this_path]
+                    self.read_paths_masked.add(this_path)
         # check
-        if not self.read_paths:
+        # TODO move to bootstrap
+        if len(self.read_paths_masked) == len(self.read_paths):
             logger.error("No valid alignment records remains after filtering!")
             raise SystemExit(0)
         # align_len_at_path = []
@@ -759,13 +769,9 @@ class Traversome(object):
             #             break
             #     else:
             #         print("lost", len(record_ids), read_path)
-        # # remove sp with zero observations, commented because we have added constraints above
-        # for this_sub_path in list(self.all_sub_paths):
-        #     if not self.all_sub_paths[this_sub_path].mapped_records:
-        #         del self.all_sub_paths[this_sub_path]
 
         logger.info(f"Generated {len(self.all_sub_paths)} informative sub-paths based on "
-                    f"{sum([len(sbp.mapped_records) for sbp in self.all_sub_paths.values()])} records")
+                    f"{sum([len(sbp.mapped_records) for sbp in self.all_sub_paths.values()])} records in total")
 
     @staticmethod
     def update_sp_to_sp_id_dict(all_sub_paths):
@@ -839,13 +845,17 @@ class Traversome(object):
                     raise ValueError(f"{record_id} in self.records_pool_to_sbp_ids!")
         self.records_pool_sorted = sorted(self.records_pool_to_sbp_ids)
 
-    def _sample_sub_paths(
+    def sample_sub_paths(
             self,
             bootstrap_size=None,
-            jackknife_size=None):
+            jackknife_size=None,
+            masking=None):
         """
-        Bootstrapping aligned records among sub_paths
+        According to sampling strategies and masking set, sample aligned records to generate
+        1) a new set of sub_paths;
+        2) sorted alignment length distribution
         """
+        masking = set() if masking is None else masking
         if not self.records_pool_to_sbp_ids:
             self._prepare_for_sampling()
         if bootstrap_size:
@@ -857,7 +867,8 @@ class Traversome(object):
             keep_ids = self.random.sample(range(self.num_valid_records), k=self.num_valid_records - jackknife_size)
             new_records_pool = [self.records_pool_sorted[s_id_] for s_id_ in keep_ids]
         else:
-            raise ValueError("Choose between jackknife and bootstrap!")
+            # only do filtering using self.read_paths_masked
+            new_records_pool = list(self.records_pool_sorted)
         # cluster new pool
         sbp_id_to_rec_id = {}
         for rec_id in new_records_pool:
@@ -868,24 +879,31 @@ class Traversome(object):
                 sbp_id_to_rec_id[sbp_id].append(rec_id)
         # create new all_sub_paths
         new_sub_paths = OrderedDict()
+        masking_rec_ids = set()
         for go_sbp, (read_path, sbp_info) in enumerate(self.all_sub_paths.items()):
             if go_sbp in sbp_id_to_rec_id:  # if it is sampled subpaths
-                new_sbp_info = SubPathInfo()
-                # main info to be copied from previous sbp_info
-                new_sbp_info.from_variants = sbp_info.from_variants
-                # ignore new_sbp_info.mapped_records, which is useless in following analysis
-                new_sbp_info.mapped_records = sbp_id_to_rec_id[go_sbp]
-                # The X in binomial:
-                # theoretical num of matched chances per data, to be filled in self.generate_sub_path_stats
-                # new_sbp_info.num_possible_X = sbp_info.num_possible_X
-                # The n in binomial: observed num of reads in range, to be filled in self.generate_sub_path_stats
-                # new_sbp_info.num_in_range = sbp_info.num_in_range
-                # The x in binomial: observed num of matched reads to be filled in self.generate_sub_path_stats
-                # len(sbp_id_to_rec_id[go_sbp])
-                # new_sbp_info.num_matched = len(sbp_id_to_rec_id[go_sbp])
-                new_sub_paths[read_path] = new_sbp_info
+                if read_path not in masking:
+                    new_sbp_info = SubPathInfo()
+                    # main info to be copied from previous sbp_info
+                    new_sbp_info.from_variants = sbp_info.from_variants
+                    # ignore new_sbp_info.mapped_records, which is useless in following analysis
+                    new_sbp_info.mapped_records = sbp_id_to_rec_id[go_sbp]
+                    # The X in binomial:
+                    # theoretical num of matched chances per data, to be filled in self.generate_sub_path_stats
+                    # new_sbp_info.num_possible_X = sbp_info.num_possible_X
+                    # The n in binomial: observed num of reads in range, to be filled in self.generate_sub_path_stats
+                    # new_sbp_info.num_in_range = sbp_info.num_in_range
+                    # The x in binomial: observed num of matched reads to be filled in self.generate_sub_path_stats
+                    # len(sbp_id_to_rec_id[go_sbp])
+                    # new_sbp_info.num_matched = len(sbp_id_to_rec_id[go_sbp])
+                    new_sub_paths[read_path] = new_sbp_info
+                else:
+                    for rec_id in sbp_id_to_rec_id[go_sbp]:
+                        masking_rec_ids.add(rec_id)
         # generate new align_len_at_path_sorted
-        align_len_at_path_sorted = sorted([self.align_len_at_path_map[rec_id] for rec_id in new_records_pool])
+        align_len_at_path_sorted = sorted([self.align_len_at_path_map[rec_id]
+                                           for rec_id in new_records_pool
+                                           if rec_id not in masking_rec_ids])
         return new_sub_paths, align_len_at_path_sorted
 
     def __subpath_info_filler(
