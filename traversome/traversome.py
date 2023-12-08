@@ -190,7 +190,7 @@ class Traversome(object):
         logger.info(
             "Alignment length range at path: [{}, {}]".format(self.min_alignment_length, self.max_alignment_length))
         logger.info("Alignment max size at path: {}".format(self.max_read_path_size))
-        logger.info("  #read paths masked: %i" % len(self.read_paths_masked))
+        # logger.info("  #read paths masked: %i" % len(self.read_paths_masked))
         # free memory to reduce the burden for potential downstream parallelization
         del alignment
         gc.collect()
@@ -241,21 +241,24 @@ class Traversome(object):
             logger.info("Generating sub-paths ..")
             self.gen_all_informative_sub_paths()
             # ONLY apply self.read_paths_masked to model selection and fitting
-            filtered_sub_paths, align_len_at_path_sorted = \
-                self.sample_sub_paths(masking=self.read_paths_masked)
-            logger.info("Indexing {} valid informative sub-paths after masking ".format(len(filtered_sub_paths)))
+            # main_sub_paths, align_len_at_path_sorted = \
+            #     self.sample_sub_paths(masking=self.read_paths_masked)
+            # logger.info("Indexing {} valid informative sub-paths after masking ".format(len(filtered_sub_paths)))
+            # self.all_sub_paths = filtered_sub_paths  # assign the post-filter sub_paths
+            main_sub_paths = self.all_sub_paths
+            logger.info("Indexing {} valid informative sub-paths ".format(len(main_sub_paths)))
+            align_len_at_path_sorted = sorted(self.align_len_at_path_map.values())
             max_len, min_len = max(align_len_at_path_sorted), min(align_len_at_path_sorted)
             logger.info("Alignment length range at path: [{}, {}]".format(min_len, max_len))
-            logger.info("Alignment max size at path: {}".format(self.get_max_read_path_size(filtered_sub_paths)))
-            self.all_sub_paths = filtered_sub_paths  # assign the post-filter sub_paths
-            self.generate_sub_path_stats(filtered_sub_paths, align_len_at_path_sorted)
+            logger.info("Alignment max size at path: {}".format(self.get_max_read_path_size(main_sub_paths)))
+            self.generate_sub_path_stats(main_sub_paths, align_len_at_path_sorted)
             # build an index
-            sbp_to_sbp_id = self.update_sp_to_sp_id_dict(filtered_sub_paths)
+            sbp_to_sbp_id = self.update_sp_to_sp_id_dict(main_sub_paths)
             # difference between this number and total number of sub-paths
             #            will happen when the current variants cannot cover all read paths
             #                     or when an alignable path is not informative
             logger.debug("Estimating candidate variant frequencies using Maximum Likelihood...")
-            self.model = PathMultinomialModel(variant_sizes=self.variant_sizes, all_sub_paths=filtered_sub_paths)
+            self.model = PathMultinomialModel(variant_sizes=self.variant_sizes, all_sub_paths=main_sub_paths)
             self.variant_proportions, self.res_loglike, self.res_criterion = \
                 self.fit_model_using_reverse_model_selection(
                     model=self.model,
@@ -561,12 +564,15 @@ class Traversome(object):
         if min_alignment_counts > 1:
             for this_path in list(self.read_paths):
                 if len(self.read_paths[this_path]) < min_alignment_counts:
-                    self.read_paths_masked.add(this_path)
+                    del self.read_paths[this_path]
+                    # disable masking, which was designed to apply min_align_counts only to model fitting
+                    # self.read_paths_masked.add(this_path)
         # check
-        # TODO move to bootstrap
-        if len(self.read_paths_masked) == len(self.read_paths):
+        # if len(self.read_paths_masked) == len(self.read_paths):
+        if not self.read_paths:
             logger.error("No valid alignment records remains after filtering!")
             raise SystemExit(0)
+
         # align_len_at_path = []
         # if filter_by_graph:
         #     for go_record, record in enumerate(graph_alignment.raw_records):
