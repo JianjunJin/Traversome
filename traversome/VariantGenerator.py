@@ -151,8 +151,10 @@ class SingleTraversal(object):
                         logger.trace("      candidates_next: {}".format(candidates_next))
                         if self.uni_chromosome:
                             # weighting candidates by the likelihood change of the multiplicity change
-                            old_cov_mean, old_cov_std = self.__get_cov_mean(path, return_std=True)
-                            logger.trace("      path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
+
+                            # old_cov_mean, old_cov_std = self.__get_cov_mean(path, return_std=True)
+                            # logger.trace("      path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
+
                             single_cov_mean, single_cov_std = self.__get_cov_mean_of_single(path, return_std=True)
                             logger.trace("      path single mean:" + str(single_cov_mean) + "," + str(single_cov_std))
                             current_vs = [v_n for v_n, v_e in path]
@@ -163,8 +165,8 @@ class SingleTraversal(object):
                                 loglike_ls = self.__cal_multiplicity_like(path=path,
                                                                           proposed_extension=[next_v],
                                                                           current_v_counts=current_v_counts,
-                                                                          old_cov_mean=old_cov_mean,
-                                                                          old_cov_std=old_cov_std,
+                                                                          # old_cov_mean=old_cov_mean,
+                                                                          # old_cov_std=old_cov_std,
                                                                           single_cov_mean=single_cov_mean,
                                                                           single_cov_std=single_cov_std,
                                                                           logarithm=True)
@@ -310,8 +312,8 @@ class SingleTraversal(object):
                                 like_ls = self.__cal_multiplicity_like(path=path,
                                                                        proposed_extension=cdd_extend,
                                                                        current_v_counts=current_v_counts,
-                                                                       old_cov_mean=old_cov_mean,
-                                                                       old_cov_std=old_cov_std,
+                                                                       # old_cov_mean=old_cov_mean,
+                                                                       # old_cov_std=old_cov_std,
                                                                        single_cov_mean=single_cov_mean,
                                                                        single_cov_std=single_cov_std)
                                 like_ls_cached.append(like_ls)
@@ -378,8 +380,8 @@ class SingleTraversal(object):
             path,
             proposed_extension,
             current_v_counts=None,
-            old_cov_mean=None,
-            old_cov_std=None,
+            # old_cov_mean=None,
+            # old_cov_std=None,
             single_cov_mean=None,
             single_cov_std=None,
             logarithm=False,
@@ -389,8 +391,8 @@ class SingleTraversal(object):
         :param path:
         :param proposed_extension:
         :param current_v_counts: passed to avoid repeated calculation
-        :param old_cov_mean: passed to avoid repeated calculation
-        :param old_cov_std: passed to avoid repeated calculation
+        # :param old_cov_mean: passed to avoid repeated calculation
+        # :param old_cov_std: passed to avoid repeated calculation
         :param single_cov_mean: passed to avoid repeated calculation
         :param single_cov_std: passed to avoid repeated calculation
         :return: log_like_ratio_list
@@ -400,9 +402,10 @@ class SingleTraversal(object):
             current_vs = [v_n for v_n, v_e in path]
             current_v_counts = {v_n: current_vs.count(v_n)
                                 for v_n in set([v_n for v_n, v_e in proposed_extension])}
-        if not (old_cov_mean and old_cov_std):
-            old_cov_mean, old_cov_std = self.__get_cov_mean(path, return_std=True)
-            logger.debug("        path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
+        # if not (old_cov_mean and old_cov_std):
+        #     old_cov_mean, old_cov_std = self.__get_cov_mean(path, return_std=True)
+        #     logger.debug("        path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
+
             # logger.debug("initial mean: " + str(initial_mean) + "," + str(initial_std))
         # logger.trace("    old_path: {}".format(self.graph.repr_path(path)))
         # logger.trace("    checking proposed_extension: {}".format(self.graph.repr_path(proposed_extension)))
