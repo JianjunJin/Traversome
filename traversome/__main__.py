@@ -302,11 +302,11 @@ def thorough(
              "First, he weight of each connected component will be calculated as \sum_{i=1}^{N}length_i*depth_i, "
              "where N is the contigs in that component. Then, the components will be sorted in a decreasing order. "
              "1) If the input is an integer or a slice, this will trigger the selection of specific component "
-             "by the decreasing order, e.g. 0 will keep the first component; 0,4 will keep the first four components; "
+             "by the decreasing order, e.g. 0 will keep the first component; 0:4 will keep the first four components; "
              "2) If the input is a float in the range of (0, 1), this will trigger the selection using "
              "the accumulated weight ratio cutoff, "
              "above which, the remaining components will be discarded. "
-             "A cutoff of 1 means keeping all components in the graph, "
+             "A cutoff of 1.0 means keeping all components in the graph, "
              "while a value close to 0 means only keep the connected "
              "component with the largest weight. "),
     keep_graph_redundancy: bool = typer.Option(
@@ -367,6 +367,7 @@ def thorough(
         os.environ["AESARA_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
         # TODO to fix pytensor issue
         os.environ["PYTENSOR_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
+        # os.environ["TMPDIR"] = str(output_dir.joinpath("tmp.mp"))
 
         # assert var_gen_scheme != "U", "User-provided is under developing, please use heuristic instead!"
         setup_logger(loglevel=log_level, timed=True, log_file=os.path.join(output_dir, "traversome.log.txt"))
@@ -470,10 +471,12 @@ def initialize(output_dir, loglevel, previous):
     """
     os.makedirs(str(output_dir), exist_ok=previous in ("overwrite", "resume"))
     if previous == "overwrite" and os.path.isdir(output_dir):
+        # rmdir(output_dir.joinpath("tmp.mp"), ignore_errors=True)
         rmdir(output_dir.joinpath("tmp.candidates"), ignore_errors=True)
         rmdir(output_dir.joinpath("theano.cache"), ignore_errors=True)
         for exist_f in output_dir.glob("*.*"):
             os.remove(exist_f)
+    # os.makedirs(str(output_dir.joinpath("tmp.mp")), exist_ok=previous in ("overwrite", "resume"))
     logfile = os.path.join(output_dir, "traversome.log.txt")
     from loguru import logger
     # avoid repeating RUNNING_HEAD in the screen output by typer.secho
