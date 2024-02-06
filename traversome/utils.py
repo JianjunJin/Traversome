@@ -960,10 +960,11 @@ def run_graph_aligner(
         graph_file: str,
         seq_file: str,
         alignment_file: str,
-        num_processes: int = 1):
+        num_processes: int = 1,
+        other_params: str = ""):
     logger.info("Making alignment using GraphAligner ..")
     this_command = os.path.join("", "GraphAligner") + \
-                   " -g " + graph_file + " -f " + seq_file + " --precise-clipping 0.95" + \
+                   " -g " + graph_file + " -f " + seq_file + " " + other_params + " " + \
                    " -x vg -t " + str(num_processes) + \
                    " -a " + alignment_file + ".tmp.gaf"
     logger.debug(this_command)
@@ -972,6 +973,13 @@ def run_graph_aligner(
     # TODO better adjusted for graphaligner log
     if "Aborted" in output.decode("utf8"):  # or "(ERR)" in output.decode("utf8"):
         logger.error(output.decode("utf8"))
+        exit()
+    elif "Unknown graph type" in output.decode("utf8"):
+        logger.error(output.decode("utf8"))
+        exit()
+    elif not os.path.exists(alignment_file + ".tmp.gaf"):
+        logger.error(output.decode("utf8"))
+        logger.error("No graph alignment file produced!")
         exit()
     else:
         os.rename(alignment_file + ".tmp.gaf", alignment_file)
