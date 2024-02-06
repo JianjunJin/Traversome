@@ -55,7 +55,12 @@ class Traversome(object):
             resume=False,
             **kwargs):
         # store input files and params
-        self.graph_gfa = graph
+        self.graph_file = graph
+        self.graph_format = graph.split(".")[-1]  # already limited the types
+        # if kwargs.get("use_gfa_alignment", False):
+        #     self.alignment_file = graph
+        # else:
+        #     self.alignment_file = alignment
         self.alignment_file = alignment
         self.reads_file = reads_file
         self.outdir = outdir
@@ -119,6 +124,7 @@ class Traversome(object):
         # self.pal_len_sbp_Xs = OrderedDict()
         # self.sbp_Xs = []
 
+        self.bs_convergence = None
         self.max_like_fit = None
         self.bayesian_fit = None
         self.model = None
@@ -130,15 +136,20 @@ class Traversome(object):
         """
         logger.info("======== DIGESTING DATA STARTS ========")
         # TODO use json to store env parameters later
-        self.graph = Assembly(self.graph_gfa)
+        self.graph = Assembly(self.graph_file)
         self.graph.update_vertex_clusters()
+        # output new graph
+        output_graph = False
         # choose the component
         graph_component_selection = self.kwargs.get("graph_component_selection", 0)
         if isinstance(graph_component_selection, int) or isinstance(graph_component_selection, slice):
             self.graph.reduce_graph_by_weight(component_ids=graph_component_selection)
+            output_graph = True
         elif isinstance(graph_component_selection, float):
             self.graph.reduce_graph_by_weight(cutoff_to_total=graph_component_selection)
-        # merge graph if possible
+            output_graph = True
+
+        # merge graph if possible; not that necessary
         if self.kwargs.get("keep_graph_redundancy", False):
             pass
         else:
@@ -146,16 +157,23 @@ class Traversome(object):
                 if self.alignment_file:
                     # the graph was changed and cannot be traced back to the names in the alignment
                     # this can also be moved down considering structure, however more computational efficient to be here
-                    raise Exception("Graph be simplified by merging all possible nodes ! "
-                                    "Please provide the raw reads, or simplify the graph and redo the alignment,"
-                                    "or use (NOT RECOMMENDED) '--keep-graph-redundancy' to skip!")
+                    raise Exception("Graph be simplified by merging all possible nodes! "
+                                    "Please provide the raw reads, or simplify the graph and redo the alignment, "
+                                    "or remove '--merge-possible-contigs' from the options!")
                 else:
                     logger.info("  graph merged")
-                    self.graph_gfa = os.path.join(self.outdir, "processed.gfa")
-                    self.graph.write_to_gfa(self.graph_gfa)
+                    output_graph = True
             self.graph.update_vertex_clusters()
-        logger.info("  #contigs in total: {}".format(len(self.graph.vertex_info)))
-        logger.info("  #contigs in each component: {}".format(sorted([len(cls) for cls in self.graph.vertex_clusters])))
+        if self.graph_format == "fastg":
+            output_graph = True
+
+        if output_graph:
+            self.graph_file = os.path.join(self.outdir, "processed.gfa")
+            self.graph.write_to_gfa(self.graph_file)
+
+        # logger.info("  #contigs in total: {}".format(len(self.graph.vertex_info)))
+        # logger.info(
+        #     "  #contigs in each component: {}".format(sorted([len(cls) for cls in self.graph.vertex_clusters])))
 
         self.load_user_paths()
 
@@ -166,10 +184,11 @@ class Traversome(object):
                 self.alignment_file = os.path.join(self.outdir, "alignment.gaf")
                 # TODO: pass options to GraphAligner
                 run_graph_aligner(
-                    graph_file=self.graph_gfa,
+                    graph_file=self.graph_file,
                     seq_file=self.reads_file,
                     alignment_file=self.alignment_file,
-                    num_processes=self.num_processes)
+                    num_processes=self.num_processes,
+                    other_params=self.kwargs.get("graph_aligner_params", ""))
             else:
                 raise Exception("GraphAligner not available or damaged!")
 
@@ -178,22 +197,52 @@ class Traversome(object):
             min_align_len=self.kwargs.get("min_alignment_len_cutoff", 100),
             min_identity=self.kwargs.get("min_alignment_identity_cutoff", 0.85),
         )
-        min_alignment_counts = self.kwargs.get("min_alignment_counts", 1)
+
+        if self.kwargs.get("use_alignment_cov", False):
+            self.generate_read_paths(
+                graph_alignment=alignment,
+                filter_by_graph=False,
+                min_alignment_counts=self.kwargs.get("min_alignment_counts", 1))
+            self.estimate_contig_coverages_from_read_paths()
+            self.read_paths = OrderedDict()
+            self.read_paths_masked = set()
+
+        if self.purge_graph_by_depth(depth_threshold=self.kwargs.get("purge_shallow_contigs", 0.001)):
+            output_graph = True
+
         self.generate_read_paths(
             graph_alignment=alignment,
             filter_by_graph=True,
-            min_alignment_counts=min_alignment_counts)
-        logger.info("  #reads aligned: %i" % len(alignment.read_records))
-        logger.info("  #records aligned: %i" % len(alignment.raw_records))
-        logger.info("  #read paths: %i" % len(self.read_paths))
+            min_alignment_counts=self.kwargs.get("min_alignment_counts", 1))
+
+        logger.info("Align stat - #raw noisy records aligned: %i " % alignment.n_file_records)
+        logger.info("Align stat - #filtered records aligned: %i" % len(alignment.raw_records))
+        logger.info("Align stat - #filtered reads aligned: %i" % len(alignment.read_records))
+        logger.info("Align stat - #filtered read paths: %i" % len(self.read_paths))
         # self.get_align_len_dist(graph_alignment=alignment)
-        logger.info(
-            "Alignment length range at path: [{}, {}]".format(self.min_alignment_length, self.max_alignment_length))
-        logger.info("Alignment max size at path: {}".format(self.max_read_path_size))
+        logger.info("Align stat - filtered length range at path: [{}, {}]".format(
+            self.min_alignment_length, self.max_alignment_length))
+        logger.info("Align stat - filtered max size at path: {}".format(self.max_read_path_size))
         # logger.info("  #read paths masked: %i" % len(self.read_paths_masked))
         # free memory to reduce the burden for potential downstream parallelization
         del alignment
         gc.collect()
+        aligned_path_bases = sum(self.align_len_at_path_map.values())
+        graph_len = sum(self.graph.vertex_info[v_].len for v_ in self.graph.vertex_info)
+        logger.info(f"Align stat - filtered average depth: {float(aligned_path_bases / graph_len): .2f}")
+        if not self.kwargs.get("keep_unaligned_contigs", False):
+            self.prune_unaligned_contigs()
+            output_graph = True
+        logger.info("Graph stat - #contigs in total: {}".format(len(self.graph.vertex_info)))
+        logger.info("Graph stat - #contigs in each component: {}".format(
+            sorted([len(cls) for cls in self.graph.vertex_clusters])))
+        total_counts = sum(self.graph.vertex_info[v_].cov * self.graph.vertex_info[v_].len
+                           for v_ in self.graph.vertex_info)
+        logger.info(f"Graph stat - average depth: {float(total_counts) / graph_len: .2f}")
+
+        if output_graph:
+            self.graph.write_to_gfa(os.path.join(self.outdir, "processed.2.gfa"))
+
         self.subpath_generator = VariantSubPathsGenerator(
             graph=self.graph,
             # force_circular=self.force_circular,
@@ -207,6 +256,8 @@ class Traversome(object):
         # self.clean_graph()
         if self.kwargs.get("max_valid_search", 100000) == 0:
             self.variant_paths = list(self.user_variant_paths)
+            self.variant_sizes = [self.graph.get_path_length(variant_p, check_valid=False, adjust_for_cyclic=True)
+                                  for variant_p in self.variant_paths]
             # self._update_params_for_variants()
         else:
             logger.debug("Generating candidate variant paths ...")
@@ -219,12 +270,11 @@ class Traversome(object):
                 max_num_traversals=self.kwargs.get("max_num_traversals"),
                 max_uniq_traversal=self.kwargs.get("max_uniq_traversal"),
                 num_processes=self.num_processes,
-                uni_chromosome=self.uni_chromosome
+                uni_chromosome=self.uni_chromosome,
+                size_ratio=self.kwargs.get("size_ratio")
             )
 
         self.num_put_variants = len(self.variant_paths)
-        self.variant_sizes = [self.graph.get_path_length(variant_p, check_valid=False, adjust_for_cyclic=True)
-                              for variant_p in self.variant_paths]
         if self.num_put_variants == 0:
             logger.error("No candidate variants found!")
             logger.info("======== VARIANTS SEARCHING ENDS ========\n")
@@ -291,8 +341,9 @@ class Traversome(object):
         self.output_variant_info()
         self.output_sampling_info()
         self.output_result_info()
-        self.output_pangenome_graph()
-        self.output_seqs()
+        if self.kwargs.get("bootstrap", 0) == 0 or self.bs_convergence or self.num_put_variants == 1:
+            self.output_pangenome_graph()
+            self.output_seqs()
         logger.info("======== OUTPUT FILES ENDS ========\n")
 
     def do_subsampling(self):
@@ -303,9 +354,12 @@ class Traversome(object):
         self._prepare_for_sampling()
         n_replicate = self.kwargs.get("bootstrap", 0) \
             if self.kwargs.get("bootstrap", 0) else self.kwargs.get("jackknife", 0)
+        threshold = self.kwargs.get("bs_threshold", 0.95)
+        count_unique = {}
         self.variant_proportions_reps = []
         n_digit = len(str(n_replicate))
         go_bs = 0
+        self.bs_convergence = True
         while go_bs < n_replicate:
             logger.debug(f"Sampling {go_bs + 1} --------")
             logger.debug("Generating sub-paths ..")
@@ -333,6 +387,12 @@ class Traversome(object):
             self.variant_proportions_reps.append(v_prop)
             # self.res_loglike_reps.append(loglike)
             # self.res_criteria_reps.append(criteria)
+            if not self._check_bs_convergence(count_unique=count_unique, n_reps=n_replicate, threshold=threshold):
+                if go_bs < n_replicate - 1:
+                    logger.info("Sampling terminates due to divergence in bootstraps. "
+                                "No convincing support can be found given the dataset and parameters. ")
+                self.bs_convergence = False
+                break
             go_bs += 1
 
         # if loglevel is reset, set it back
@@ -342,9 +402,11 @@ class Traversome(object):
         if self.variant_proportions_reps:
             num_reps = len(self.variant_proportions_reps)
             self.vp_unique_results = {}
+            cid_sorter = self.__sorting_cid()  # use a universal cid_sorter to keep them in order across bootstraps
             for go_r, v_prop in enumerate(self.variant_proportions_reps):
-                tuple_v_chosen = tuple(v_prop.keys())
-                tuple_v_props = tuple(v_prop.values())
+                # sort the res by proportion decreasingly (-x[1]), then c_id (x[0])
+                sorted_res = sorted(list(v_prop.items()), key=lambda x: cid_sorter[x[0]])
+                tuple_v_chosen, tuple_v_props = zip(*sorted_res)
                 if tuple_v_chosen not in self.vp_unique_results:
                     self.vp_unique_results[tuple_v_chosen] = {"rep_ids": [], "support": None, "values": []}
                 self.vp_unique_results[tuple_v_chosen]["rep_ids"].append(go_r)
@@ -384,6 +446,34 @@ class Traversome(object):
                 # mcmc (if requested) will be based on the new best result
                 if go_s == 0 and tuple_v_chosen != raw_res and chosen_dict["support"] > 0.05:
                     self.variant_proportions_best = raw_prop
+
+    def __sorting_cid(self):
+        cid_sorter = {}
+        for go_r, v_prop in enumerate(self.variant_proportions_reps):
+            # sort the res by proportion decreasingly (-x[1]), then c_id (x[0])
+            sorted_res = sorted(list(v_prop.items()), key=lambda x: (-x[1], x[0]))
+            tuple_v_chosen, tuple_v_props = zip(*sorted_res)
+            for cid_ in tuple_v_chosen:
+                if cid_ not in cid_sorter:
+                    cid_sorter[cid_] = len(cid_sorter)
+        return cid_sorter
+
+    def _check_bs_convergence(self, count_unique, n_reps, threshold):
+        """
+        check if bootstrap is possible to converge to a single solution with the threshold value
+        """
+        new_v_prop = self.variant_proportions_reps[-1]
+        tuple_v_chosen = tuple(sorted(list(new_v_prop.keys())))
+        if tuple_v_chosen not in count_unique:
+            count_unique[tuple_v_chosen] = 0
+        count_unique[tuple_v_chosen] += 1
+        counts = count_unique.values()
+        current_max = max(counts)
+        remaining = n_reps - sum(counts)
+        if float(current_max + remaining) / n_reps < threshold:
+            return False
+        else:
+            return True
 
     def output_pangenome_graph(self):
         """
@@ -504,6 +594,27 @@ class Traversome(object):
                 this_size = self.variant_sizes[cid]
                 output_v_h.write(f"{fid}\t{cid}\t{uid}\t{len(this_vp)}\t{this_size}\t{path_to_gaf_str(this_vp)}\n")
 
+    def purge_graph_by_depth(
+            self,
+            depth_threshold: float = 0.001):
+        to_remove = []
+        threshold = depth_threshold * self.estimate_graph_average_depth()
+        for v_name in self.graph.vertex_info:
+            if self.graph.vertex_info[v_name].cov < threshold:
+                to_remove.append(v_name)
+        if to_remove:
+            self.graph.remove_vertex(to_remove)
+            return True
+        else:
+            return False
+
+    def estimate_graph_average_depth(self):
+        # TODO can be improved
+        graph_len = sum(self.graph.vertex_info[v_].len for v_ in self.graph.vertex_info)
+        total_counts = sum(self.graph.vertex_info[v_].cov * self.graph.vertex_info[v_].len
+                           for v_ in self.graph.vertex_info)
+        return float(total_counts) / graph_len
+
     def load_user_paths(self):
         added_paths = set()
         count_fixed = 0
@@ -562,11 +673,41 @@ class Traversome(object):
                 self.read_paths[this_path].append(go_record)
         # filter 2
         if min_alignment_counts > 1:
+            # 2023-12-28 use longer read paths to support shorter ones
+            # draft filtering
+            shallow_candidates = {}
             for this_path in list(self.read_paths):
                 if len(self.read_paths[this_path]) < min_alignment_counts:
-                    del self.read_paths[this_path]
+                    # del self.read_paths[this_path]
+                    shallow_candidates[this_path] = len(self.read_paths[this_path])
                     # disable masking, which was designed to apply min_align_counts only to model fitting
                     # self.read_paths_masked.add(this_path)
+            # reduce shallow_candidates by keeping those with supports from longer reads alive
+            sizes = {}
+            logger.debug(f"### {len(shallow_candidates)} candidate shallow ones")
+            for r_path in shallow_candidates:
+                if len(r_path) in sizes:
+                    sizes[len(r_path)].add(r_path)
+                else:
+                    sizes[len(r_path)] = {r_path}
+            while sizes:
+                r_size, candidate_paths = sizes.popitem()
+                for longer_path in self.read_paths:
+                    longer_path_len = len(longer_path)
+                    if longer_path_len > r_size:
+                        for go_s in range(longer_path_len - r_size + 1):
+                            sub_path = self.graph.get_standardized_path(longer_path[go_s: go_s + r_size])
+                            if sub_path in shallow_candidates:
+                                shallow_candidates[sub_path] += 1
+                                if shallow_candidates[sub_path] >= min_alignment_counts:
+                                    del shallow_candidates[sub_path]
+                                    candidate_paths.discard(sub_path)
+                                    logger.trace(f"### keep {sub_path}")
+                    if not candidate_paths:
+                        break
+            for this_path in shallow_candidates:
+                del self.read_paths[this_path]
+            logger.debug(f"### remaining {len(shallow_candidates)} candidate shallow ones")
         # check
         # if len(self.read_paths_masked) == len(self.read_paths):
         if not self.read_paths:
@@ -639,6 +780,34 @@ class Traversome(object):
     #     logger.info(
     #         "Alignment length range at path: [{}, {}]".format(self.min_alignment_len, self.max_alignment_len))
 
+    def prune_unaligned_contigs(
+            self):
+        drop_contigs = set(self.graph.vertex_info)
+        for read_p in self.read_paths:
+            for contig_n, contig_e in read_p:
+                if contig_n in drop_contigs:
+                    drop_contigs.discard(contig_n)
+            if not drop_contigs:
+                break
+        if drop_contigs:
+            self.graph.remove_vertex(drop_contigs)
+
+    def estimate_contig_coverages_from_read_paths(self):
+        """
+        Counting the contig coverage using the occurrences in the read paths.
+        Note: this will proportionally overestimate the coverage values comparing to base coverage values,
+        """
+        # TODO: alignment details (path len) can be used
+        # use minimum value of 1e-8 to avoid zero total weights
+        contig_coverages = OrderedDict([(v_name, 1e-8) for v_name in self.graph.vertex_info])
+        for read_path, records in self.read_paths.items():
+            n_rec = len(records)
+            for v_name, v_end in read_path:
+                if v_name in contig_coverages:
+                    contig_coverages[v_name] += n_rec
+        for v_name in self.graph.vertex_info:
+            self.graph.vertex_info[v_name].cov = contig_coverages[v_name]
+
     def gen_candidate_variants(
             self,
             # path_generator="H",
@@ -649,11 +818,13 @@ class Traversome(object):
             max_uniq_traversal=200,
             num_processes=1,
             uni_chromosome=False,
+            size_ratio=0.,
             **kwargs):
         """
         generate candidate variant paths from the graph
         """
         # if path_generator == "H":
+        tmp_dir = fpath(self.outdir).joinpath("tmp.candidates")
         generator = VariantGenerator(
             traversome_obj=self,
             start_strategy=start_strategy,
@@ -665,18 +836,55 @@ class Traversome(object):
             force_circular=self.force_circular,
             uni_chromosome=uni_chromosome,
             decay_f=kwargs.get("search_decay_factor"),
-            temp_dir=fpath(self.outdir).joinpath("tmp.candidates"),
+            temp_dir=tmp_dir,
+            use_alignment_cov=self.kwargs.get("use_alignment_cov", False),
             resume=self.resume,
             )
         generator.generate_heuristic_paths()
+
+        # 1. calculate the variant base lengths and store them to all_variant_sizes
+        # 2. calculate the minimum cutoff for variant size
+        all_variant_sizes = []
+        for go_variant in self.user_variant_paths:
+            all_variant_sizes.append(self.graph.get_path_length(go_variant, check_valid=False, adjust_for_cyclic=True))
+        for go_variant in generator.variants:
+            all_variant_sizes.append(self.graph.get_path_length(go_variant, check_valid=False, adjust_for_cyclic=True))
+        min_size = max(all_variant_sizes) * size_ratio
+
         # TODO add self.user_variant_paths during heuristic search instead of here
-        self.variant_paths = list(self.user_variant_paths)
-        user_v_p_set = set(self.user_variant_paths)
-        for go_v, g_variant in enumerate(generator.variants):
-            if g_variant not in user_v_p_set:
-                self.variant_paths.append(g_variant)
-            else:
-                logger.info(f"searched variant {go_v + 1} existed in user designed.")
+        self.variant_paths = []
+        # 1. record the sid to cid table for debugging
+        # 2. add candidate variants to self.variant_paths
+        # 3. calculate variant lengths and store them to self.variant_sizes
+        # TODO resume/overwrite mode
+        with open(tmp_dir.joinpath("sid.to.cid.tab"), "a") as sid_to_cid_h:
+            self.variant_sizes = []
+            cid = 0
+            for go_p, go_variant in enumerate(self.user_variant_paths):
+                v_size = all_variant_sizes.pop(0)
+                if go_p in self.user_variant_fixed_ids or v_size >= min_size:
+                    self.variant_paths.append(go_variant)
+                    self.variant_sizes.append(v_size)
+                    sid_to_cid_h.write(f"user_{go_p}\tcid_{cid}\n")
+                    cid += 1
+                else:
+                    logger.info(f"user_{go_p} discarded due to size filtering (see '--v-len'). ")
+
+            user_v_p_set = set(self.user_variant_paths)
+            for go_v, go_variant in enumerate(generator.variants):
+                if go_variant not in user_v_p_set:
+                    v_size = all_variant_sizes.pop(0)
+                    if v_size >= min_size:
+                        self.variant_paths.append(go_variant)
+                        self.variant_sizes.append(v_size)
+                        sid_to_cid_h.write(f"sid_{go_v}\tcid_{cid}\n")
+                        cid += 1
+                    else:
+                        # TODO change to debug
+                        logger.info(f"sid_{go_v} discarded due to size filtering (see '--v-len'). ")
+                else:
+                    logger.info(f"searched candidate variant {go_v} existed in user designed.")
+
         # self.variant_paths_sorted = self.user_variant_paths + generator.variants
         # self.variant_paths_sorted = generator.variants
 
@@ -1134,11 +1342,12 @@ class Traversome(object):
         return self.bayesian_fit.run_mcmc(self.kwargs["n_generations"], self.kwargs["n_burn"], chosen_ids=chosen_ids)
 
     def output_seqs(self):
-        out_seq_file_num = len([x for x in self.variant_proportions_best.values() if x >= self.out_prob_threshold])
-        if not out_seq_file_num:
+        out_seq_num = len([x for x in self.variant_proportions_best.values() if x >= self.out_prob_threshold])
+        if not out_seq_num:
             return
-        out_digit = len(str(out_seq_file_num))
+        out_digit = len(str(out_seq_num))
         count_seq = 0
+        count_file = 0
         # sorted_rank = sorted(list(self.variant_proportions_best), key=lambda x: -self.variant_proportions_best[x])
         # for go_isomer, this_prob in self.ext_component_proportions.items():
         for count_out, cid in enumerate(self.variant_proportions_best):
@@ -1173,12 +1382,13 @@ class Traversome(object):
                             logger.debug("{} path={}".format(this_base_name, this_seq.label))
                         output_handler.write(seq_label + "\n" + this_seq.seq + "\n")
                         count_seq += 1
+                    count_file += 1
                     logger.log("RES",
                                f"{this_base_name}x{len_un_id} "
                                f"freq={this_prob:.4f} len={'/'.join([str(_l) for _l in lengths])}")
         # logger.info("Output {} seqs (%.4f to %.{}f): ".format(count_seq, len(str(self.out_prob_threshold)) - 2)
         #             % (max(self.variant_proportions.values()), self.out_prob_threshold))
-        logger.info("Output {} seqs in {} files".format(count_seq, out_seq_file_num))
+        logger.info("Output {} seqs in {} files".format(count_seq, count_file))
 
     def shuffled(self, sorted_list):
         sorted_list = deepcopy(sorted_list)
