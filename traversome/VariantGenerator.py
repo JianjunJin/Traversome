@@ -153,7 +153,10 @@ class SingleTraversal(object):
                                    for read_id, strand in candidates]
                         weights = [exp(log(weights[go_c]) - abs(log(cov / current_ave_coverage))) * self.__cov_inert
                                    for go_c, cov in enumerate(cdd_cov)]
-                    read_id, strand = random.choices(candidates, weights=weights)[0]
+                    try:
+                        read_id, strand = random.choices(candidates, weights=weights)[0]
+                    except ValueError:  # sum(weights)==0
+                        read_id, strand = random.choices(candidates)[0]
                     if strand:
                         path = list(self.read_paths[read_id])
                     else:
@@ -166,6 +169,11 @@ class SingleTraversal(object):
             # it may be further used in self.__heuristic_check_multiplicity()
             like_ls_cached = []
             if not candidate_ls_list:
+                # TODO linear viruses may for circular graph,
+                #  maybe terminate in case of no candidate
+                #  or draw from a random number correlates with sequencing depth to terminate
+                #  Also, the definition of the path has to change!!
+                #  The circularity should be an attribute rather than auto-detected
                 # if no extending candidates based on overlap info, try to extend based on the graph
                 logger.trace("      no extending candidates based on overlap info, try extending based on the graph")
                 last_name, last_end = path[-1]
@@ -200,7 +208,11 @@ class SingleTraversal(object):
                             # ratio: likelihood proportion
                             weights = np.where(weights == np.inf, 1, weights / (1. + weights))
                             weights = weights / max(weights)
-                            chosen_cdd_id = random.choices(range(len(candidates_next)), weights=weights)[0]
+                            # if sum(weights):
+                            try:
+                                chosen_cdd_id = random.choices(range(len(candidates_next)), weights=weights)[0]
+                            except ValueError:
+                                chosen_cdd_id = random.choices(range(len(candidates_next)))[0]
                             next_name, next_end = candidates_next[chosen_cdd_id]
                             like_ls_cached = like_ls_cached[chosen_cdd_id]
                         elif self.__cov_inert:
@@ -208,9 +220,18 @@ class SingleTraversal(object):
                             # coverage inertia, more likely to extend to contigs with similar depths,
                             # which are more likely to be the same target chromosome / organelle type
                             cdd_cov = [self.contig_coverages[_n_] for _n_, _e_ in candidates_next]
+                            # try:
                             weights = [exp(-abs(log(cov / current_ave_coverage))) * self.__cov_inert for cov in cdd_cov]
                             logger.trace("      likes: {}".format(weights))
-                            next_name, next_end = random.choices(candidates_next, weights=weights)[0]
+                            try:
+                                next_name, next_end = random.choices(candidates_next, weights=weights)[0]
+                            except ValueError:
+                                next_name, next_end = random.choices(candidates_next)[0]
+                            # except ValueError as e:
+                            #     print(self.contig_coverages)
+                            #     print(cdd_cov)
+                            #     print(candidates_next)
+                            #     raise e
                         else:
                             next_name, next_end = random.choice(candidates_next)
                     else:
@@ -295,7 +316,10 @@ class SingleTraversal(object):
                         ######
                         # try:
                         pool_size = 10  # arbitrary pool size for re-weighting
-                        pool_ids = random.choices(range(len(candidates)), weights=weights, k=pool_size)
+                        try:
+                            pool_ids = random.choices(range(len(candidates)), weights=weights, k=pool_size)
+                        except ValueError:
+                            pool_ids = random.choices(range(len(candidates)), k=pool_size)
                         # except ValueError:  # Total of weights must be finite
                         #     pool_ids = list(range(len(candidates)))
                         pool_ids_set = set(pool_ids)
@@ -350,8 +374,10 @@ class SingleTraversal(object):
                                    for go_c, (r_id, r_strand) in enumerate(candidates)]
                         weights = exp(np.array([log(weights[go_c]) - abs(log(cov / current_ave_coverage))
                                                 for go_c, cov in enumerate(cdd_cov)], dtype=np.float128))
-                    # try:
-                    chosen_cdd_id = random.choices(range(len(candidates)), weights=weights)[0]
+                    try:
+                        chosen_cdd_id = random.choices(range(len(candidates)), weights=weights)[0]
+                    except ValueError:
+                        chosen_cdd_id = random.choices(range(len(candidates)))[0]
                     # except ValueError:
                     #     print(weights)
                     #     print("---------------")
@@ -414,7 +440,7 @@ class SingleTraversal(object):
             if v_n not in bin_sizes:
                 count = self.graph.vertex_info[v_n].len - self.__cov_unit + 1
                 bin_sizes[v_n] = count
-                obs[v_n] = count * self.graph.vertex_info[v_n].cov
+                obs[v_n] = count * self.contig_coverages[v_n]  # self.graph.vertex_info[v_n].cov
             else:
                 bin_sizes[v_n] += self.graph.vertex_info[v_n].len - self.__cov_unit + 1
         return bin_sizes, obs
@@ -427,7 +453,7 @@ class SingleTraversal(object):
         if new_v not in bin_sizes:
             count = self.graph.vertex_info[new_v].len - self.__cov_unit + 1
             bin_sizes[new_v] = count
-            obs[new_v] = count * self.graph.vertex_info[new_v].cov
+            obs[new_v] = count * self.contig_coverages[new_v]  # self.graph.vertex_info[new_v].cov
         else:
             bin_sizes[new_v] += self.graph.vertex_info[new_v].len - self.__cov_unit + 1
 
@@ -470,14 +496,14 @@ class SingleTraversal(object):
         old_like = self.__cal_single_multiplicity_loglike(bin_sizes=bin_sizes, observations=observations)
         log_like_ratio_list = []
         # logger.trace(f"      - path={path}")
-        # logger.trace(f"        bin sizes={bin_sizes}")
-        # logger.trace(f"        observations={observations}")
+        # logger.trace(f"    bin sizes={bin_sizes}")
+        # logger.trace(f"    observations={observations}")
         for v_name, v_end in proposed_extension:
             is_new_vertex = v_name not in observations
             self.__update_v_bin_size(new_v=v_name, bin_sizes=bin_sizes, obs=observations)
             # logger.trace(f"      - v_name={v_name}")
-            # logger.trace(f"        bin sizes={bin_sizes}")
-            # logger.trace(f"        observations={observations}")
+            # logger.trace(f"    bin sizes={bin_sizes}")
+            # logger.trace(f"    observations={observations}")
             new_like = self.__cal_single_multiplicity_loglike(bin_sizes=bin_sizes, observations=observations)
             if is_new_vertex:
                 # logger.trace(f"      - old_like={-inf}, new_like={new_like}")
@@ -486,7 +512,7 @@ class SingleTraversal(object):
             else:
                 # logger.trace(f"      - old_like={old_like}, new_like={new_like}")
                 log_like_ratio_list.append(new_like - old_like)  # now the likes are accumulated since last inf (new v)
-        # logger.trace("        loglike ratio list: {}".format(log_like_ratio_list))
+        # logger.trace("    loglike ratio list: {}".format(log_like_ratio_list))
         if logarithm:
             return np.array(log_like_ratio_list, dtype=np.float128)
         else:
@@ -524,7 +550,7 @@ class SingleTraversal(object):
     #                             for v_n in set([v_n for v_n, v_e in proposed_extension])}
     #     # if not (old_cov_mean and old_cov_std):
     #     #     old_cov_mean, old_cov_std = self.__get_cov_mean(path, return_std=True)
-    #     #     logger.debug("        path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
+    #     #     logger.debug("    path mean:" + str(old_cov_mean) + "," + str(old_cov_std))
     #
     #         # logger.debug("initial mean: " + str(initial_mean) + "," + str(initial_std))
     #     # logger.trace("    old_path: {}".format(self.graph.repr_path(path)))
@@ -532,9 +558,9 @@ class SingleTraversal(object):
     #     # use single-copy mean and std instead of initial
     #     if not (single_cov_mean and single_cov_std):
     #         single_cov_mean, single_cov_std = self.__get_cov_mean_of_single(path, return_std=True)
-    #         logger.debug("        path single mean:" + str(single_cov_mean) + "," + str(single_cov_std))
+    #         logger.debug("    path single mean:" + str(single_cov_mean) + "," + str(single_cov_std))
     #
-    #     logger.trace("        current_v_counts:{}".format(current_v_counts))
+    #     logger.trace("    current_v_counts:{}".format(current_v_counts))
     #     # check the multiplicity of every vertices
     #     # check the likelihood of varying size of extension
     #     log_like_ratio_list = []
@@ -548,8 +574,8 @@ class SingleTraversal(object):
     #         else:
     #             if current_c:
     #                 old_single_cov = self.contig_coverages[v_name] / float(current_c)
-    #                 logger.trace("        contig_cov: {}".format(self.contig_coverages[v_name]))
-    #                 logger.trace("        old_single_cov: {}".format(old_single_cov))
+    #                 logger.trace("    contig_cov: {}".format(self.contig_coverages[v_name]))
+    #                 logger.trace("    old_single_cov: {}".format(old_single_cov))
     #                 # old_like = norm.logpdf(old_single_cov, loc=old_cov_mean, scale=old_cov_std)
     #                 # old_like += norm.logpdf(old_single_cov, loc=single_cov_mean, scale=single_cov_std)
     #                 old_like = norm.logpdf(old_single_cov, loc=single_cov_mean, scale=single_cov_std)
@@ -559,7 +585,7 @@ class SingleTraversal(object):
     #         # new_cov_mean, new_cov_std = self.__get_cov_mean(path + [(v_name, v_end)], return_std=True)
     #         if current_c:
     #             new_single_cov = self.contig_coverages[v_name] / float(current_c + 1)
-    #             logger.trace("        new_single_cov: {}".format(new_single_cov))
+    #             logger.trace("    new_single_cov: {}".format(new_single_cov))
     #             # new_like = norm.logpdf(new_single_cov, loc=new_cov_mean, scale=new_cov_std)
     #             # new_like += norm.logpdf(new_single_cov, loc=single_cov_mean, scale=single_cov_std)
     #             new_like = norm.logpdf(new_single_cov, loc=single_cov_mean, scale=single_cov_std)
@@ -567,9 +593,9 @@ class SingleTraversal(object):
     #             new_like = 0.
     #         # old_cov_mean, old_cov_std = new_cov_mean, new_cov_std
     #         # weighted by log(length), de-weight later for comparison
-    #         logger.trace("        unweighted loglike ratio: {}".format(new_like - old_like))
-    #         logger.trace("        weighting by length: {}".format(proposed_lengths[v_name]))
-    #         logger.trace("        weighted loglike ratio: {}".format((new_like - old_like) * proposed_lengths[v_name]))
+    #         logger.trace("    unweighted loglike ratio: {}".format(new_like - old_like))
+    #         logger.trace("    weighting by length: {}".format(proposed_lengths[v_name]))
+    #         logger.trace("    weighted loglike ratio: {}".format((new_like - old_like) * proposed_lengths[v_name]))
     #         # weighting is used to avoid the influence from the length of a single vertex
     #         log_like_ratio += (new_like - old_like) * proposed_lengths[v_name]
     #         # probability higher than 1.0 (log_ratio > 0.) will remain as 1.0 (log_ratio as 0.)
@@ -670,12 +696,12 @@ class SingleTraversal(object):
                     return list(deepcopy(path)) + list(proposed_extension[:proposed_end]), True, not_do_reverse
             else:
                 if not_do_reverse:
-                    logger.trace("        linear traversal ended to fit {}'s coverage.".format(proposed_extension[0][0]))
-                    logger.trace("        checked likes: {}".format(like_ratio_list))
+                    logger.trace("    linear traversal ended to fit {}'s coverage.".format(proposed_extension[0][0]))
+                    logger.trace("    checked likes: {}".format(like_ratio_list))
                     return list(deepcopy(path)), False, None
                 else:
-                    logger.trace("        linear traversal reversed to fit {}'s coverage.".format(proposed_extension[0][0]))
-                    logger.trace("        checked likes: {}".format(like_ratio_list))
+                    logger.trace("    linear traversal reversed to fit {}'s coverage.".format(proposed_extension[0][0]))
+                    logger.trace("    checked likes: {}".format(like_ratio_list))
                     return list(self.graph.reverse_path(list(deepcopy(path)))), True, True
 
     def __check_path(self, path):
@@ -737,9 +763,9 @@ class SingleTraversal(object):
         for v_name in v_names:
             v_covers.append(self.contig_coverages[v_name] / float(v_names[v_name]))
             v_lengths.append(self.graph.vertex_info[v_name].len * v_names[v_name])
-        # logger.trace("        > cal path: {}".format(self.graph.repr_path(path)))
-        # logger.trace("        > cover values: {}".format(v_covers))
-        # logger.trace("        > cover weights: {}".format(v_lengths))
+        # logger.trace("    > cal path: {}".format(self.graph.repr_path(path)))
+        # logger.trace("    > cover values: {}".format(v_covers))
+        # logger.trace("    > cover weights: {}".format(v_lengths))
         mean = np.average(v_covers, weights=v_lengths)
         if return_std:
             if len(v_covers) > 1:
@@ -903,13 +929,13 @@ class VariantGenerator(object):
             self.__gen_heuristic_paths_mp(num_proc=num_processes)
 
     def load_temp(self):
-        len_vars = len(list(self.temp_dir.glob("variant.*.tuple")))
+        len_vars = len(list(self.temp_dir.glob("sid.*.tuple")))
         if len_vars:
             logger.info("Loading generated variants ..")
         for var_id in range(1, len_vars + 1):
             # although using pickle will be faster, txt is human-readable
-            tuple_f = self.temp_dir.joinpath(f"variant.{var_id}.tuple")
-            count_f = self.temp_dir.joinpath(f"variant.{var_id}.count")
+            tuple_f = self.temp_dir.joinpath(f"sid.{var_id}.tuple")
+            count_f = self.temp_dir.joinpath(f"sid.{var_id}.count")
             try:
                 with open(tuple_f) as input_r, open(count_f) as input_i:
                     this_variant = eval(input_r.read())
@@ -1059,15 +1085,19 @@ class VariantGenerator(object):
         Counting the contig coverage using the occurrences in the read paths.
         Note: this will proportionally overestimate the coverage values comparing to base coverage values,
         """
-        self.contig_coverages = OrderedDict([(v_name, 0) for v_name in self.graph.vertex_info])
+        # TODO: alignment details (path len) can be used
+        # use minimum value of 1e-8 to avoid zero total weights
+        self.contig_coverages = OrderedDict([(v_name, 1e-8) for v_name in self.graph.vertex_info])
         for read_path in self.read_paths:
+            n_rec = self.__read_paths_counter[read_path]
             for v_name, v_end in read_path:
                 if v_name in self.contig_coverages:
-                    self.contig_coverages[v_name] += 1
+                    self.contig_coverages[v_name] += n_rec
 
     def use_contig_coverage_from_assembly_graph(self):
+        # use minimum value of 1e-8 to avoid zero total weights
         self.contig_coverages = \
-            OrderedDict([(v_name, self.graph.vertex_info[v_name].cov) for v_name in self.graph.vertex_info])
+            OrderedDict([(v_name, max(self.graph.vertex_info[v_name].cov, 1e-8)) for v_name in self.graph.vertex_info])
         logger.trace(str(self.contig_coverages))
 
     def estimate_single_copy_vertices(self):
@@ -1267,16 +1297,16 @@ class VariantGenerator(object):
 
     def __save_tmp_counts(self, var_id, counts):
         if self.temp_dir.exists():
-            count_f_tmp = self.temp_dir.joinpath(f"variant.{var_id}.count.TMP")
-            count_f = self.temp_dir.joinpath(f"variant.{var_id}.count")
+            count_f_tmp = self.temp_dir.joinpath(f"sid.{var_id}.count.TMP")
+            count_f = self.temp_dir.joinpath(f"sid.{var_id}.count")
             with open(count_f_tmp, "w") as output_i:
                 output_i.write(str(counts))
             os.rename(count_f_tmp, count_f)
 
     def __save_tmp_path(self, var_id, new_path):
         if self.temp_dir.exists():
-            tuple_f_tmp = self.temp_dir.joinpath(f"variant.{var_id}.tuple.TMP")
-            tuple_f = self.temp_dir.joinpath(f"variant.{var_id}.tuple")
+            tuple_f_tmp = self.temp_dir.joinpath(f"sid.{var_id}.tuple.TMP")
+            tuple_f = self.temp_dir.joinpath(f"sid.{var_id}.tuple")
             with open(tuple_f_tmp, "w") as output_t:
                 output_t.write(str(new_path))
             os.rename(tuple_f_tmp, tuple_f)
