@@ -152,15 +152,22 @@ def _gaf_parse_worker(csv_lines_gen, _min_align_len, _min_identity, _parse_cigar
     plain function for easier multiprocessing
     """
     _gaf_list = []
+    count_r = 0
     for _line_split in csv_lines_gen:
         _line_split = _line_split.strip().split("\t")
+        count_r += 1
         # skip unqualified record quickly
         if int(_line_split[10]) < _min_align_len:
             continue
         gaf = GAFRecord(_line_split, parse_cigar=_parse_cigar)
         if gaf.identity >= _min_identity:
             _gaf_list.append(gaf)
-    return _gaf_list
+    return _gaf_list, count_r
+
+
+# def _gfa_ali_parse_worker(csv_lines_gen, _min_align_len):
+#     # it seems that gfa does not contain complete alignment information for hifiasm 0.19.8
+#
 
 
 def _tsv_parse_worker(csv_lines_gen, _min_align_len):
@@ -168,15 +175,17 @@ def _tsv_parse_worker(csv_lines_gen, _min_align_len):
     plain function for easier multiprocessing
     """
     _tsv_list = []
+    count_r = 0
     for _line_split in csv_lines_gen:
         _line_split = _line_split.strip().split("\t")
+        count_r += 1
         # skip those alignment with several non-overlapping subpaths
         if "," in _line_split[1]:
             continue
         tsv = SPATSVRecord(_line_split)
         if tsv.align_len >= _min_align_len:
             _tsv_list.append(tsv)
-    return _tsv_list
+    return _tsv_list, count_r
 
 
 class ReadRecord(object):
@@ -372,7 +381,6 @@ class GraphAlignRecords(object):
             alignment_file,
             alignment_format=None,
             gen_multi_hits_prob=False,
-            # min_aligned_path_len=0,
             min_align_len=0,
             min_identity=0.,
             parse_cigar=False,
@@ -389,6 +397,7 @@ class GraphAlignRecords(object):
         else:
             self.alignment_format = alignment_format
         assert self.alignment_format in ("GAF", "SPA-TSV"), "Unsupported format {}!".format(alignment_format)
+        # assert self.alignment_format in ("GAF", "SPA-TSV", "GFA"), "Unsupported format {}!".format(alignment_format)
         self.parse_cigar = parse_cigar
         self.min_align_len = min_align_len
         # self.min_aligned_path_len = min_aligned_path_len
@@ -400,6 +409,7 @@ class GraphAlignRecords(object):
         self.num_proc = num_proc
 
         # destination for parsed results
+        self.n_file_records = 0  # counts before filtering, >= len(self.raw_records)
         self.raw_records = []
         self.read_records = OrderedDict()
 
@@ -931,9 +941,10 @@ class GraphAlignRecords(object):
 
         Parameters
         -----
-        num_proc: empirically 4 is enough, a greater value will not help
+        num_proc: empirically 4 is enough in my local environment, a greater value will not help
         num_block_lines:
         """
+        # if self.alignment_format not in ("GAF", "SPA-TSV", "GFA"):
         if self.alignment_format not in ("GAF", "SPA-TSV"):
             raise Exception("unsupported format!")
         pool_obj = Pool(processes=num_proc - 1)
@@ -959,6 +970,15 @@ class GraphAlignRecords(object):
                     pool_obj.apply_async(_gaf_parse_worker,
                                          (cached_lines, self.min_align_len, self.min_identity, self.parse_cigar))
                 )
+        # elif self.alignment_format == "GFA":
+        #     with open(self.alignment_file) as input_f:
+        #         for line_str in input_f:
+        #             if len(cached_lines) > num_block_lines:
+        #                 jobs.append(pool_obj.apply_async(_gfa_ali_parse_worker, (cached_lines, self.min_align_len)))
+        #                 cached_lines = []
+        #             else:
+        #                 cached_lines.append(line_str)
+        #         jobs.append(pool_obj.apply_async(_gfa_ali_parse_worker, (cached_lines, self.min_align_len)))
         elif self.alignment_format == "SPA-TSV":
             # store a list of SPAligner SPATSVRecord objects made for each line in TSV file.
             with open(self.alignment_file) as input_f:
@@ -972,7 +992,9 @@ class GraphAlignRecords(object):
                 jobs.append(pool_obj.apply_async(_tsv_parse_worker, (cached_lines, self.min_align_len)))
         pool_obj.close()
         for job in jobs:
-            self.raw_records.extend(job.get())
+            batch_records, count_r = job.get()
+            self.raw_records.extend(batch_records)
+            self.n_file_records += count_r
         pool_obj.join()
 
     def parse_alignment_file_single(self):
@@ -984,17 +1006,22 @@ class GraphAlignRecords(object):
             input_f = open(self.alignment_file)
         if self.alignment_format == "GAF":
             # store a list of GAFRecord objects made for each line in GAF file.
-            self.raw_records = _gaf_parse_worker(
+            self.raw_records, self.n_file_records = _gaf_parse_worker(
                 # csv_lines_gen=csv.reader(input_f, delimiter="\t"),
                 csv_lines_gen=input_f,
                 _min_align_len=self.min_align_len,
                 _min_identity=self.min_identity,
                 _parse_cigar=self.parse_cigar)
             input_f.close()
+        # elif self.alignment_format == "GFA":
+        #     self.raw_records = _gfa_ali_parse_worker(
+        #         csv_lines_gen=input_f,
+        #         _min_align_len=self.min_align_len)
+        #     input_f.close()
         elif self.alignment_format == "SPA-TSV":
             # store a list of SPAligner SPATSVRecord objects made for each line in TSV file.
             with open(self.alignment_file) as input_f:
-                self.raw_records = _tsv_parse_worker(
+                self.raw_records, self.n_file_records = _tsv_parse_worker(
                     # csv_lines_gen=csv.reader(input_f, delimiter="\t"),
                     csv_lines_gen=input_f,
                     _min_align_len=self.min_align_len)
@@ -1125,6 +1152,8 @@ class GraphAlignRecords(object):
     def parse_alignment_format_from_postfix(self):
         if self.alignment_file.lower().endswith(".gaf") or self.alignment_file.lower().endswith(".gaf.gz"):
             alignment_format = "GAF"
+        # elif self.alignment_file.lower().endswith(".gfa") or self.alignment_file.lower().endswith(".gfa.gz"):
+        #     alignment_format = "GFA"
         elif self.alignment_file.lower().endswith(".tsv") or self.alignment_file.lower().endswith(".tsv.gz"):
             alignment_format = "SPA-TSV"
         else:
