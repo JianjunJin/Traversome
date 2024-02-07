@@ -94,6 +94,8 @@ class ModelFitMaxLike(object):
         self.pe_neg_loglike_obj = None
         self.pe_best_proportions = None
 
+        self.__warning_sent = False
+
     def point_estimate(self,
                        chosen_ids: set = None,
                        criterion=Criterion.BIC):
@@ -156,8 +158,10 @@ class ModelFitMaxLike(object):
             user fixed variant ids that will not be dropped during model selection.
         """
         # TODO: tolerance can be larger
-        if random_size != 0 and n_proc > random_size:
-            logger.warning("random size {} is smaller than the num of processes {}, which is limited by the former.")
+        if random_size != 0 and n_proc > random_size and not self.__warning_sent:
+            logger.warning(f"random size {random_size} is smaller than the num of processes {n_proc}, "
+                           f"which is limited by the former.")
+            self.__warning_sent = True
 
         # diff_tolerance = 1e-9
         diff_tolerance = 1e-6
