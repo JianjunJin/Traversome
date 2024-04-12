@@ -2,7 +2,6 @@
 """
 Pangenome Assembly Graph class object and associated class objects
 """
-import numpy as np
 from loguru import logger
 from typing import Union
 from copy import deepcopy
@@ -10,6 +9,7 @@ from collections import OrderedDict
 from traversome.AssemblySimple import Vertex
 from traversome.Assembly import Assembly
 from traversome.utils import comb_indices
+import numpy as np
 
 
 class LocInfo:
@@ -146,7 +146,7 @@ class VariantIndexer:
 class PanGenome:
     def __init__(
             self,
-            original_graph,
+            original_graph: Assembly,
             variant_paths_sorted,
             variant_props_ordered,
             variant_labels):
@@ -312,6 +312,133 @@ class PanGenome:
                 only_block.append(((pid, vid, ve),))
             self.colinear_blocks = [tuple(only_block)]
         self._index_colinear_blocks()
+
+    def write_clb_table_for_plot(
+            self,
+            csv_file,
+            add_gap=20000,
+            rename_blocks=True,
+            log_scale=False):
+        """
+        Generate colinear block table for plotting
+
+        Parameters:
+        ----------
+        csv_file : str
+            The path to the output CSV file.
+        add_gap : int, optional
+            The gap to add between blocks for each variant. Default is 20000. Please set to be 0 if log_scale is True.
+        rename_blocks : bool, optional
+            Whether to rename the blocks according to sorted occurence. Default is True.
+        log_scale : bool, optional
+            Whether to use log scale for the lengths of the blocks. Default is False.
+
+        Returns:
+        -------
+        None
+
+        Example structure of colinearity_data:
+        | block_id | varaint | start | end | real_len |
+        |----------|---------|-------|-----|----------|
+        | block1   | pid1    | 101   | 500 |    400   |
+        | block1   | pid2    | 151   | 550 |    400   |
+        | block2   | pid1    | 601   | 900 |    300   |
+        | block2   | pid2    | 651   | 950 |    300   |
+        | ...
+
+        """
+        paths_n_contigs = [len(vp) for vp in self.old_variant_paths]
+        paths_n_bases = [self.old_graph.get_path_length(vp, adjust_for_cyclic=True) for vp in self.old_variant_paths]
+        # cache the blocks into a list, later adjust the start and end positions to make each variant start from 1
+        blocks = []
+        for go_b, lb in enumerate(self.colinear_blocks):
+            if len(lb) == 1:
+                for pid, vid, v_e in lb[0]:
+                    from_pos = self.old_graph.get_path_length(self.old_variant_paths[pid][:vid]) if vid else 1
+                    to_pos = self.old_graph.get_path_length(self.old_variant_paths[pid][:vid + 1])
+                    if v_e:
+                        start_pos = from_pos
+                        end_pos = to_pos
+                    else:
+                        start_pos = to_pos
+                        end_pos = from_pos
+                    blocks.append([go_b, pid, start_pos, end_pos, abs(end_pos - start_pos) + 1])
+            else:
+                directions = []
+                for (pid, vid_1, v_e_1), (pid, vid_2, v_e_2) in zip(*lb[:2]):
+                    if vid_2 == (vid_1 + 1) % paths_n_contigs[pid]:
+                        directions.append(True)
+                    elif vid_1 == (vid_2 + 1) % paths_n_contigs[pid]:
+                        directions.append(False)
+                    else:
+                        raise ValueError(f"Abnormal colinear block: block_id={go_b}, pid={pid}")
+                for go_p, (pid, start_vid, v_e) in enumerate(lb[0]):
+                    end_vid = lb[-1][go_p][1]
+                    if directions[go_p]:
+                        start_pos = self.old_graph.get_path_length(self.old_variant_paths[pid][:start_vid]) + 1 if start_vid else 1  # 1-based
+                        end_pos = self.old_graph.get_path_length(self.old_variant_paths[pid][:end_vid + 1])
+                        if end_pos < start_pos:
+                            end_pos += paths_n_bases[pid]
+                    else:
+                        start_pos = self.old_graph.get_path_length(self.old_variant_paths[pid][:start_vid + 1])
+                        end_pos = self.old_graph.get_path_length(self.old_variant_paths[pid][:end_vid]) + 1 if end_vid else 1  # 1-based
+                        if start_pos < end_pos:
+                            start_pos += paths_n_bases[pid]
+                    blocks.append([go_b, pid, start_pos, end_pos, abs(end_pos - start_pos) + 1])
+        # adjust the start and end positions to make each variant start from 1
+        # find the minimum start/end position for each variant
+        vp_min_pos = {}
+        for go_b, pid, start_pos, end_pos, real_len in blocks:
+            if pid not in vp_min_pos:
+                vp_min_pos[pid] = min(start_pos, end_pos)
+            else:
+                vp_min_pos[pid] = min(vp_min_pos[pid], start_pos, end_pos)
+        # adjust the start and end positions for each variant using minimum start/end positions
+        for i, (go_b, pid, start_pos, end_pos, real_len) in enumerate(blocks):
+            blocks[i][2] -= vp_min_pos[pid] - 1
+            blocks[i][3] -= vp_min_pos[pid] - 1
+        # sort blocks by varaint, min&max of (tart, end), block_id
+        blocks = sorted(blocks, key=lambda x: (self.variant_labels[x[1]], min(x[2], x[3]), max(x[2], x[3]), x[0]))
+        if rename_blocks:
+            # rename blocks according to sorted occurence
+            block_occurence = {}
+            for go_b, pid, start_pos, end_pos, real_len in blocks:
+                if go_b not in block_occurence:
+                    block_occurence[go_b] = len(block_occurence)
+            for i, (go_b, pid, start_pos, end_pos, real_len) in enumerate(blocks):
+                blocks[i][0] = block_occurence[go_b]
+        if log_scale:
+            # use log scale for the lengths of the blocks, not the start and end pos
+            vp_offset = {}
+            for i, (go_b, pid, start_pos, end_pos, real_len) in enumerate(blocks):
+                current_offset = vp_offset.get(pid, 0)
+                if start_pos <= end_pos:
+                    transformed_len = np.log(end_pos - start_pos + 1)
+                    blocks[i][2] = current_offset + 1
+                    blocks[i][3] = current_offset + transformed_len
+                else:
+                    transformed_len = np.log(start_pos - end_pos + 1)
+                    blocks[i][2] = current_offset + transformed_len
+                    blocks[i][3] = current_offset + 1
+                vp_offset[pid] = current_offset + transformed_len
+        # add gap between blocks for each variant
+        # this will include accumulated increase in the start and end positions
+        if add_gap:
+            vp_offset = {}
+            for i, (go_b, pid, start_pos, end_pos, real_len) in enumerate(blocks):
+                if pid not in vp_offset:
+                    vp_offset[pid] = 0
+                else:
+                    vp_offset[pid] += add_gap
+                blocks[i][2] += vp_offset[pid]
+                blocks[i][3] += vp_offset[pid]
+        # write cached blocks to csv
+        with open(csv_file, "w") as f:
+            f.write("block_id,variant,start,end,real_len\n")
+            for go_b, pid, start_pos, end_pos, real_len in blocks:
+                f.write(f"block{go_b + 1},{self.variant_labels[pid]},{start_pos},{end_pos},{real_len}\n")
+        # return colinearity_data
+
 
     def _index_colinear_blocks(self):
         for go_b, lb in enumerate(self.colinear_blocks):
