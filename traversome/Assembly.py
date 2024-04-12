@@ -654,19 +654,19 @@ class Assembly(AssemblySimple):
 
     # def estimate_multiplicity_by_cov(
     #         self,
-    #         limited_vertices=None,
+    #         must_include_vertices=None,
     #         given_average_cov=None,
     #         mode="embplant_pt",
     #         re_initialize=False):
     #     """
     #     Use seq coverage data to estimate copy and depth.
-    #     :param limited_vertices: vertex scope, default: all vertices
+    #     :param must_include_vertices: vertex scope, default: all vertices
     #     :param given_average_cov: user-defined average depth
     #     :param mode: genome type
     #     :param re_initialize: reinitialize
     #     """
     #     EstMultiplicityFromCov(graph=self,
-    #                            verts=limited_vertices,
+    #                            verts=must_include_vertices,
     #                            avgcov=given_average_cov,
     #                            mode=mode,
     #                            reinit=re_initialize).run()
@@ -1083,14 +1083,21 @@ class Assembly(AssemblySimple):
             v1_info = self.vertex_info[_n1]
             # get the uni_overlap between vertices _n1 and _n2
             this_overlap = v1_info.connections[_e1][(_n2, not _e2)]
-            # append the sequence with uni_overlap trimmed
-            seq_segments.append(v1_info.seq[_e1][:-this_overlap])
+            if this_overlap:
+                # append the sequence with uni_overlap trimmed
+                seq_segments.append(v1_info.seq[_e1][:-this_overlap])
+            else:
+                seq_segments.append(v1_info.seq[_e1])
         last_n, last_e = input_path[-1]
         last_v_info = self.vertex_info[last_n]
         if self.is_circular_path(input_path):
             first_n, first_e = input_path[0]
-            # append the sequence with uni_overlap trimmed
-            seq_segments.append(last_v_info.seq[last_e][:-last_v_info.connections[last_e][(first_n, not first_e)]])
+            this_overlap = last_v_info.connections[last_e][(first_n, not first_e)]
+            if this_overlap:
+                # append the sequence with uni_overlap trimmed
+                seq_segments.append(last_v_info.seq[last_e][:-this_overlap])
+            else:
+                seq_segments.append(last_v_info.seq[last_e])
         else:
             seq_segments.append(last_v_info.seq[last_e])
         return "".join(seq_segments)

@@ -214,30 +214,36 @@ def thorough(
         exists=False, resolve_path=True),
     var_fixed: Path = typer.Option(
         None, "--vf", "--variant-fixed",
-        help="A file containing user assigned variant paths "
-             "that will remain after model selection process. "
-             "Each line contains a variant path in Bandage path format, "
-             "e.g. '53+,45-,33+(circular)' or in GAF alignment format, e.g. '>53<45>33'"
+        help=r"A file containing user assigned variant paths "
+             r"that will remain after model selection process. "
+             r"Each line contains a variant path in Bandage path format, "
+             r"e.g. '53+,45-,33-(circular)' or in GAF alignment format, e.g. '>53<45<33'"
         ),
     var_candidate: Path = typer.Option(
         None, "--vc", "--variant-candidate",
-        help="A file containing user proposed candidate variant paths "
-             "that will be compared during model selection process. "
-             "Each line contains a variant path in Bandage path format, "
-             "e.g. '53+,45-,33+(circular)' or in GAF alignment format, e.g. '>53<45>33'"
+        help=r"A file containing user proposed candidate variant paths "
+             r"that will be compared during model selection process. "
+             r"Each line contains a variant path in Bandage path format, "
+             r"e.g. '53+,45-,33-(circular)' or in GAF alignment format, e.g. '>53<45<33'"
     ),
     # Currently there is no other searching scheme implemented
     # var_gen_scheme: VarGen = typer.Option(
     #     VarGen.Heuristic, "-G",
     #     help="Variant generating scheme: H (Heuristic)"),
     search_start_scheme: StartStrategy = typer.Option(
-        StartStrategy.random, "--sss", "--search-start-strategy",
+        StartStrategy.random, "--sss",  #  "--search-start-strategy",
         help="random (randomly chosen from read aligned paths, default)\n"
              "numerate (sequentially numerate from read aligned paths)"),
+    use_alignment_cov: bool = typer.Option(
+        False, "--use-align-cov",
+        help="Use alignment as the contig coverage. "  # for variant heuristic proposal step
+             "Testing mode. "
+        ),
     search_decay_factor: float = typer.Option(
-        20., "--sdf", "--search-decay-factor",
-        help="[1, INF]"
-             "Chance reduces by which, a read with less overlap with current path will be used to extend current path. "
+        20., "--sdf",  # "--search-decay-factor",
+        help="[1, INF] Search decay factor. "
+             "The chance reduces by which, "
+             "a read with less overlap with current path will be used to extend current path. "
              "A large value leads to strictly following read paths with the largest overlap. "),
     min_valid_search: int = typer.Option(
         500, "-n", "--min-val-search",
@@ -249,9 +255,13 @@ def thorough(
         30000, "-M", "--max-traversals",
         help="Hard bound for total number of searches (traversals). "),
     max_uniq_traversal: int = typer.Option(
-        200, "--max-unique", "--max-unique-search",
+        200, "--max-unique",  # "--max-unique-search",
         help="Hard bound for number of unique valid traversals for heuristic search. "
              "Too many unique candidates will cost computational resources and usually indicate bad dataset. "),
+    max_uncover_ratio: float = typer.Option(
+        0.001, "--max-uncover",
+        help="Tolerance of uncovered read paths weighted by alignment counts during variants assessment. ",
+        min=0, max=0.5),
     criterion: ModelSelectionMode = typer.Option(
         ModelSelectionMode.BIC, "-F", "--func",
         help="AIC (reverse model selection using stepwise AIC)\n"
@@ -259,6 +269,11 @@ def thorough(
     bootstrap: int = typer.Option(
         100, "--bs", "--bootstrap",
         help="The number of repeats used to perform bootstrap analysis. "),
+    bs_threshold: float = typer.Option(
+        0.95, "--bs-threshold",  # "--bootstrap-threshold",
+        help="Support below which will be treated as unsupported. "
+             "Early interruption of the bootstrap will be triggered if solutions are not consistent across bootstraps. "
+    ),
     # jackknife: int = typer.Option(
     #     0, "--jk", "--jackknife",
     #     help="The number of repeats used to perform jackknife analysis. "),
@@ -270,50 +285,80 @@ def thorough(
         12345, "--rs", "--random-seed", help="Random seed"),
     topology: ChTopology = typer.Option(
         ..., "--topo", "--topology",
-        help="Chromosomes topology: "
+        help="Chromosome variant topology: "
              "circular (constrained to be circular);"
              "all (unconstrained). ",
         prompt_required=True),
     composition: ChComposition = typer.Option(
-        ..., "--chr", "--composition",
-        help="Chromosomes composition: "
-             "single (each single form covers all contigs) / "
+        ChComposition.unconstrained, "--v-comp", "--composition",
+        help="Chromosome variant composition: "
+             "single (each single form covers all contigs; only isomeric variants) / "
              "all (unconstrained, single or multi-chromosomes, RECOMMENDED for most cases)",
         prompt_required=True),
+    size_ratio: float = typer.Option(
+        0.0, "--v-len", "--length-cutoff",
+        help="Chromosome variant with less than the ratio * MAX(lengths_of_all_variants) will be discarded. ",
+        min=0, max=1.),
     out_seq_threshold: float = typer.Option(
-        0.00, "-S",
+        0.00, "--seq-out",
         help="Threshold for sequence output. Use 2 to disable.",
         min=0, max=2),
+    graph_aligner_params: str = typer.Option(
+        "--precise-clipping 0.95", "--graph-aligner-params",
+        help="Extra parameters passed to GraphAligner quoted with '' "),
+    # quality_control_alignment_cov: float = typer.Option(
+    #     300., "--qc-depth",
+    #     help="The alignment depth as the goal to search for top-quality alignment records. "
+    #     ),
     min_alignment_identity_cutoff: float = typer.Option(
-        0.80, "--min-align-id",
-        help="Threshold for alignment identity, below which the alignment will be discarded. ",
-        min=0, max=1),
+        0.992, "--min-align-id",
+        help="Threshold for alignment identity, below which the alignment will be discarded. "
+             "The default value is for hifi reads. Try 0.95~0.99 for other types of reads and graph combinations.",
+        max=1),
     min_alignment_len_cutoff: int = typer.Option(
-        100, "--min-align-len",
-        help="Threshold for alignment length, below which the alignment will be discarded. ",
-        min=100),
+        5000, "--min-align-len",
+        help="Threshold for alignment length, below which the alignment will be discarded. "),
     min_alignment_counts: int = typer.Option(
-        2, "--min-align-counts", min=1,
+        -1, "--min-align-counts",
         help="Threshold for counts per path, below which the alignment(s) of that path will be discarded. "
+             "Automatic selection (-1) does not guarantee the best performance - good bootstrap support. "
+             "Default: auto(-1)"
     ),
     graph_component_selection: str = typer.Option(
         "0", "--graph-selection",
         help="Use this if your graph is not manually curated into the target complete graph. "
-             "First, he weight of each connected component will be calculated as \sum_{i=1}^{N}length_i*depth_i, "
+             "First, the weight of each connected component will be calculated as \\sum_{i=1}^{N}length_i*depth_i, "
              "where N is the contigs in that component. Then, the components will be sorted in a decreasing order. "
              "1) If the input is an integer or a slice, this will trigger the selection of specific component "
              "by the decreasing order, e.g. 0 will keep the first component; 0,4 will keep the first four components; "
              "2) If the input is a float in the range of (0, 1), this will trigger the selection using "
              "the accumulated weight ratio cutoff, "
              "above which, the remaining components will be discarded. "
-             "A cutoff of 1 means keeping all components in the graph, "
+             "A cutoff of 1.0 means keeping all components in the graph, "
              "while a value close to 0 means only keep the connected "
              "component with the largest weight. "),
+    purge_shallow_contigs: float = typer.Option(
+        0.001, "--graph-purge",
+        help="Use this if your graph is not manually curated into the target complete graph. "
+             "After applying '--graph-selection', an average_depth will be estimated and "
+             "any contigs that has shallower depth than FLOAT * average_depth will be discarded. "
+             "The higher the value FLOAT is, the more contigs will be discarded. "),
     keep_graph_redundancy: bool = typer.Option(
-        False, "--keep-graph-redundancy",
-        help="Activate keeping graph redundancy mode, which does not merge neighboring contigs when possible "
-             "and may potentially increase the computational burden."
+        True, "--merge-possible-contigs",
+        help="Choose to merge neighboring contigs when possible "
+             "and may potentially decrease the computational burden. "
+             "Raw reads may be required if graph is about to change. "
         ),
+    keep_unaligned_contigs: bool = typer.Option(
+        False, "--keep-unaligned",
+        help="Choose to keep unaligned contigs without been pruning from the assembly graph. "
+    ),
+    # --ignore-conflicts
+    ignore_conflicts: bool = typer.Option(
+        False, "--ignore-conflicts",
+        help="Ignore conflicts between the graph and the alignment file. "
+             "Ignoring the conflicts may lead to unexpected results. "
+    ),
     num_processes: int = typer.Option(
         1, "-p", "--processes",
         help="Num of processes. Multiprocessing will lead to non-identical result with the same random seed."),
@@ -322,35 +367,54 @@ def thorough(
         help="MCMC generations. Set '--mcmc 0' to disable mcmc process."),
     n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
     mc_bracket_depth: Optional[int] = typer.Option(
-        10000, "--mc-bd", "--mc-bracket-depth",
+        10000, "--mc-bd",  # "--mc-bracket-depth",
         help="Bracket depth for gcc during MCMC sampling. "),
     prev_run: Previous = typer.Option(
         Previous.terminate, "--previous",
         help="terminate: exit with error if previous result exists\n"
              "resume: continue on latest checkpoint if previous result exists\n"
              "overwrite: remove previous result if exists."),
-    keep_temp: bool = typer.Option(False, help="Keep temporary files"),
+    keep_temp: bool = typer.Option(
+        False, "--keep-temp",
+        help="Keep temporary files"),
     log_level: LogLevel = typer.Option(
         LogLevel.INFO, "--loglevel", help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
     """
     Conduct thorough analysis from assembly graph and reads/read-graph alignment.
     Examples:
-    traversome thorough -g graph.gfa -a align.gaf -o output_dir
+    traversome thorough -g graph.gfa -a align.gaf -o output_dir --topo circular
     """
+    assert str(graph_file).endswith(".gfa") or str(graph_file).endswith(".fastg"), "Invalid graph format provided!"
+    # use_gfa_annotation_lines = False
     if reads_file and alignment_file:
         sys.stderr.write("Flags `-f` and `-a` are mutually exclusive!")
         sys.exit()
     elif not reads_file and not alignment_file:
+        # use_gfa_annotation_lines = True
         sys.stderr.write("Either the sequence file (via `-f`) or the graph alignment (via `-a`) should be provided!")
         sys.exit()
     elif reads_file and not reads_file.exists():
         raise FileNotFoundError(reads_file)
     elif alignment_file and not alignment_file.exists():
         raise FileNotFoundError(alignment_file)
+    quality_control_alignment_cov = 300.  # disable target-depth-based quality control for now
     jackknife = 0  # disable jackknife for now
     if bootstrap and jackknife:
         sys.stderr.write("Flags `--bootstrap` and `--jackknife` are mutually exclusive!")
+    # data filtering
+    if min_alignment_identity_cutoff == -1:
+        min_alignment_identity_cutoff = "auto"
+    else:
+        assert min_alignment_identity_cutoff > 0.8
+    if min_alignment_len_cutoff == -1:
+        min_alignment_len_cutoff = "auto"
+    else:
+        assert min_alignment_len_cutoff >= 1000
+    if min_alignment_counts == -1:
+        min_alignment_counts = "auto"
+    else:
+        assert min_alignment_counts > 0
 
     from loguru import logger
     initialize(
@@ -367,6 +431,7 @@ def thorough(
         os.environ["AESARA_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
         # TODO to fix pytensor issue
         os.environ["PYTENSOR_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
+        # os.environ["TMPDIR"] = str(output_dir.joinpath("tmp.mp"))
 
         # assert var_gen_scheme != "U", "User-provided is under developing, please use heuristic instead!"
         setup_logger(loglevel=log_level, timed=True, log_file=os.path.join(output_dir, "traversome.log.txt"))
@@ -390,6 +455,14 @@ def thorough(
         logger.info(f"constraint chromosome topology to be circular: {force_circular}")
         single_chr = composition == ChComposition.single
         logger.info(f"constraint chromosome composition to be single: {single_chr} \n")
+
+        # if use_gfa_annotation_lines:
+        #     logger.info("Graph alignment source: GFA file")
+        # elif reads_file:
+        #     logger.info("Graph alignment source: To be made")
+        # elif alignment_file:
+        #     logger.info("Graph alignment source: GAF alignment file")
+
         # assert max_valid_search >= min_valid_search, ""
         if graph_component_selection.isdigit():
             graph_component_selection = int(graph_component_selection)
@@ -411,30 +484,40 @@ def thorough(
             outdir=str(output_dir),
             model_criterion=criterion,
             bootstrap=bootstrap,
+            bs_threshold=bs_threshold,
             jackknife=jackknife,
             # fast_bootstrap=fast_bootstrap,  # deprecated
             out_prob_threshold=out_seq_threshold,
             search_start_scheme=search_start_scheme,
+            use_alignment_cov=use_alignment_cov,
             search_decay_factor=search_decay_factor,
             min_valid_search=min_valid_search,
             max_valid_search=max_valid_search,
             max_num_traversals=max_num_traversals,
             max_uniq_traversal=max_uniq_traversal,
+            max_uncover_ratio=max_uncover_ratio,
             num_processes=num_processes,
             uni_chromosome=single_chr,
             force_circular=force_circular,
+            size_ratio=size_ratio,
             n_generations=n_generations,
             n_burn=n_burn,
             random_seed=random_seed,
             # keep_temp=False,
             loglevel=log_level,
+            graph_aligner_params=graph_aligner_params,
             min_alignment_identity_cutoff=min_alignment_identity_cutoff,
             min_alignment_len_cutoff=min_alignment_len_cutoff,
+            quality_control_alignment_cov=quality_control_alignment_cov,
             min_alignment_counts=min_alignment_counts,
             graph_component_selection=graph_component_selection,
+            purge_shallow_contigs=purge_shallow_contigs,
             keep_graph_redundancy=keep_graph_redundancy,
+            keep_unaligned_contigs=keep_unaligned_contigs,
+            ignore_conflicts=ignore_conflicts,
             resume=prev_run == "resume",
             mc_bracket_depth=mc_bracket_depth,
+            # use_gfa_alignment=use_gfa_annotation_lines,
         )
         traverser.run()
         del traverser
@@ -470,10 +553,12 @@ def initialize(output_dir, loglevel, previous):
     """
     os.makedirs(str(output_dir), exist_ok=previous in ("overwrite", "resume"))
     if previous == "overwrite" and os.path.isdir(output_dir):
+        # rmdir(output_dir.joinpath("tmp.mp"), ignore_errors=True)
         rmdir(output_dir.joinpath("tmp.candidates"), ignore_errors=True)
         rmdir(output_dir.joinpath("theano.cache"), ignore_errors=True)
         for exist_f in output_dir.glob("*.*"):
             os.remove(exist_f)
+    # os.makedirs(str(output_dir.joinpath("tmp.mp")), exist_ok=previous in ("overwrite", "resume"))
     logfile = os.path.join(output_dir, "traversome.log.txt")
     from loguru import logger
     # avoid repeating RUNNING_HEAD in the screen output by typer.secho

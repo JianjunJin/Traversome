@@ -16,7 +16,7 @@ import subprocess
 # from pathos.multiprocessing import ProcessingPool as Pool
 import dill
 from loguru import logger
-from typing import List
+from typing import List, Union
 from itertools import product
 import re
 
@@ -191,12 +191,38 @@ class SequenceList(object):
 
 class SubPathInfo(object):
     def __init__(self):
+        self.full_len = None
+        self.inner_len = None
         self.from_variants = {}
         self.mapped_records = []
-        self.num_possible_X = -1  # The X in multinomial: theoretical num of matched chances
-        # self.num_possible_Xs = OrderedDict()  # For generating Xs in multinomial: theoretical num of matched chances
-        self.num_in_range = -1  # The n in multinomial: observed num of reads in range
-        self.num_matched = -1  # The x in multinomial: observed num of matched reads = len(self.mapped_records)
+        self.num_possible_X = None  # The X in multinomial: theoretical num of matched chances
+        self.num_in_range = None  # The n in multinomial: observed num of reads in range
+        # num_matched is conditional on the alignment length range in the accurate model and can be derived from records
+        # self.num_matched = None  # The x in multinomial: observed num of matched reads = len(self.mapped_records)
+
+
+class Bins(object):
+    def __init__(self,
+                 min_len: int = None,
+                 max_len: int = None,
+                 min_id: int = None,
+                 max_id: int = None,
+                 rp_bins: Union[List, None] = None):
+        self.rp_bins = rp_bins if rp_bins is not None else []
+        self.max_len = max_len
+        self.min_len = min_len
+        self.min_id = min_id
+        self.max_id = max_id
+        # The n in multinomial: observed num of reads in range
+        # not important because each component will have probs and obs
+        # self.num_in_range = None  # <= max_id - min_id + 1
+
+
+class BinInfo(object):
+    def __init__(self):
+        self.from_variants = {}
+        self.num_possible_X = None  # The X in multinomial: theoretical num of matched chances
+        self.num_matched = 0  # The x in multinomial: observed num of matched reads
 
 
 class LogLikeFormulaInfo(object):
@@ -960,10 +986,11 @@ def run_graph_aligner(
         graph_file: str,
         seq_file: str,
         alignment_file: str,
-        num_processes: int = 1):
+        num_processes: int = 1,
+        other_params: str = ""):
     logger.info("Making alignment using GraphAligner ..")
     this_command = os.path.join("", "GraphAligner") + \
-                   " -g " + graph_file + " -f " + seq_file + " --precise-clipping 0.95" + \
+                   " -g " + graph_file + " -f " + seq_file + " " + other_params + " " + \
                    " -x vg -t " + str(num_processes) + \
                    " -a " + alignment_file + ".tmp.gaf"
     logger.debug(this_command)
@@ -972,6 +999,13 @@ def run_graph_aligner(
     # TODO better adjusted for graphaligner log
     if "Aborted" in output.decode("utf8"):  # or "(ERR)" in output.decode("utf8"):
         logger.error(output.decode("utf8"))
+        exit()
+    elif "Unknown graph type" in output.decode("utf8"):
+        logger.error(output.decode("utf8"))
+        exit()
+    elif not os.path.exists(alignment_file + ".tmp.gaf"):
+        logger.error(output.decode("utf8"))
+        logger.error("No graph alignment file produced!")
         exit()
     else:
         os.rename(alignment_file + ".tmp.gaf", alignment_file)
@@ -1223,3 +1257,66 @@ def comb_indices(*sizes):
         return random_product(*sizes, num_samples=enumerate_threshold)
     else:
         return product(*[range(size) for size in sizes])
+
+
+def optimize_min_adj(
+        lengths, identities, target_sum,
+        start_length=5000,
+        start_identity=0.95,
+        # min_id_adj_start=0,
+        min_id_adj_end=None,
+        min_id_adj_step=0.0005,
+        # min_ln_adj_start=0,
+        min_ln_adj_end=2000,
+        min_ln_adj_step=500):
+    """
+    Optimizes the adjustment to the minimum identity value to
+    minimize the difference between the sum of qualified lengths
+    and a target sum, under given conditions.
+
+    :param lengths: Array of lengths.
+    :param identities: Array of identity values.
+    :param target_sum: The target sum of qualified lengths.
+    :param start_length: Minimum length for lengths to be considered qualified.
+    :param start_identity: Base minimum identity value before adjustment.
+    # :param min_id_adj_start: Start value for the minimum identity adjustment in the search range.
+    :param min_id_adj_end: End value for the minimum identity adjustment in the search range.
+    :param min_id_adj_step: Step size for the minimum identity adjustment in the search range.
+    # :param min_ln_adj_start: Start value for the minimum length adjustment in the search range.
+    :param min_ln_adj_end: End value for the minimum length adjustment in the search range.
+    :param min_ln_adj_step: Step size for the minimum length adjustment in the search range.
+
+    :return: A tuple containing
+        the optimal adjustment to the minimum identity value and
+        the optimal adjustment to the minimum length value and
+        the minimum difference between the sum of qualified lengths and the target sum.
+    """
+
+    # Convert input lists to numpy arrays for efficient computation
+    lengths = np.array(lengths)
+    identities = np.array(identities)
+    min_diff = np.inf  # initialize the minimum difference as infinity
+    res_sum = None
+    optimal_min_id_adj = None  # initialize the optimal minimum identity adjustment
+    optimal_min_ln_adj = None  # initialize the optimal minimum length adjustment
+    # no need to try as large as 0.994
+    min_id_adj_end = 1 - start_identity - 0.006 if min_id_adj_end is None else min_id_adj_end
+    # TODO find the center of the quality distribution
+    # Iterate over the range of min_id_adj and min_ln_adj
+    for min_id_adj in np.arange(0, min_id_adj_end, min_id_adj_step):
+        for min_ln_adj in np.arange(0, min_ln_adj_end, min_ln_adj_step):
+            # Apply conditions to filter the lengths and identities using boolean indexing
+            qualified_mask = (lengths > start_length + min_ln_adj) & (identities > start_identity + min_id_adj)
+            qualified_lengths = lengths[qualified_mask]
+            current_sum = qualified_lengths.sum()  # calculate the sum of qualified lengths
+            diff = abs(current_sum - target_sum)  # calculate the absolute difference from the target sum
+
+            # Update the minimum difference and optimal adjustment if a better solution is found
+            if diff < min_diff:
+                min_diff = diff
+                res_sum = current_sum
+                optimal_min_id_adj = min_id_adj
+                optimal_min_ln_adj = min_ln_adj
+
+    return optimal_min_id_adj, optimal_min_ln_adj, min_diff, res_sum
+
