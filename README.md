@@ -30,7 +30,15 @@ pip install ./Traversome --no-deps
 ### Command line interface (CLI)
 
 ```bash
-traversome thorough -g graph.gfa -a align.gaf -o outdir --topo circular --chr all
+traversome thorough -g graph.gfa -a align.gaf -o outdir --topo circular --v-comp all
+```
+
+Important optional flags to finetune for achieving valid result (high bootstrap support):
+
+```
+--min-align-id        Threshold for alignment identity, below which the alignment will be discarded. [default: 0.992]
+--min-align-len       Threshold for alignment length, below which the alignment will be discarded. [default: 5000]
+--min-align-counts    Threshold for counts per path, below which the alignment(s) of that path will be discarded. [default: auto]
 ```
 
 ### Interpreting results
