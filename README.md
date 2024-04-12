@@ -41,6 +41,8 @@ Important optional flags to finetune for achieving valid result (high bootstrap 
 --min-align-counts    Threshold for counts per path, below which the alignment(s) of that path will be discarded. [default: auto]
 ```
 
+Use `traversome thorough -h` to see details for above flags and other flags.
+
 ### Interpreting results
 ```
 |-- output_dir
