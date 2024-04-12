@@ -25,7 +25,7 @@ def minimize_neg_likelihood(neg_loglike_func, num_variables, verbose, err_queue=
         # logger.info("   searching for ml result ..")
         # all proportions should be in range [0, 1] and sum up to 1.
         constraints = ({"type": "eq", "fun": lambda x: sum(x) - 1})  # what if we relax this?
-        other_optimization_options = {"disp": verbose, "maxiter": 1000, "ftol": 1.0e-6, "eps": 1.0e-10}
+        other_optimization_options = {"disp": verbose, "maxiter": 1000, "ftol": 1.0e-5, "eps": 1.0e-8}
         count_run = 0
         success_runs = []
         while count_run < 10000:
