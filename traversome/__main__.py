@@ -258,6 +258,10 @@ def thorough(
         200, "--max-unique",  # "--max-unique-search",
         help="Hard bound for number of unique valid traversals for heuristic search. "
              "Too many unique candidates will cost computational resources and usually indicate bad dataset. "),
+    max_uncover_ratio: float = typer.Option(
+        0.001, "--max-uncover",
+        help="Tolerance of uncovered read paths weighted by alignment counts during variants assessment. ",
+        min=0, max=0.5),
     criterion: ModelSelectionMode = typer.Option(
         ModelSelectionMode.BIC, "-F", "--func",
         help="AIC (reverse model selection using stepwise AIC)\n"
@@ -302,22 +306,28 @@ def thorough(
     graph_aligner_params: str = typer.Option(
         "--precise-clipping 0.95", "--graph-aligner-params",
         help="Extra parameters passed to GraphAligner quoted with '' "),
+    # quality_control_alignment_cov: float = typer.Option(
+    #     300., "--qc-depth",
+    #     help="The alignment depth as the goal to search for top-quality alignment records. "
+    #     ),
     min_alignment_identity_cutoff: float = typer.Option(
-        0.99, "--min-align-id",
-        help="Threshold for alignment identity, below which the alignment will be discarded. ",
-        min=0, max=1),
+        0.992, "--min-align-id",
+        help="Threshold for alignment identity, below which the alignment will be discarded. "
+             "The default value is for hifi reads. Try 0.95~0.99 for other types of reads and graph combinations.",
+        max=1),
     min_alignment_len_cutoff: int = typer.Option(
-        1000, "--min-align-len",
-        help="Threshold for alignment length, below which the alignment will be discarded. ",
-        min=1000),
+        5000, "--min-align-len",
+        help="Threshold for alignment length, below which the alignment will be discarded. "),
     min_alignment_counts: int = typer.Option(
-        2, "--min-align-counts", min=1,
+        -1, "--min-align-counts",
         help="Threshold for counts per path, below which the alignment(s) of that path will be discarded. "
+             "Automatic selection (-1) does not guarantee the best performance - good bootstrap support. "
+             "Default: auto(-1)"
     ),
     graph_component_selection: str = typer.Option(
         "0", "--graph-selection",
         help="Use this if your graph is not manually curated into the target complete graph. "
-             "First, the weight of each connected component will be calculated as \sum_{i=1}^{N}length_i*depth_i, "
+             "First, the weight of each connected component will be calculated as \\sum_{i=1}^{N}length_i*depth_i, "
              "where N is the contigs in that component. Then, the components will be sorted in a decreasing order. "
              "1) If the input is an integer or a slice, this will trigger the selection of specific component "
              "by the decreasing order, e.g. 0 will keep the first component; 0,4 will keep the first four components; "
@@ -342,6 +352,12 @@ def thorough(
     keep_unaligned_contigs: bool = typer.Option(
         False, "--keep-unaligned",
         help="Choose to keep unaligned contigs without been pruning from the assembly graph. "
+    ),
+    # --ignore-conflicts
+    ignore_conflicts: bool = typer.Option(
+        False, "--ignore-conflicts",
+        help="Ignore conflicts between the graph and the alignment file. "
+             "Ignoring the conflicts may lead to unexpected results. "
     ),
     num_processes: int = typer.Option(
         1, "-p", "--processes",
@@ -382,9 +398,23 @@ def thorough(
         raise FileNotFoundError(reads_file)
     elif alignment_file and not alignment_file.exists():
         raise FileNotFoundError(alignment_file)
+    quality_control_alignment_cov = 300.  # disable target-depth-based quality control for now
     jackknife = 0  # disable jackknife for now
     if bootstrap and jackknife:
         sys.stderr.write("Flags `--bootstrap` and `--jackknife` are mutually exclusive!")
+    # data filtering
+    if min_alignment_identity_cutoff == -1:
+        min_alignment_identity_cutoff = "auto"
+    else:
+        assert min_alignment_identity_cutoff > 0.8
+    if min_alignment_len_cutoff == -1:
+        min_alignment_len_cutoff = "auto"
+    else:
+        assert min_alignment_len_cutoff >= 1000
+    if min_alignment_counts == -1:
+        min_alignment_counts = "auto"
+    else:
+        assert min_alignment_counts > 0
 
     from loguru import logger
     initialize(
@@ -465,6 +495,7 @@ def thorough(
             max_valid_search=max_valid_search,
             max_num_traversals=max_num_traversals,
             max_uniq_traversal=max_uniq_traversal,
+            max_uncover_ratio=max_uncover_ratio,
             num_processes=num_processes,
             uni_chromosome=single_chr,
             force_circular=force_circular,
@@ -477,11 +508,13 @@ def thorough(
             graph_aligner_params=graph_aligner_params,
             min_alignment_identity_cutoff=min_alignment_identity_cutoff,
             min_alignment_len_cutoff=min_alignment_len_cutoff,
+            quality_control_alignment_cov=quality_control_alignment_cov,
             min_alignment_counts=min_alignment_counts,
             graph_component_selection=graph_component_selection,
             purge_shallow_contigs=purge_shallow_contigs,
             keep_graph_redundancy=keep_graph_redundancy,
             keep_unaligned_contigs=keep_unaligned_contigs,
+            ignore_conflicts=ignore_conflicts,
             resume=prev_run == "resume",
             mc_bracket_depth=mc_bracket_depth,
             # use_gfa_alignment=use_gfa_annotation_lines,
