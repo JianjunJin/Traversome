@@ -34,14 +34,14 @@ class GAFRecord(object):
         # store information
         self.query_name = record_line_split[0]
         self.query_len = int(record_line_split[1])  # q_len or q_aligned_len, not specified in GAF doc, can be tested
-        self.q_start = int(record_line_split[2])
-        self.q_end = int(record_line_split[3])
+        self.q_start = int(record_line_split[2])  # zero based
+        self.q_end = int(record_line_split[3])  # open ended
         self.q_strand = CONVERT_STRAND[record_line_split[4]]
         self.path_str = record_line_split[5]
         self.path = self.parse_gaf_path()
         self.p_len = int(record_line_split[6])
-        self.p_start = int(record_line_split[7])  # start position on the path
-        self.p_end = int(record_line_split[8])  # end position on the path
+        self.p_start = int(record_line_split[7])  # start position on the path, zero based
+        self.p_end = int(record_line_split[8])  # end position on the path, open ended
         self.p_align_len = self.p_end - self.p_start
 
         self.num_match = int(record_line_split[9])
@@ -388,6 +388,7 @@ class GraphAlignRecords(object):
             assembly_graph_obj=None,
             query_fq_files=None,
             num_proc=1,
+            build_records=True,
             **kwargs
     ):
         # store params to self
@@ -418,7 +419,8 @@ class GraphAlignRecords(object):
             self.parse_alignment_file(num_proc=1)
         else:
             self.parse_alignment_file(num_proc=num_proc, _num_block_lines=kwargs.get("_num_block_lines", 10000))
-        self.build_read_records()
+        if build_records:
+            self.build_read_records()
 
         # generate the probabilities of multiple hits for each query
         self.__path_to_seqs = {}
