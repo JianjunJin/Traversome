@@ -79,9 +79,9 @@ class SingleTraversal(object):
                 break
         # temporary solution for long-read graph with variable overlaps, set it 1-base-smaller than the min contig
         minimum_c_len = min([self.graph.vertex_info[_v].len for _v in self.graph.vertex_info])
-        assert minimum_c_len > 1
+        assert minimum_c_len >= 1
         #
-        self.__cov_unit = min(kmer_val, minimum_c_len - 1)
+        self.__cov_unit = min(kmer_val, minimum_c_len)
 
     def __heuristic_extend_path(
             self,
@@ -794,6 +794,7 @@ class VariantGenerator(object):
                  max_num_valid_search=10000,
                  max_num_traversals=50000,
                  max_uniq_traversal=200,
+                 max_uncover_ratio=0.001,
                  num_processes=1,
                  force_circular=True,
                  uni_chromosome=True,
@@ -814,6 +815,8 @@ class VariantGenerator(object):
         :param max_num_valid_search: maximum number of valid searches
         :param max_num_traversals: maximum number of searches
         :param max_uniq_traversal: maximum number of unique valid searches
+        :param max_uncover_ratio:
+            Tolerance of uncovered read paths weighted by alignment counts during variants assessment.
         :param force_circular: force the generated variant topology to be circular
         :param uni_chromosome: a variant is NOT allowed to only traverse part of the graph.
             Different variants must be composed of identical set of contigs if uni_chromosome=True.
@@ -864,6 +867,7 @@ class VariantGenerator(object):
         self.temp_dir = temp_dir
         self.force_circular = force_circular
         self.uni_chromosome = uni_chromosome
+        self._max_uncover_ratio = max_uncover_ratio
         self.__differ_f = differ_f
         self.__decay_f = decay_f
         self.__decay_t = decay_t
@@ -874,11 +878,12 @@ class VariantGenerator(object):
 
         # to be generated
         self.read_paths = list()
-        self.__read_paths_counter = dict()
+        self.read_paths_counter = dict()
         for read_path, loc_ids in traversome_obj.read_paths.items():  # make a simplified copy of tvs.read_paths
             self.read_paths.append(read_path)
-            self.__read_paths_counter[read_path] = len(loc_ids)
+            self.read_paths_counter[read_path] = len(loc_ids)
         self.len_read_p = len(self.read_paths)
+        self.total_ali_counts = sum(self.read_paths_counter.values())
         # self.__vertex_to_readpath = {vertex: set() for vertex in self.graph.vertex_info}
         self.__start_subpath_to_readpaths = {}
         self.__middle_subpath_to_readpaths = {}
@@ -987,26 +992,26 @@ class VariantGenerator(object):
                     return 0, 0, None
             if not path_not_traversed:
                 return 0, 0, None
-            # the distribution of sampled subpaths are complex due to graph-based heuristic extension
-            # here we just approximate it as Poisson distribution
-            # similar to the lander-waterman model in genome sequencing,
-            # our hypothesized coverage (a=N*factor, where N is num_valid_search) and fraction in gaps (p) is
-            #     a==-log(p)
-            # we want the fraction in gaps to be smaller than 1/self.len_read_p, e.g. 0.5/self.len_read_p
-            current_ratio = len(path_not_traversed) / self.len_read_p
+            # weighted by read alignment counts
+            current_ratio = sum([self.read_paths_counter[_p]
+                                 for _p in path_not_traversed.keys()]) / self.total_ali_counts
             logger.info("uncovered_paths/all_paths = %i/%i = %.4f" %
-                        (len(path_not_traversed), self.len_read_p, current_ratio))
-            if not reset_num_valid_search:
+                        (len(path_not_traversed), self.len_read_p, len(path_not_traversed) / self.len_read_p))
+            logger.info("weighted_uncovered_ratio = %.4f" % current_ratio)
+            if not reset_num_valid_search or current_ratio <= self._max_uncover_ratio:
                 logger.warning("{} read paths not traversed".format(len(path_not_traversed)))
                 if report_detailed_warning:
                     # must use dict.keys() to iterate a manager-dict in a child process
                     for go_p, p_n_t in enumerate(sorted(list(path_not_traversed.keys()))):
                         logger.warning("  read path %i (len=%i, reads=%i): %s" %
-                                       (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
+                                       (go_p, len(p_n_t), self.read_paths_counter[p_n_t], p_n_t))
                 logger.warning("This may due to 1) insufficient num of valid variants (-n/-N), or "
                                "2) unrealistic constraints on the variant topology, or "
                                "3) chimeric reads/alignments.")
-                return
+                if not reset_num_valid_search:
+                    return
+                else:
+                    return 0, current_ratio, None
             if current_ratio == previous_un_traversed_ratio:
                 # if the same un_traversed ratio occurs more than 2 times, stop searching for variants
                 if previous_un_traversed_ratio_count >= MAX_ADDING_TIMES:
@@ -1015,12 +1020,18 @@ class VariantGenerator(object):
                         # must use dict.keys() to iterate a manager-dict in a child process
                         for go_p, p_n_t in enumerate(sorted(list(path_not_traversed.keys()))):
                             logger.warning("  read path %i (len=%i, reads=%i): %s" %
-                                           (go_p, len(p_n_t), self.__read_paths_counter[p_n_t], p_n_t))
+                                           (go_p, len(p_n_t), self.read_paths_counter[p_n_t], p_n_t))
                     logger.warning("This may due to 1) insufficient num of valid variants (-n/-N), or "
                                    "2) unrealistic constraints on the variant topology, or "
                                    "3) chimeric reads/alignments.")
                     return 0, current_ratio, None
                 else:
+                    # the distribution of sampled subpaths are complex due to graph-based heuristic extension
+                    # here we just approximate it as Poisson distribution
+                    # similar to the lander-waterman model in genome sequencing,
+                    # our hypothesized coverage (a=N*factor, where N is num_valid_search) and fraction in gaps (p) is
+                    #     a==-log(p)
+                    # we want the fraction in gaps to be smaller than 1/self.len_read_p, e.g. 0.5/self.len_read_p
                     new_num_valid_search = num_valid_search * log(0.5 / self.len_read_p) / log(current_ratio)
                     new_num_valid_search = int(new_num_valid_search)
                     logger.info("resetting min_valid_search={}".format(new_num_valid_search))
@@ -1040,20 +1051,20 @@ class VariantGenerator(object):
         #         this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
         #         # summarize only when the graph contain the path
         #         if self.graph.contain_path(this_read_path):
-        #             if this_read_path in self.__read_paths_counter:
-        #                 self.__read_paths_counter[this_read_path] += 1
+        #             if this_read_path in self.read_paths_counter:
+        #                 self.read_paths_counter[this_read_path] += 1
         #             else:
-        #                 self.__read_paths_counter[this_read_path] = 1
+        #                 self.read_paths_counter[this_read_path] = 1
         #                 self.read_paths.append(this_read_path)
         #             # # record alignment length
         #             # alignment_lengths.append(gaf_record.p_align_len)
         # else:
         #     for gaf_record in self.alignment.raw_records:
         #         this_read_path = tuple(self.graph.get_standardized_path(gaf_record.path))
-        #         if this_read_path in self.__read_paths_counter:
-        #             self.__read_paths_counter[this_read_path] += 1
+        #         if this_read_path in self.read_paths_counter:
+        #             self.read_paths_counter[this_read_path] += 1
         #         else:
-        #             self.__read_paths_counter[this_read_path] = 1
+        #             self.read_paths_counter[this_read_path] = 1
         #             self.read_paths.append(this_read_path)
         #         # # record alignment length
         #         # alignment_lengths.append(gaf_record.p_align_len)
@@ -1077,7 +1088,7 @@ class VariantGenerator(object):
                         reverse_read_path_tuple[go_sub: go_sub + sub_contig_num], read_id, False)
         #
         # self.max_alignment_len = sorted(alignment_lengths)[-1]
-        self.__read_paths_not_in_variants = {_rp: None for _rp in self.__read_paths_counter}
+        self.__read_paths_not_in_variants = {_rp: None for _rp in self.read_paths_counter}
         self.__read_paths_counter_indexed = True
 
     def estimate_contig_coverages_from_read_paths(self):
@@ -1089,7 +1100,7 @@ class VariantGenerator(object):
         # use minimum value of 1e-8 to avoid zero total weights
         self.contig_coverages = OrderedDict([(v_name, 1e-8) for v_name in self.graph.vertex_info])
         for read_path in self.read_paths:
-            n_rec = self.__read_paths_counter[read_path]
+            n_rec = self.read_paths_counter[read_path]
             for v_name, v_end in read_path:
                 if v_name in self.contig_coverages:
                     self.contig_coverages[v_name] += n_rec
@@ -1191,7 +1202,7 @@ class VariantGenerator(object):
             # to change the weight (-~ depth) to change the search strategy
             # for instance,
             # 1.
-            # read_p_freq_reciprocal = [1. / self.__read_paths_counter[r_p] for r_p in self.read_paths]
+            # read_p_freq_reciprocal = [1. / self.read_paths_counter[r_p] for r_p in self.read_paths]
             # read_path = random.choices(self.read_paths, weights=read_p_freq_reciprocal)[0]
             # 2.
             # prioritize uncovered read paths
@@ -1333,8 +1344,6 @@ class VariantGenerator(object):
 
                 # move the parallelizable code block before the lock
                 # <<<
-                # TODO to cover all subpaths
-                #      setting start path for traversal, simultaneously solve the random problem
                 # g_vars.flatten_n_parts is not frequently updating parameter,
                 #   and updating g_vars.flatten_n_parts will always require a lock
                 #   so it should be fine to call it here without lock
@@ -1845,7 +1854,7 @@ class VariantGenerator(object):
         return self.__middle_subpath_to_readpaths
 
     def pass_read_paths_counter(self):
-        return self.__read_paths_counter
+        return self.read_paths_counter
 
     def pass_candidate_single_copy_vs(self):
         return self.__candidate_single_copy_vs
