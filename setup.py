@@ -4,7 +4,7 @@
 Install the traversome package.
 
 Local install for developers:
-    conda install numpy pandas scipy pymc3 sympy matplotlib typer loguru -c conda-forge
+    conda install python numpy scipy sympy python-symengine dill typer loguru -c conda-forge
     pip install . -e --no-deps
 """
 
