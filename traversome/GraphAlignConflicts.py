@@ -25,7 +25,14 @@ class GraphAlignConflicts(object):
         self.n_balls = None
         self.max_load = None
 
-    def run(self):
+    def detect(self):
+        """
+        Executes the algorithm to find conflicts in the graph and determine the maximum load.
+
+        Returns:
+            conflict_n (list): A list of vertex numbers with conflicts.
+            max_loads (list): A list of maximum loads for each vertex with conflicts.
+        """
         v_window_conflicts = self._find_vertex_window_wise_conflicts()
         all_conflicts = []
         for conflicts in v_window_conflicts.values():
