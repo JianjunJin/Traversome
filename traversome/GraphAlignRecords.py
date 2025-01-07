@@ -16,6 +16,7 @@ import sympy
 from itertools import product
 from multiprocessing import Manager, Pool
 import gzip
+import gc
 # import dill
 
 
@@ -147,7 +148,11 @@ class SPATSVRecord(object):
         pass
 
 
-def _gaf_parse_worker(csv_lines_gen, _min_align_len, _min_identity, _parse_cigar):
+def _gaf_parse_worker(
+        csv_lines_gen, 
+        # _min_align_len, 
+        _min_record_identity, 
+        _parse_cigar):
     """
     plain function for easier multiprocessing
     """
@@ -156,11 +161,12 @@ def _gaf_parse_worker(csv_lines_gen, _min_align_len, _min_identity, _parse_cigar
     for _line_split in csv_lines_gen:
         _line_split = _line_split.strip().split("\t")
         count_r += 1
-        # skip unqualified record quickly
-        if int(_line_split[10]) < _min_align_len:
-            continue
+        # skip unqualified reads after paring all records
+        # # skip unqualified record quickly
+        # if int(_line_split[10]) < _min_align_len:
+        #     continue
         gaf = GAFRecord(_line_split, parse_cigar=_parse_cigar)
-        if gaf.identity >= _min_identity:
+        if gaf.identity >= _min_record_identity:
             _gaf_list.append(gaf)
     return _gaf_list, count_r
 
@@ -170,7 +176,10 @@ def _gaf_parse_worker(csv_lines_gen, _min_align_len, _min_identity, _parse_cigar
 #
 
 
-def _tsv_parse_worker(csv_lines_gen, _min_align_len):
+def _tsv_parse_worker(
+        csv_lines_gen, 
+        # _min_align_len
+        ):
     """
     plain function for easier multiprocessing
     """
@@ -183,8 +192,8 @@ def _tsv_parse_worker(csv_lines_gen, _min_align_len):
         if "," in _line_split[1]:
             continue
         tsv = SPATSVRecord(_line_split)
-        if tsv.align_len >= _min_align_len:
-            _tsv_list.append(tsv)
+        # if tsv.align_len >= _min_align_len:
+        _tsv_list.append(tsv)
     return _tsv_list, count_r
 
 
@@ -195,33 +204,39 @@ class ReadRecord(object):
     def __init__(self):
         self.raw_ids = []
         self.records = []
-        self.probs = []
-        self.likes = []
+        self.p_align_len = 0
+        self._p_identity_sum = 0.
+        self.p_identity = 0.
         self.q_seq = None
-        # cache groups to speed up
-        self.__groups = []
-        # to ensure sorted before self.iter_overlapping_groups()
-        self.__sorted = False
+        # self.probs = []
+        # self.likes = []
+        # # cache groups to speed up
+        # self.__groups = []
+        # # to ensure sorted before self.iter_overlapping_groups()
+        # self.__sorted = False
 
-    def quick_add(self, raw_id: int, record):
-        self.raw_ids.append(raw_id)
-        self.records.append(record)
+    # def quick_add(self, raw_id: int, record):
+    #     self.raw_ids.append(raw_id)
+    #     self.records.append(record)
 
     def append(self, raw_id: int, record):
         self.raw_ids.append(raw_id)
         self.records.append(record)
-        self.probs = []
-        self.likes = []
-        self.__groups = []
-        self.__sorted = False
+        self.p_align_len += record.p_align_len
+        self._p_identity_sum += record.p_align_len * record.identity 
+        self.p_identity = self._p_identity_sum / self.p_align_len
+        # self.probs = []
+        # self.likes = []
+        # self.__groups = []
+        # self.__sorted = False
 
     def __delitem__(self, key: int):
         del self.raw_ids[key]
         del self.records[key]
-        self.probs = []
-        self.likes = []
-        self.__groups = []
-        self.__sorted = False
+        # self.probs = []
+        # self.likes = []
+        # self.__groups = []
+        # self.__sorted = False
 
     def __getitem__(self, item: int):
         return self.records[item]
@@ -238,33 +253,34 @@ class ReadRecord(object):
                            key=lambda x: [self.records[x].__getattribute__(r_a) for r_a in record_attributes])
         self.records = [self.records[x] for x in new_order]
         self.raw_ids = [self.raw_ids[x] for x in new_order]
-        if self.probs:
-            self.probs = [self.probs[x] for x in new_order]
-        self.__groups = []
-        self.__sorted = True
+        # if self.probs:
+        #     self.probs = [self.probs[x] for x in new_order]
+        # self.__groups = []
+        # self.__sorted = True
 
-    def iter_overlapping_groups(self):
-        if not self.__sorted:
-            self.sort_by()
-        if self.__groups:
-            for this_group in self.__groups:
-                yield this_group
-        else:
-            this_group = [self.records[0]]
-            longest_end = self.records[0].q_end
-            for record in self.records[1:]:
-                # TODO: this relies on the assumption that q_strand will always be true - true so far
-                #       otherwise, additional conditions need to be addressed
-                if record.q_start <= longest_end:
-                    this_group.append(record)
-                    longest_end = max(longest_end, record.q_end)
-                else:
-                    self.__groups.append(this_group)
-                    yield this_group
-                    this_group = [record]
-                    longest_end = record.q_end
-            self.__groups.append(this_group)
-            yield this_group
+    # # nothing overlaps in GraphAligner output
+    # def iter_overlapping_groups(self):
+    #     if not self.__sorted:
+    #         self.sort_by()
+    #     if self.__groups:
+    #         for this_group in self.__groups:
+    #             yield this_group
+    #     else:
+    #         this_group = [self.records[0]]
+    #         longest_end = self.records[0].q_end
+    #         for record in self.records[1:]:
+    #             # TODO: this relies on the assumption that q_strand will always be true - true so far
+    #             #       otherwise, additional conditions need to be addressed
+    #             if record.q_start <= longest_end:
+    #                 this_group.append(record)
+    #                 longest_end = max(longest_end, record.q_end)
+    #             else:
+    #                 self.__groups.append(this_group)
+    #                 yield this_group
+    #                 this_group = [record]
+    #                 longest_end = record.q_end
+    #         self.__groups.append(this_group)
+    #         yield this_group
 
 
 # def _gtc_worker(_half_kmer, read_names, global_vars, _transition_counts, lock):
@@ -370,7 +386,9 @@ class GraphAlignRecords(object):
         True (default) to calculate the probability of each path
     min_align_len (int):
         ...
-    min_identity (int):
+    min_identity (float):
+        ...
+    min_record_identity (float):
         ...
     parse_cigar (bool):
         parsing CIGARs allows for ... default=False.
@@ -383,12 +401,13 @@ class GraphAlignRecords(object):
             gen_multi_hits_prob=False,
             min_align_len=0,
             min_identity=0.,
+            min_record_identity=0.,
             parse_cigar=False,
             # trim_overlap_with_graph=False,
             assembly_graph_obj=None,
             query_fq_files=None,
             num_proc=1,
-            build_records=True,
+            # build_records=True,
             **kwargs
     ):
         # store params to self
@@ -403,6 +422,7 @@ class GraphAlignRecords(object):
         self.min_align_len = min_align_len
         # self.min_aligned_path_len = min_aligned_path_len
         self.min_identity = min_identity
+        self.min_record_identity = min_record_identity
         # no need, it should be already taken into the consideration by graph aligners, at least by GraphAligner
         # self.trim_overlap_with_graph = trim_overlap_with_graph
         self.assembly_graph = assembly_graph_obj  # for training model
@@ -419,8 +439,8 @@ class GraphAlignRecords(object):
             self.parse_alignment_file(num_proc=1)
         else:
             self.parse_alignment_file(num_proc=num_proc, _num_block_lines=kwargs.get("_num_block_lines", 10000))
-        if build_records:
-            self.build_read_records()
+        self.build_read_records()
+        self.filter_read_records()
 
         # generate the probabilities of multiple hits for each query
         self.__path_to_seqs = {}
@@ -917,14 +937,92 @@ class GraphAlignRecords(object):
         """
         1. merge self.raw_records into self.read_records (ReadRecords object) by query_name
         2. within each ReadRecord, sort hits by the query start
+        3. record the read align_len and identity
         """
         logger.debug("Build reads records ..")
+        self.read_records = OrderedDict()
         for go_r, record in enumerate(self.raw_records):
             if record.query_name not in self.read_records:
                 self.read_records[record.query_name] = ReadRecord()
-            self.read_records[record.query_name].quick_add(go_r, record)
+            self.read_records[record.query_name].append(go_r, record)
         for read_record in self:
             read_record.sort_by()
+
+    def filter_read_records(self, min_align_len=None, min_identity=None):
+        """
+        filter read records by min_align_len and min_identity of a read record rather than single record
+        """
+        if min_align_len is None:
+            min_align_len = self.min_align_len
+        if min_identity is None:
+            min_identity = self.min_identity
+        #
+        if not self.read_records:
+            self.build_read_records()
+        del_ids = []
+        for read_name, read_record in self.read_records.items():
+            if read_record.p_align_len < min_align_len:  # no need to check further
+                del_ids.extend(read_record.raw_ids)
+                continue
+            if read_record.p_identity >= min_identity:  # no need to check further
+                continue
+            record_lengths = []
+            record_identities = []
+            record_ids = []
+            for go_r, record in enumerate(read_record):
+                record_lengths.append(record.p_align_len)
+                record_identities.append(record.identity)
+                record_ids.append(go_r)
+                if go_r != len(read_record) - 1:
+                    q_gap = read_record[go_r + 1].q_start - record.q_end
+                    if q_gap > 0:
+                        record_lengths.append(q_gap)
+                        record_identities.append(0.)
+                        record_ids.append(None)
+                    elif q_gap == 0:
+                        pass
+                    else:
+                        # TODO: should trim the overlapping bases from badly aligned parts, either from current or next;
+                        #       p_end, p_align_len and identity should be recalculated
+                        # currently, simply trim the overlapping bases from the current record, without changing the identity
+                        #       assuming the overlapping bases are equally-greatly-aligned
+                        record.q_end += q_gap
+                        if record.q_strand:
+                            record.p_end += q_gap
+                        else:
+                            record.p_start -= q_gap
+                        record.p_align_len += q_gap
+                        record_lengths[-1] += q_gap
+                        # raise NotImplementedError(f"{-q_gap}-bp overlapping records detected in {read_name}:{go_r}-{go_r + 1}! "
+                        #                           f"Current implementation cannot handle it!")
+            # gradually trimming either ends to find the longest continuous records within this read that meets the identity criteria
+            # the identity of the continuous records is the length-weighted identity average
+            # if the continuous records are shorter than min_align_len or not found, the read will be removed
+            # if found, the read will be updated with the longest continuous records
+            continuous_pseudo_ids = self.find_continuous_records(
+                lengths=record_lengths, identities=record_identities, min_length=self.min_align_len, min_identity=self.min_identity)
+            if not continuous_pseudo_ids:
+                del_ids.extend(read_record.raw_ids)
+            elif len(continuous_pseudo_ids) == 1:
+                continuous_ids = [record_ids[_id] for _id in continuous_pseudo_ids[0]]
+                keep_raw_ids = set([read_record.raw_ids[_id] for _id in continuous_ids if _id is not None])
+                del_ids.extend([_id for _id in read_record.raw_ids if _id not in keep_raw_ids])
+            else:
+                keep_raw_ids = set()
+                for go_b, pseudo_block_ids in enumerate(continuous_pseudo_ids):
+                    block_ids = [record_ids[_id] for _id in pseudo_block_ids]
+                    keep_raw_ids.update([read_record.raw_ids[_id] for _id in block_ids if _id is not None])
+                    # modify the query name because the read's alignment is fragmented
+                    for _id in block_ids:
+                        if _id is not None:
+                            read_record[_id].query_name = read_name + "_block" + str(go_b + 1)
+                del_ids.extend([_id for _id in read_record.raw_ids if _id not in keep_raw_ids])
+        del_ids.sort(reverse=True)
+        for del_id in del_ids:
+            del self.raw_records[del_id]
+        self.read_records = OrderedDict()
+        gc.collect()
+        self.build_read_records()
 
     def parse_alignment_file(self, num_proc=1, _num_block_lines=10000):
         """
@@ -963,14 +1061,16 @@ class GraphAlignRecords(object):
                         jobs.append(
                             pool_obj.apply_async(
                                 _gaf_parse_worker,
-                                (cached_lines, self.min_align_len, self.min_identity, self.parse_cigar)))
+                                (cached_lines, self.min_record_identity, self.parse_cigar)))
+                                # (cached_lines, self.min_align_len, self.min_identity, self.parse_cigar)))
                         cached_lines = []
                         start_block_size += min(start_block_size + step_block, num_block_lines)
                     else:
                         cached_lines.append(line_str)
                 jobs.append(
                     pool_obj.apply_async(_gaf_parse_worker,
-                                         (cached_lines, self.min_align_len, self.min_identity, self.parse_cigar))
+                                         (cached_lines, self.min_record_identity, self.parse_cigar))
+                                        #  (cached_lines, self.min_align_len, self.min_identity, self.parse_cigar))
                 )
         # elif self.alignment_format == "GFA":
         #     with open(self.alignment_file) as input_f:
@@ -987,11 +1087,11 @@ class GraphAlignRecords(object):
                 # for line_split in csv.reader(input_f, delimiter="\t"):
                 for line_str in input_f:
                     if len(cached_lines) > num_block_lines:
-                        jobs.append(pool_obj.apply_async(_tsv_parse_worker, (cached_lines, self.min_align_len)))
+                        jobs.append(pool_obj.apply_async(_tsv_parse_worker, (cached_lines, )))
                         cached_lines = []
                     else:
                         cached_lines.append(line_str)
-                jobs.append(pool_obj.apply_async(_tsv_parse_worker, (cached_lines, self.min_align_len)))
+                jobs.append(pool_obj.apply_async(_tsv_parse_worker, (cached_lines, )))
         pool_obj.close()
         for job in jobs:
             batch_records, count_r = job.get()
@@ -1011,8 +1111,8 @@ class GraphAlignRecords(object):
             self.raw_records, self.n_file_records = _gaf_parse_worker(
                 # csv_lines_gen=csv.reader(input_f, delimiter="\t"),
                 csv_lines_gen=input_f,
-                _min_align_len=self.min_align_len,
-                _min_identity=self.min_identity,
+                # _min_align_len=self.min_align_len,
+                _min_record_identity=self.min_record_identity,
                 _parse_cigar=self.parse_cigar)
             input_f.close()
         # elif self.alignment_format == "GFA":
@@ -1026,7 +1126,8 @@ class GraphAlignRecords(object):
                 self.raw_records, self.n_file_records = _tsv_parse_worker(
                     # csv_lines_gen=csv.reader(input_f, delimiter="\t"),
                     csv_lines_gen=input_f,
-                    _min_align_len=self.min_align_len)
+                    # _min_align_len=self.min_align_len
+                    )
             input_f.close()
         else:
             input_f.close()
@@ -1168,3 +1269,59 @@ class GraphAlignRecords(object):
 
     def __getitem__(self, query_name: str):
         return self.read_records[query_name]
+    
+    @staticmethod
+    def find_continuous_records(lengths, identities, min_length, min_identity, min_wing_len=10):
+        """
+        Simple implementation to search for one combination of all continuous blocks of records that meet the identity and length threshold.
+        :param lengths: list of lengths of the records
+        :param identities: list of identities of the records
+        :param min_length: minimum length of the continuous records
+        :param min_identity: minimum identity of the continuous records
+        :param min_wing_len: minimum length of the terminal record in a continuous block
+        """
+        # initialize empty lists to store the blocks and the current block being processed
+        # initialize variables to keep track of the current block's length and the sum of identities multiplied by lengths.
+        blocks = []
+        current_block = []
+        current_block_lengths = []
+        current_length_sum = 0
+        current_identity_sum = 0
+
+        for go_r, (length, identity) in enumerate(zip(lengths, identities)):
+            # check if adding it to the current block would maintain an average identity above the threshold. 
+            # If so, we append the contig to the current block and update the current length and identity sum. 
+            if current_length_sum == 0 or (current_identity_sum + identity * length) / (current_length_sum + length) >= min_identity:
+                current_block.append(go_r)
+                current_length_sum += length
+                current_block_lengths.append(length)
+                current_identity_sum += identity * length
+            else:
+                # if not, test the current_block and start a new block with the current contig.
+                if current_identity_sum >= min_identity and current_length_sum >= min_length:
+                    # check two ends of the current block
+                    while current_block and current_block_lengths[0] < min_wing_len:
+                        current_block.pop(0)
+                        current_block_lengths.pop(0)
+                    while current_block and current_block_lengths[-1] < min_wing_len:
+                        current_block.pop(-1)
+                        current_block_lengths.pop(-1)
+                    if current_block:
+                        blocks.append(current_block)
+                current_block = [go_r]
+                current_length_sum = length
+                current_block_lengths = [length]
+                current_identity_sum = identity * length
+        # after the loop, if there is a remaining current block, test the current_block 
+        if current_block and current_identity_sum >= min_identity and current_length_sum >= min_length:
+            # check two ends of the current block
+            while current_block and current_block_lengths[0] < min_wing_len:
+                current_block.pop(0)
+                current_block_lengths.pop(0)
+            while current_block and current_block_lengths[-1] < min_wing_len:
+                current_block.pop(-1)
+                current_block_lengths.pop(-1)
+            if current_block:
+                blocks.append(current_block)
+
+        return blocks
