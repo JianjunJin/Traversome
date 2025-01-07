@@ -30,15 +30,16 @@ pip install ./Traversome --no-deps
 ### Command line interface (CLI)
 
 ```bash
-traversome thorough -g graph.gfa -a align.gaf -o outdir --topo circular --v-comp all
+traversome thorough -g graph.gfa -a align.gaf -o outdir --topo circular
 ```
 
 Important optional flags to finetune for achieving valid result (high bootstrap support):
 
 ```
---min-align-id        Threshold for alignment identity, below which the alignment will be discarded. [default: 0.992]
---min-align-len       Threshold for alignment length, below which the alignment will be discarded. [default: 5000]
---min-align-counts    Threshold for counts per path, below which the alignment(s) of that path will be discarded. [default: auto]
+--min-read-id         Threshold for alignment identity, read with below which the alignment will be discarded. [default: 0.992]
+--min-record-id       Threshold for alignment identity, a record of a read with below which the alignment will be discarded. [default: 0.99]
+--min-align-len       Threshold for the continuous alignment length of a read, below which the alignment will be discarded. [default: 5000]
+--min-align-counts    Threshold for counts per path, below which the alignment(s) of that path will be discarded. The default automatic selection (-1) does not guarantee the best performance - good bootstrap support. [default: auto]
 ```
 
 Use `traversome thorough -h` to see details for above flags and other flags.
@@ -50,5 +51,9 @@ Use `traversome thorough -h` to see details for above flags and other flags.
     |-- variants.info.tab           information of survival variants after model selection and bootstrap
     |-- bootstrap.replicates.tab    bootstrap results
     |-- final.result.tab            summary of pangenome solutions
+    |-- variant.*.fasta             sequence of each variant in the best supported result
     |-- pangenome.gfa               pangenome graph of the best supported result
+    |-- options.yaml                information of options
+    |-- readpath.information.tab    read path index -> alignment record indices
+    |-- readpath.record_ids.tab     information of read paths and their congruent variant
 ```
