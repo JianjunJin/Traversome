@@ -10,7 +10,7 @@ from copy import deepcopy
 from collections import OrderedDict
 from loguru import logger
 from typing import Union
-from traversome.AssemblySimple import AssemblySimple  #, VertexMergingHistory, VertexEditHistory
+from traversome.AssemblySimple import AssemblySimple, Vertex  #, VertexMergingHistory, VertexEditHistory
 # from traversome.PathGeneratorGraphOnly import PathGeneratorGraphOnly
 # from traversome.VariantGenerator import VariantGenerator
 # from traversome.EstMultiplicityFromCov import EstMultiplicityFromCov
@@ -1274,8 +1274,220 @@ class Assembly(AssemblySimple):
                     branching_ends.add((v_name, v_end))
         return branching_ends
 
+    def add_edges_inside_contigs(self, join_list):
+        """
+        Make a new copy of current graph, make modifications by adding edges intween contigs, and return the new graph.
+        
+        :param join_list: [(from_v, from_e, from_pos, to_v, to_e, to_pos), ...], where the positions are 1-based and on the forward direction.
+        :return: a new graph with the added edges
+        """
+        new_graph = deepcopy(self)
+        # make breaks on the contigs, where the edges are to be added
+        break_points = {}
+        for from_v, from_e, from_pos, to_v, to_e, to_pos in join_list:
+            if from_v not in break_points:
+                if from_e:
+                    break_points[from_v] = {from_pos}
+                else:
+                    break_points[from_v] = {from_pos - 1}
+            else:
+                if from_e:
+                    break_points[from_v].add(from_pos)
+                else:
+                    break_points[from_v].add(from_pos - 1)
+            if to_v not in break_points:
+                if to_e:
+                    break_points[to_v] = {to_pos - 1}
+                else:
+                    break_points[to_v] = {to_pos}
+            else:
+                if to_e:
+                    break_points[to_v].add(to_pos - 1)
+                else:
+                    break_points[to_v].add(to_pos)
+        # sort the break points and remove the ends that does not need to be broken
+        for v_name in sorted(break_points):
+            breaks = sorted(break_points[v_name])
+            if breaks[0] == 0:
+                breaks = breaks[1:]
+            if breaks and breaks[-1] == self.vertex_info[v_name].len:
+                breaks = breaks[:-1]
+            if breaks:
+                break_points[v_name] = breaks
+            else:
+                del break_points[v_name]
+        # get the char length of the underscores for the new contig names
+        # to avoid the new contig names to be the same as the existing ones
+        udsc_len = 1
+        find_existing = True
+        while find_existing:
+            find_existing = False
+            for v_name in break_points:
+                for go_new in range(1, len(break_points[v_name]) + 2):
+                    if f"{v_name}{'_' * udsc_len}{go_new}" in new_graph.vertex_info:
+                        find_existing = True
+                        udsc_len += 1
+                        break
+                if find_existing:
+                    break
+        # break the contigs and make within-contig connections
+        new_graph.break_contigs(break_points, udsc_len)
+        # modify join_list
+        # v_name -> new_v_name with the original contig name, the underscore, and the segment number (1-based)
+        new_join_list = []
+        for from_v, from_e, from_pos, to_v, to_e, to_pos in join_list:
+            if from_v in break_points:
+                # find the segment number and direction based on from_e and from_pos
+                if from_e:
+                    for i, bp in enumerate(break_points[from_v]):
+                        if from_pos == bp:
+                            from_seg = i
+                            break
+                    else:
+                        assert from_pos == self.vertex_info[from_v].len
+                        from_seg = len(break_points[from_v])
+                else:
+                    for i, bp in enumerate(break_points[from_v]):
+                        if from_pos == bp + 1:
+                            from_seg = i + 1
+                            break
+                    else:
+                        assert from_pos == 1
+                        from_seg = 0
+                new_from_name = f"{from_v}{'_' * udsc_len}{from_seg + 1}"
+            else:
+                new_from_name = from_v
+                if from_e:
+                    assert from_pos == self.vertex_info[from_v].len
+                else:
+                    assert from_pos == 1
+            if to_v in break_points:
+                # find the segment number and direction based on to_e and to_pos
+                if to_e:
+                    for i, bp in enumerate(break_points[to_v]):
+                        if to_pos == bp + 1:
+                            to_seg = i + 1
+                            break
+                    else:
+                        assert to_pos == 1
+                        to_seg = 0
+                else:
+                    for i, bp in enumerate(break_points[to_v]):
+                        if to_pos == bp:
+                            to_seg = i
+                            break
+                    else:
+                        assert to_pos == self.vertex_info[to_v].len
+                        to_seg = len(break_points[to_v])
+                new_to_name = f"{to_v}{'_' * udsc_len}{to_seg + 1}"
+            else:
+                new_to_name = to_v
+                if to_e:
+                    assert to_pos == 1
+                else:
+                    assert to_pos == self.vertex_info[to_v].len
+            new_join_list.append((new_from_name, from_e, new_to_name, not to_e))
+        # add new edges according to the new_join_list
+        for from_v, from_e, to_v, to_e in new_join_list:
+            if (from_v, to_v) not in new_graph.vertex_info[to_v].connections[to_e]:
+                new_graph.vertex_info[to_v].connections[to_e][(from_v, from_e)] = 0
+                new_graph.vertex_info[from_v].connections[from_e][(to_v, to_e)] = 0
+        return new_graph
+
+    def break_contigs(self, break_points, n_underscores=1):
+        """
+        Break the contigs at the break points, and add the new contigs into the graph.
+        
+        :param break_points: {v_name: [break_pos, ...], ...}, where the positions are 1-based and on the forward direction.
+        :param n_underscores: the length of the underscore for the new contig names
+        """
+        # get the original lengths of the contigs to be broken, and the new lengths after the breaks
+        # then modify join_list with the new contig names and new positions
+        new_lengths = {}
+        for v_name, break_pos in break_points.items():
+            assert break_pos, "No break points found for " + v_name
+            new_lengths[v_name] = [break_pos[0]] + [break_pos[i] - break_pos[i - 1] for i in range(1, len(break_pos))] + \
+                                  [self.vertex_info[v_name].len - break_pos[-1]]
+        # v_name -> new_v_name with the original contig name, the underscore, and the segment number (1-based)
+        for v_name in break_points:
+            go_base = 0
+            for go_seg, seg_len in enumerate(new_lengths[v_name]):
+                new_v_name = f"{v_name}{'_' * n_underscores}{go_seg + 1}"
+                new_f_seq = self.vertex_info[v_name].seq[True][go_base:go_base + seg_len]
+                go_base += seg_len
+                new_v_cov = self.vertex_info[v_name].cov
+                new_v_info = Vertex(v_name=new_v_name, length=seg_len, coverage=new_v_cov, forward_seq=new_f_seq)
+                self.vertex_info[new_v_name] = new_v_info
+                if go_seg > 0:
+                    previous_v_name = f"{v_name}{'_' * n_underscores}{go_seg}"
+                    self.vertex_info[previous_v_name].connections[True][(new_v_name, False)] = 0
+                    self.vertex_info[new_v_name].connections[False][(previous_v_name, True)] = 0
+                # TODO weight and other attributes are not transferred
+        # create name_end_translator to transfer the connections from the original contigs to the new contigs
+        name_end_translator = {}
+        for v_name in break_points:
+            tail_v_name = f"{v_name}{'_' * n_underscores}{len(new_lengths[v_name])}"
+            head_v_name = f"{v_name}{'_' * n_underscores}1"
+            name_end_translator[(v_name, True)] = (tail_v_name, True)
+            name_end_translator[(v_name, False)] = (head_v_name, False)
+        # start tranfering the connections
+        for this_v in break_points:
+            for this_end in (True, False):
+                new_this_v, new_this_e = name_end_translator[(this_v, this_end)]
+                for (next_v, next_e), this_olp in self.vertex_info[this_v].connections[this_end].items():
+                    if (next_v, next_e) in name_end_translator:
+                        new_next_v, new_next_e = name_end_translator[(next_v, next_e)]
+                        self.vertex_info[new_this_v].connections[new_this_e][(new_next_v, new_next_e)] = this_olp
+                        self.vertex_info[new_next_v].connections[new_next_e][(new_this_v, new_this_e)] = this_olp
+                    else:
+                        self.vertex_info[new_this_v].connections[new_this_e][(next_v, next_e)] = this_olp
+                        self.vertex_info[next_v].connections[next_e][(new_this_v, new_this_e)] = this_olp
+        # remove the original contigs
+        self.remove_vertex(set(break_points), update_cluster=True)
+
+    def trim_overlaps(self):
+        """
+        Trim the overlaps of the contigs in the graph to be 0, along with modifying the sequence.
+        """
+        if self.__uni_overlap:
+            # relatively easy to trim the overlaps, trim half of the overlap from each end
+            head_trim = self.__uni_overlap // 2
+            tail_trim = self.__uni_overlap - head_trim
+            for v_name, v_info in self.vertex_info.items():
+                # make sure the length is long enough to trim
+                if v_info.len <= self.__uni_overlap:
+                    raise ProcessingGraphFailed("The contig " + v_name + " shorter than the universal overlap!")
+                self.vertex_info[v_name].seq[True] = v_info.seq[True][head_trim:-tail_trim]
+                self.vertex_info[v_name].seq[False] = v_info.seq[False][tail_trim:-head_trim]
+                self.vertex_info[v_name].len -= self.__uni_overlap
+                # trim the connections
+                for this_end in (True, False):
+                    for next_v, next_e in v_info.connections[this_end]:
+                        self.vertex_info[v_name].connections[this_end][(next_v, next_e)] = 0
+            self.__uni_overlap = 0
+            return True
+        else:
+            # TODO
+            # TODO
+            # TOFINISH
+            # searching for a doable overlap trimming scheme
+            vertex_names = list(self.vertex_info)
+            queue_schemes = {}  # {(vertex_name, vertex_end): [trim_option1, trim_option2, ..], ...}
+            current_scheme_order = []
+            # initialize the queue_schemes
+            for vertex_name in vertex_names:
+                for vertex_end in (True, False):
+                    if (vertex_name, vertex_end) not in queue_schemes:
+                        next_candidates = self.vertex_info[vertex_name].connections[vertex_end].keys()
+                        curent_overlaps = self.vertex_info[vertex_name].connections[vertex_end].values()
+                        assert self.vertex_info[vertex_name].len > max(curent_overlaps), \
+                            "The contig " + vertex_name + " is shorter than its maximum overlap!"
+                        # if (vertex_name, not vertex_end) not in queue_schemes:
+                        #     min_trim = 0
+                        #     max_trim = 
+                        #     queue_schemes[(vertex_name, vertex_end)] = 
+            raise NotImplementedError("The trimming of overlaps for this type of graph is not implemented yet!")
+                    
 
 
-
-
-
+    

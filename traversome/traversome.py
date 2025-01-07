@@ -33,9 +33,6 @@ import numpy as np
 
 class Traversome(object):
     """
-    keep_temp (bool):
-        If True then alignment lengths are saved to a tmp file during
-        the get_align_len_dist function call.
     """
 
     def __init__(
@@ -55,7 +52,8 @@ class Traversome(object):
             loglevel="INFO",
             resume=False,
             min_alignment_len_cutoff=5000,
-            min_alignment_identity_cutoff=0.992,
+            min_read_identity_cutoff=0.992,
+            min_record_identity_cutoff=0.99,
             min_alignment_counts="auto",
             **kwargs):
         # store input files and params
@@ -77,7 +75,8 @@ class Traversome(object):
         self.keep_temp = keep_temp
         self.resume = resume
         self.min_alignment_len_cutoff = min_alignment_len_cutoff
-        self.min_alignment_identity_cutoff = min_alignment_identity_cutoff
+        self.min_record_identity_cutoff = min_record_identity_cutoff
+        self.min_read_identity_cutoff = min_read_identity_cutoff
         self.min_alignment_counts = min_alignment_counts
         self.kwargs = kwargs
 
@@ -95,7 +94,7 @@ class Traversome(object):
         self.max_alignment_length = None  # only used in the variant proposal, not in latter model fitting
         self.min_alignment_length = None
         self.read_paths = OrderedDict()
-        self.read_paths_masked = set()
+        self.read_paths_masked = set() # used to model selection and fitting, disabled for now or maybe permanently
         self.max_read_path_size = None
         self.subpath_generator = None
 
@@ -136,7 +135,7 @@ class Traversome(object):
         # self.pal_len_sbp_Xs = OrderedDict()
         # self.sbp_Xs = []
 
-        self.bs_convergence = None
+        self.bs_eligible = None
         self.max_like_fit = None
         self.bayesian_fit = None
         self.model = None
@@ -153,15 +152,17 @@ class Traversome(object):
         raw_n_comp = len(self.graph.vertex_clusters)
         raw_n_vt = len(self.graph.vertex_info)
         # output new graph
-        output_graph = False
+        output_tmp_graph = False
         # choose the component
         graph_component_selection = self.kwargs.get("graph_component_selection", 0)
         if isinstance(graph_component_selection, int) or isinstance(graph_component_selection, slice):
             self.graph.reduce_graph_by_weight(component_ids=graph_component_selection)
-            output_graph = True
+            logger.trace("  graph reduced by component selection")
+            output_tmp_graph = True
         elif isinstance(graph_component_selection, float):
             self.graph.reduce_graph_by_weight(cutoff_to_total=graph_component_selection)
-            output_graph = True
+            logger.trace("  graph reduced by component selection")
+            output_tmp_graph = True
 
         # merge graph if possible; not that necessary
         if self.kwargs.get("keep_graph_redundancy", False):
@@ -176,13 +177,17 @@ class Traversome(object):
                                     "or remove '--merge-possible-contigs' from the options!")
                 else:
                     logger.info("  graph merged")
-                    output_graph = True
+                    output_tmp_graph = True
             self.graph.update_vertex_clusters()
+        if self.graph.trim_overlaps():
+            logger.trace("  graph trimmed by overlaps")
+            output_tmp_graph = True
         if self.graph_format == "fastg":
-            output_graph = True
+            logger.trace("  graph converted to gfa")
+            output_tmp_graph = True
 
-        if output_graph:
-            self.graph_file = os.path.join(self.outdir, "processed.gfa")
+        if output_tmp_graph:
+            self.graph_file = os.path.join(self.outdir, "tmp.processed.1.gfa")
             self.graph.write_to_gfa(self.graph_file)
 
         # logger.info("  #contigs in total: {}".format(len(self.graph.vertex_info)))
@@ -191,12 +196,12 @@ class Traversome(object):
 
         self.load_user_paths()
 
+        # if the alignment file is not provided, then align the reads to the graph
         if not self.alignment_file:
-            if self.resume and os.path.exists(os.path.join(self.outdir, "alignment.gaf")):
-                self.alignment_file = os.path.join(self.outdir, "alignment.gaf")
+            if self.resume and os.path.exists(os.path.join(self.outdir, "tmp.alignment.gaf")):
+                self.alignment_file = os.path.join(self.outdir, "tmp.alignment.gaf")
             elif executable("GraphAligner"):  # TODO: add path option
-                self.alignment_file = os.path.join(self.outdir, "alignment.gaf")
-                # TODO: pass options to GraphAligner
+                self.alignment_file = os.path.join(self.outdir, "tmp.alignment.gaf")
                 run_graph_aligner(
                     graph_file=self.graph_file,
                     seq_file=self.reads_file,
@@ -206,32 +211,41 @@ class Traversome(object):
             else:
                 raise Exception("GraphAligner not available or damaged!")
 
-        min_alignment_len_cutoff = self.min_alignment_len_cutoff
-        min_alignment_identity_cutoff = self.min_alignment_identity_cutoff
-        if min_alignment_identity_cutoff != "auto" and min_alignment_len_cutoff != "auto":
-            alignment = GraphAlignRecords(
-                self.alignment_file,
-                min_align_len=min_alignment_len_cutoff,
-                min_identity=min_alignment_identity_cutoff,
-            )
-        else:
-            # initial read
-            alignment = GraphAlignRecords(
-                self.alignment_file,
-                min_align_len=100 if min_alignment_len_cutoff == "auto" else min_alignment_len_cutoff,
-                min_identity=0.8 if min_alignment_identity_cutoff == "auto" else min_alignment_identity_cutoff,
-                build_records=False)
-            self.filter_alignment(alignment, min_alignment_len_cutoff, min_alignment_identity_cutoff)
-        if not alignment.raw_records:
-            logger.error("Insufficient alignment records remains after filtering!")
-            raise SystemExit(0)
-        if self.min_alignment_counts == "auto":
-            min_alignment_counts = self.estimate_min_align_counts(alignment=alignment)
-            logger.info(f"Setting minimum alignment counts to {min_alignment_counts}")
-        else:
-            min_alignment_counts = self.min_alignment_counts
+        # parse the alignment and detect abnormal alignments, if the alignment is redo after detection, then reparse the alignment
+        for parse_attempt in range(2):
+            min_alignment_len_cutoff = self.min_alignment_len_cutoff
+            min_record_identity_cutoff = self.min_record_identity_cutoff
+            min_read_identity_cutoff = self.min_read_identity_cutoff
+            if min_read_identity_cutoff != "auto" and min_alignment_len_cutoff != "auto":
+                alignment = GraphAlignRecords(
+                    self.alignment_file,
+                    min_record_identity=min_record_identity_cutoff,
+                    min_align_len=min_alignment_len_cutoff,
+                    min_identity=min_read_identity_cutoff,
+                )
+            else:
+                # initial read
+                alignment = GraphAlignRecords(
+                    self.alignment_file,
+                    min_record_identity=min_record_identity_cutoff,
+                    min_align_len=100 if min_alignment_len_cutoff == "auto" else min_alignment_len_cutoff,
+                    min_identity=0.8 if min_read_identity_cutoff == "auto" else min_read_identity_cutoff,
+                    )
+                self.auto_filter_alignment(alignment, min_alignment_len_cutoff, min_read_identity_cutoff)
+            if not alignment.raw_records:
+                logger.error("Insufficient alignment records remains after filtering!")
+                raise SystemExit(0)
+            if self.min_alignment_counts == "auto":
+                min_alignment_counts = self.estimate_min_align_counts(alignment=alignment)
+                logger.info(f"Setting minimum alignment counts to {min_alignment_counts}")
+            else:
+                min_alignment_counts = self.min_alignment_counts
 
-        self.detect_alignment_abnormals(alignment)
+            # no need to redo detection for the second round
+            if parse_attempt == 0:
+                reparse_alignment = self.detect_alignment_abnormals(alignment)
+                if not reparse_alignment:
+                    break
 
         if self.kwargs.get("use_alignment_cov", False):
             self.generate_read_paths(
@@ -243,7 +257,11 @@ class Traversome(object):
             self.read_paths_masked = set()
 
         if self.purge_graph_by_depth(depth_threshold=self.kwargs.get("purge_shallow_contigs", 0.001)):
-            output_graph = True
+            output_tmp_graph = True
+
+        if self.kwargs.get("prune_terminal_contigs", False):
+            if self.prune_terminal_contigs():
+                output_tmp_graph = True
 
         self.generate_read_paths(
             graph_alignment=alignment,
@@ -268,7 +286,7 @@ class Traversome(object):
         logger.info(f"Align stat - filtered average depth: {filtered_ave_depth: .2f}")
         if not self.kwargs.get("keep_unaligned_contigs", False):
             self.prune_unaligned_contigs()
-            output_graph = True
+            output_tmp_graph = True
         logger.info("Graph stat - #components: {}".format(raw_n_comp))
         logger.info("Graph stat - #raw contigs: {}".format(raw_n_vt))
         logger.info("Graph stat - #filtered contigs: {}".format(len(self.graph.vertex_info)))
@@ -278,8 +296,8 @@ class Traversome(object):
                            for v_ in self.graph.vertex_info)
         logger.info(f"Graph stat - average depth: {float(total_counts) / graph_len: .2f}")
 
-        if output_graph:
-            self.graph.write_to_gfa(os.path.join(self.outdir, "processed.2.gfa"))
+        if output_tmp_graph:
+            self.graph.write_to_gfa(os.path.join(self.outdir, "tmp.processed.2.gfa"))
 
         if filtered_ave_depth < 1.:
             logger.error("Insufficient alignment records remains after filtering!")
@@ -399,14 +417,32 @@ class Traversome(object):
         self.output_variant_info()
         self.output_sampling_info()
         self.output_result_info()
-        if self.kwargs.get("bootstrap", 0) == 0 or self.bs_convergence or self.num_put_variants == 1:
+        if self.kwargs.get("bootstrap", 0) == 0 or self.bs_eligible or self.num_put_variants == 1:
             self.output_pangenome_graph()
             self.output_seqs()
+        # remove temporary files
+        if not self.keep_temp:
+            for f_ in os.listdir(self.outdir):
+                # remove tmp.*.gfa and tmp.*.gaf
+                if f_.startswith("tmp.") and os.path.isfile(os.path.join(self.outdir, f_)):
+                    os.remove(os.path.join(self.outdir, f_))
+                # remove tmp.candidates
+                elif f_.startswith("tmp.") and os.path.isdir(os.path.join(self.outdir, f_)):
+                    for f__ in os.listdir(os.path.join(self.outdir, f_)):
+                        os.remove(os.path.join(self.outdir, f_, f__))
+                    os.rmdir(os.path.join(self.outdir, f_))
+            # # also remove the non empty directory tmp.candidates
+            # if os.path.exists(os.path.join(self.outdir, "tmp.candidates")):
+            #     for f_ in os.listdir(os.path.join(self.outdir, "tmp.candidates")):
+            #         os.remove(os.path.join(self.outdir, "tmp.candidates", f_))
+            #     os.rmdir(os.path.join(self.outdir, "tmp.candidates"))
         logger.info("======== OUTPUT FILES ENDS ========\n")
 
-    def filter_alignment(self, alignment, min_alignment_len_cutoff, min_alignment_identity_cutoff):
-        lengths = [r.p_align_len for r in alignment.raw_records]
-        identities = [r.identity for r in alignment.raw_records]
+    def auto_filter_alignment(self, alignment, min_alignment_len_cutoff, min_alignment_identity_cutoff):
+        # lengths = [r.p_align_len for r in alignment.raw_records]
+        # identities = [r.identity for r in alignment.raw_records]
+        lengths = [rd.p_align_len for rd in alignment.read_records.values()]
+        identities = [rd.p_identity for rd in alignment.read_records.values()]
         if min_alignment_len_cutoff != "auto":
             min_ln_adj_end = 1  # only generate one combination
             start_length = min_alignment_len_cutoff
@@ -440,15 +476,7 @@ class Traversome(object):
             logger.info(f"Setting minimum alignment identity to {new_min_alignment_identity_cutoff}")
         alignment.min_align_len = new_min_alignment_len_cutoff
         alignment.min_identity = new_min_alignment_identity_cutoff
-        go_r = 0
-        while go_r < len(alignment.raw_records):
-            if alignment.raw_records[go_r].p_align_len < new_min_alignment_len_cutoff:
-                del alignment.raw_records[go_r]
-            elif alignment.raw_records[go_r].identity < new_min_alignment_identity_cutoff:
-                del alignment.raw_records[go_r]
-            else:
-                go_r += 1
-        alignment.build_read_records()
+        alignment.filter_read_records(min_align_len=new_min_alignment_len_cutoff, min_identity=new_min_alignment_identity_cutoff)
 
     def estimate_min_align_counts(self, alignment):
         """empirical function"""
@@ -483,7 +511,7 @@ class Traversome(object):
         self.variant_proportions_reps = []
         n_digit = len(str(n_replicate))
         go_bs = 0
-        self.bs_convergence = True
+        self.bs_eligible = True
         while go_bs < n_replicate:
             logger.debug(f"Sampling {go_bs + 1} --------")
             logger.debug("Generating sub-paths ..")
@@ -518,11 +546,11 @@ class Traversome(object):
             self.variant_proportions_reps.append(v_prop)
             # self.res_loglike_reps.append(loglike)
             # self.res_criteria_reps.append(criteria)
-            if not self._check_bs_convergence(count_unique=count_unique, n_reps=n_replicate, threshold=threshold):
+            if not self._check_bs_threshold(count_unique=count_unique, n_reps=n_replicate, threshold=threshold):
                 if go_bs < n_replicate - 1:
                     logger.info("Sampling terminates due to divergence in bootstraps (see '--bs-threshold'). "
                                 "No convincing support can be found given the dataset and parameters. ")
-                self.bs_convergence = False
+                self.bs_eligible = False
                 break
             go_bs += 1
 
@@ -553,7 +581,7 @@ class Traversome(object):
 
             # use the entire dataset to recalculate loglike and criterion
             # for these results with bootstrap larger than 0.1 (arbitrarily)
-            if self.bs_convergence and \
+            if self.bs_eligible and \
                     (len(self.vp_unique_results_sorted) > 1 or self.vp_unique_results_sorted[0] != raw_res):
                 logger.info("Re-evaluate the supported models using whole dataset ..")
             sbp_to_sbp_id = self.update_sp_to_sp_id_dict(self.all_sub_paths)
@@ -563,8 +591,8 @@ class Traversome(object):
                     raw_prop, raw_like, raw_criterion = \
                         self.variant_proportions, self.res_loglike, self.res_criterion
                 else:
-                    # re-evaluate only when bs converge
-                    if self.bs_convergence:
+                    # re-evaluate only when bs is eligible
+                    if self.bs_eligible:
                         if chosen_dict["support"] > 0.05 or go_s == 0:  # the first one
                             raw_prop, raw_like, raw_criterion = self.fit_model_using_point_maximum_likelihood(
                                 model=self.model,
@@ -598,7 +626,7 @@ class Traversome(object):
                 if cid_ not in self._cid_sorter:
                     self._cid_sorter[cid_] = len(self._cid_sorter)
 
-    def _check_bs_convergence(self, count_unique, n_reps, threshold):
+    def _check_bs_threshold(self, count_unique, n_reps, threshold):
         """
         check if bootstrap is possible to converge to a single solution with the threshold value
         """
@@ -734,6 +762,36 @@ class Traversome(object):
                 this_vp = self.variant_paths[cid]
                 this_size = self.variant_sizes[cid]
                 output_v_h.write(f"{fid}\t{cid}\t{uid}\t{len(this_vp)}\t{this_size}\t{path_to_gaf_str(this_vp)}\n")
+        
+        # output readpath information
+        with open(os.path.join(self.outdir, "readpath.information.tab"), "w") as output_r_h:
+            output_r_h.write("rp_id\t" + "\t".join([f"FID_{fid}" for fid in self.cid_to_fid.values()]) + "\tpath\tnum_reads\n")
+            for go_rp, (this_path, record_ids) in enumerate(self.read_paths.items()):
+                output_r_h.write(f"{go_rp}\t")
+                # occurence per variant (OPV)
+                for cid, fid in self.cid_to_fid.items():
+                    this_vp = self.variant_paths[cid]
+                    output_r_h.write(f"{self.variant_subpath_counters[this_vp].get(this_path, 0)}\t")
+                # other information
+                output_r_h.write(f"{path_to_gaf_str(this_path)}\t{len(record_ids)}\n")
+
+        with open(os.path.join(self.outdir, "readpath.record_ids.tab"), "w") as output_rr_h:
+            output_rr_h.write("rp_id\trecord_id\n")
+            for go_rp, record_ids in enumerate(self.read_paths.values()):
+                output_rr_h.write(f"{go_rp}\t{','.join([str(_r_id) for _r_id in record_ids])}\n")
+
+        # # output variant-readpath information
+        # # rows by variants, columns by readpaths
+        # with open(os.path.join(self.outdir, "readpaths.per.variant.tab"), "w") as output_vrc_h:
+        #     output_vrc_h.write("FID\t" + "\t".join([f"rp_{_id}" for _id in range(len(self.read_paths))]) + "\n") # header
+        #     for cid, fid in self.cid_to_fid.items():
+        #         this_vp = self.variant_paths[cid]
+        #         this_rp_counts = []
+        #         for this_rp in self.read_paths:
+        #             this_rp_counts.append(self.variant_subpath_counters[this_vp].get(this_rp, 0))
+        #         output_vrc_h.write(f"{fid}\t" + "\t".join([str(count) for count in this_rp_counts]) + "\n")
+        #     output_vrc_h.write("(Num_reads)\t" + "\t".join([str(len(self.read_paths[this_rp])) for this_rp in self.read_paths]) + "\n")
+
 
     def purge_graph_by_depth(
             self,
@@ -742,13 +800,30 @@ class Traversome(object):
         threshold = depth_threshold * self.estimate_graph_average_depth()
         for v_name in self.graph.vertex_info:
             # TODO here the coverage is from the graph
-            if self.graph.vertex_info[v_name].cov < threshold:
+            if self.graph.vertex_info[v_name].cov < threshold:  
                 to_remove.append(v_name)
         if to_remove:
             self.graph.remove_vertex(to_remove)
             return True
         else:
             return False
+
+    def prune_terminal_contigs(self):
+        """
+        Remove terminal contigs with that have no or only one neighbor"""
+        modified = False
+        while True:
+            to_remove = []
+            for v_name in self.graph.vertex_info:
+                if self.graph.vertex_info[v_name].is_terminal():
+                    to_remove.append(v_name)
+            if to_remove:
+                self.graph.remove_vertex(to_remove)
+                modified = True
+            else:
+                break
+        return modified
+
 
     def estimate_graph_average_depth(self):
         # TODO can be improved
@@ -896,27 +971,75 @@ class Traversome(object):
 
     def detect_alignment_abnormals(self, alignment):
         """Detect unusual breaks accumulated within a contig
+        :param alignment: the alignment object
+        :return: True if the alignment is regenerated
         """
         logger.info("Detecting abnormal vertices in the graph alignment")
-        detect_conflict = GraphAlignConflicts(self.graph, alignment)
+        detect_conflict = GraphAlignConflicts(graph=self.graph, graph_alignment=alignment, output_dir=self.outdir)
         abnormal_vertices, max_loads = detect_conflict.detect()
         if abnormal_vertices:
             logger.info(f"Total number of windows: {detect_conflict.n_bins}")
             logger.info(f"Total number of conflicts: {detect_conflict.n_balls}")
-            logger.info(f"Maximum conflicts per window: {detect_conflict.max_load}")
+            logger.info(f"Expected maximum conflicts per window: {detect_conflict.max_load}")
             if len(abnormal_vertices) > 20:
                 info_line = f"Detected abnormal vertices (max=[{min(max_loads)}, {max(max_loads)}]): {', '.join([f'{v}(max={ld})' for v, ld in zip(abnormal_vertices[:20], max_loads[:20])])} ..."
             else:
                 info_line = f"Detected abnormal vertices (max=[{min(max_loads)}, {max(max_loads)}]): {', '.join([f'{v}(max={ld})' for v, ld in zip(abnormal_vertices, max_loads)])}"
-            if max(max_loads) == 1:
-                pass
-            elif self.kwargs.get("ignore_conflicts", False):
-                logger.warning(info_line)
-                logger.warning(f"Ignoring conflicts and continue...")
+            if self.kwargs.get("ignore_conflicts", False):
+                if max(max_loads) <= 1:
+                    logger.info("No conflicts detected.")
+                else:
+                    logger.info(info_line)
+                    logger.info("All conflicts ignored.")
             else:
-                logger.error(info_line)
-                logger.error("Please check and regenerate the assembly graph or add '--ignore-conflicts' to skip.")
-                raise SystemExit(0)
+                min_conflict_reads = self.kwargs.get("add_conflict_edges", 0)
+                gmm_max_std = self.kwargs.get("gmm_max_std", 50.)
+                if min_conflict_reads > 0:
+                    if max(max_loads) >= max(min_conflict_reads, detect_conflict.max_load):
+                        # modify the graph
+                        new_graph = detect_conflict.modify_graph(min_n_reads=min_conflict_reads, gmm_max_std=gmm_max_std)
+                        if new_graph is None:
+                            logger.info(info_line)
+                            logger.info(f"No consensus conflicts above max({min_conflict_reads}, {detect_conflict.max_load}) detected, ignored.")
+                        else:
+                            logger.info(info_line)
+                            logger.debug(f"Conflict edges with minimum {max(min_conflict_reads, detect_conflict.max_load)} reads assessed ..")
+                            new_graph_f = os.path.join(self.outdir, "tmp.add_conflicts.gfa")
+                            # logger.info(f"Output modified graph: {new_graph_f}")
+                            logger.info("Output modified graph: tmp.add_conflicts.gfa")
+                            new_graph.write_to_gfa(new_graph_f)
+                            self.graph_file = new_graph_f
+                            self.graph = new_graph
+                            if self.reads_file:
+                                # redo the alignment
+                                logger.info("Redoing the alignment with the modified graph ..")
+                                self.alignment_file = os.path.join(self.outdir, "alignment_add_conflicts.gaf")
+                                run_graph_aligner(
+                                    graph_file=self.graph_file,
+                                    seq_file=self.reads_file,
+                                    alignment_file=self.alignment_file,
+                                    num_processes=self.num_processes,
+                                    other_params=self.kwargs.get("graph_aligner_params", ""))
+                                return True
+                            else:
+                                logger.error("No reads file provided! Cannot redo the alignment.")
+                                logger.error("Please regenerate the assembly graph, "
+                                            "or redo the alignment using the modified graph, "
+                                            "or add '--ignore-conflicts' to skip.")
+                                raise SystemExit(0)
+                    else:
+                        logger.info(info_line)
+                        logger.info(f"All windows have conflicts below max({min_conflict_reads}, {detect_conflict.max_load}), ignored.")
+                else:
+                    if max(max_loads) <= 1:
+                        logger.info("No conflicts detected.")
+                    else:
+                        logger.error(info_line)
+                        logger.error("Please regenerate the assembly graph, "
+                                     "or add '--add-conflict-edges INT' to add conflict edges, "
+                                     "or add '--ignore-conflicts' to skip.")
+                        raise SystemExit(0)
+        return False
 
     # def clean_graph(self, min_effective_count=10, ignore_ratio=0.001):
     #     """ deprecated for now"""

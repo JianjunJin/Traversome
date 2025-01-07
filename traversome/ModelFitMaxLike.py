@@ -159,8 +159,8 @@ class ModelFitMaxLike(object):
         """
         # TODO: tolerance can be larger
         if random_size != 0 and n_proc > random_size and not self.__warning_sent:
-            logger.warning(f"random size {random_size} is smaller than the num of processes {n_proc}, "
-                           f"which is limited by the former.")
+            # logger.warning(f"random size {random_size} is smaller than the num of processes {n_proc}, "
+            #                f"which is limited by the former.")
             self.__warning_sent = True
 
         # diff_tolerance = 1e-9
