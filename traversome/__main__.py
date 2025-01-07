@@ -15,6 +15,11 @@ from math import inf
 from shutil import rmtree as rmdir
 from traversome import __version__
 from traversome.utils import setup_logger
+from typer.core import TyperGroup
+from typer.models import CommandInfo
+import inspect
+import yaml
+
 
 # add the -h option for showing help
 CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
@@ -69,6 +74,48 @@ def main(
     (e.g., traversome ml -h)
     """
     typer.secho(RUNNING_HEAD, fg=typer.colors.MAGENTA, bold=True)
+
+
+# ================== logging options to yaml ==================
+# to ensure that Path and Enum objects are properly serialized to YAML.
+def custom_representer(dumper, data):
+    return dumper.represent_scalar('tag:yaml.org,2002:str', str(data))
+
+yaml.add_representer(Path, custom_representer)
+yaml.add_representer(Enum, custom_representer)
+
+
+def get_command_params(command_info: CommandInfo):
+    parameters = {}
+    signature = inspect.signature(command_info.callback)
+    for name, param in signature.parameters.items():
+        if hasattr(param.default, "default"):
+            parameters[name] = param.default.default
+        else:
+            parameters[name] = param.default
+    return parameters
+
+
+def write_options_to_yaml(app: TyperGroup, yaml_file: str):
+    """
+    Write all Typer options from the app to a YAML file.
+    :param app: The Typer app instance
+    :param yaml_file: The path to the output YAML file
+    """
+    options = {}
+    for command in app.registered_commands:
+        options.update(get_command_params(command))
+    # Convert complex objects to strings
+    for key, value in options.items():
+        if isinstance(value, (Path, Enum)):
+            options[key] = str(value)
+        elif value is Ellipsis:
+            options[key] = '...'
+    with open(yaml_file, 'w') as f:
+        yaml.dump(options, f, 
+                  default_flow_style=False)  # add to produce human-readable YAML
+    # typer.echo(f"Wrote options to {yaml_file}")
+# ================== logging options to yaml ends ==================
 
 
 class StartStrategy(str, Enum):
@@ -310,14 +357,19 @@ def thorough(
     #     300., "--qc-depth",
     #     help="The alignment depth as the goal to search for top-quality alignment records. "
     #     ),
-    min_alignment_identity_cutoff: float = typer.Option(
-        0.992, "--min-align-id",
-        help="Threshold for alignment identity, below which the alignment will be discarded. "
+    min_read_identity_cutoff: float = typer.Option(
+        0.992, "--min-read-id",
+        help="Threshold for alignment identity, read with below which the alignment will be discarded. "
+             "The default value is for hifi reads. Try 0.95~0.99 for other types of reads and graph combinations.",
+        max=1),
+    min_record_identity_cutoff: float = typer.Option(
+        0.99, "--min-record-id",
+        help="Threshold for alignment identity, a record of a read with below which the alignment will be discarded. "
              "The default value is for hifi reads. Try 0.95~0.99 for other types of reads and graph combinations.",
         max=1),
     min_alignment_len_cutoff: int = typer.Option(
         5000, "--min-align-len",
-        help="Threshold for alignment length, below which the alignment will be discarded. "),
+        help="Threshold for the continuous alignment length of a read, below which the alignment will be discarded. "),
     min_alignment_counts: int = typer.Option(
         -1, "--min-align-counts",
         help="Threshold for counts per path, below which the alignment(s) of that path will be discarded. "
@@ -343,6 +395,13 @@ def thorough(
              "After applying '--graph-selection', an average_depth will be estimated and "
              "any contigs that has shallower depth than FLOAT * average_depth will be discarded. "
              "The higher the value FLOAT is, the more contigs will be discarded. "),
+    prune_terminal_contigs: bool = typer.Option(
+        False, "--prune-terminal-contigs",
+        help="Choose to prune terminal contigs from the assembly graph. "
+             "This will remove contigs that have no or only one neighbor. "
+             "This is useful when the graph is not manually curated into the target complete graph. "
+             "This will be automatically turned on if '--topo circular' is set. "
+             "Raw reads may be required if graph is about to change. "),
     keep_graph_redundancy: bool = typer.Option(
         True, "--merge-possible-contigs",
         help="Choose to merge neighboring contigs when possible "
@@ -353,12 +412,23 @@ def thorough(
         False, "--keep-unaligned",
         help="Choose to keep unaligned contigs without been pruning from the assembly graph. "
     ),
-    # --ignore-conflicts
-    ignore_conflicts: bool = typer.Option(
-        False, "--ignore-conflicts",
-        help="Ignore conflicts between the graph and the alignment file. "
-             "Ignoring the conflicts may lead to unexpected results. "
+    check_conflicts: bool = typer.Option(
+        False, "--check-conflicts",
+        help="[BETA] By default, ignore conflicts between the graph and the alignment file. "
+             "Choose to detect conflict and potentially (see '--min-consensus-reads') to add edges to the graph. "
     ),
+    add_conflict_edges: int = typer.Option(
+        5, "--min-consensus-reads",
+        help="[BETA] Followed by an integer indicating the minimum number of consensus reads required to add an edge. "
+             "This will modify the graph by add edges representing the significantly conflicting reads against the graph, "
+             "as detected by Traversome. "
+             "Number of conflicts per window below this value will be then ignored. "
+             "Disabled if set to 0."),
+    gmm_max_std: float = typer.Option(
+        50., "--gmm-max-std",
+        help="[BETA] Maximum standard deviation value for each modal in the Gaussian Mixture Model. "
+             "The larger the value is, the less break points will be generated by the same conflict signals. "
+             "."),
     num_processes: int = typer.Option(
         1, "-p", "--processes",
         help="Num of processes. Multiprocessing will lead to non-identical result with the same random seed."),
@@ -369,6 +439,7 @@ def thorough(
     mc_bracket_depth: Optional[int] = typer.Option(
         10000, "--mc-bd",  # "--mc-bracket-depth",
         help="Bracket depth for gcc during MCMC sampling. "),
+    # TODO: to be fully implemented
     prev_run: Previous = typer.Option(
         Previous.terminate, "--previous",
         help="terminate: exit with error if previous result exists\n"
@@ -376,7 +447,7 @@ def thorough(
              "overwrite: remove previous result if exists."),
     keep_temp: bool = typer.Option(
         False, "--keep-temp",
-        help="Keep temporary files"),
+        help="Keep intermediate graph, alignment, and candidate variant files. Deleted by default. "),
     log_level: LogLevel = typer.Option(
         LogLevel.INFO, "--loglevel", help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
@@ -398,15 +469,17 @@ def thorough(
         raise FileNotFoundError(reads_file)
     elif alignment_file and not alignment_file.exists():
         raise FileNotFoundError(alignment_file)
+    
     quality_control_alignment_cov = 300.  # disable target-depth-based quality control for now
     jackknife = 0  # disable jackknife for now
     if bootstrap and jackknife:
         sys.stderr.write("Flags `--bootstrap` and `--jackknife` are mutually exclusive!")
     # data filtering
-    if min_alignment_identity_cutoff == -1:
-        min_alignment_identity_cutoff = "auto"
+    if min_read_identity_cutoff == -1:
+        min_read_identity_cutoff = "auto"
     else:
-        assert min_alignment_identity_cutoff > 0.8
+        assert min_read_identity_cutoff > 0.8
+    assert min_record_identity_cutoff > 0.8
     if min_alignment_len_cutoff == -1:
         min_alignment_len_cutoff = "auto"
     else:
@@ -415,12 +488,17 @@ def thorough(
         min_alignment_counts = "auto"
     else:
         assert min_alignment_counts > 0
+    if topology == ChTopology.circular:
+        prune_terminal_contigs = True
 
     from loguru import logger
     initialize(
         output_dir=output_dir,
         loglevel=log_level,
         previous=prev_run)
+    # write options to yaml file
+    write_options_to_yaml(app, output_dir.joinpath("options.yaml"))
+    # set theano cache directory
     theano_cache_dir = output_dir.joinpath("theano.cache")
     try:
         # disable caching can solve the temp file issue, but largely reduce performance
@@ -473,6 +551,7 @@ def thorough(
                 graph_component_selection = slice(*eval(graph_component_selection))
             except (SyntaxError, TypeError):
                 raise TypeError(str(graph_component_selection) + " is invalid for --graph-selection!")
+            
         # TODO: use json file to record parameters
         from traversome.traversome import Traversome
         traverser = Traversome(
@@ -506,18 +585,23 @@ def thorough(
             # keep_temp=False,
             loglevel=log_level,
             graph_aligner_params=graph_aligner_params,
-            min_alignment_identity_cutoff=min_alignment_identity_cutoff,
+            min_read_identity_cutoff=min_read_identity_cutoff,
+            min_record_identity_cutoff=min_record_identity_cutoff,
             min_alignment_len_cutoff=min_alignment_len_cutoff,
             quality_control_alignment_cov=quality_control_alignment_cov,
             min_alignment_counts=min_alignment_counts,
             graph_component_selection=graph_component_selection,
             purge_shallow_contigs=purge_shallow_contigs,
+            prune_terminal_contigs=prune_terminal_contigs,
             keep_graph_redundancy=keep_graph_redundancy,
             keep_unaligned_contigs=keep_unaligned_contigs,
-            ignore_conflicts=ignore_conflicts,
+            ignore_conflicts=not check_conflicts,
+            add_conflict_edges=add_conflict_edges,
+            gmm_max_std=gmm_max_std,
             resume=prev_run == "resume",
             mc_bracket_depth=mc_bracket_depth,
             # use_gfa_alignment=use_gfa_annotation_lines,
+            keep_temp=keep_temp,
         )
         traverser.run()
         del traverser
