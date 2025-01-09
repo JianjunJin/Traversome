@@ -10,7 +10,7 @@ Install dependencies using conda. I recommend using the mamba version of conda.
 ```bash
 mamba create -n traversome_env
 mamba activate traversome_env
-mamba install python numpy scipy sympy python-symengine dill typer loguru
+mamba install python numpy scipy sympy python-symengine dill typer loguru pyyaml
 ```
 <details><summary>[Optional] Install dependencies for running Bayesian MCMC.</summary>
 If you want to run Bayesian mcmc with Traversome, you have to install pymc and pytensor. 
