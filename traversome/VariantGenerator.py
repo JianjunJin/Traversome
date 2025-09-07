@@ -2,7 +2,7 @@
 import os
 
 from loguru import logger
-from traversome.utils import harmony_weights, run_dill_encoded   # MaxTraversalReached
+from traversome.utils import harmony_weights, run_dill_encoded, find_greatest_common_divisor, setup_logger   # MaxTraversalReached
 # WeightedGMMWithEM find_greatest_common_divisor,
 from copy import deepcopy
 from pathlib import Path as fpath
@@ -41,6 +41,9 @@ class SingleTraversal(object):
         self.local_max_alignment_len = path_generator_obj.max_alignment_len
         self.contig_coverages = path_generator_obj.contig_coverages
         self.uni_chromosome = path_generator_obj.uni_chromosome
+        self.use_graph_wiggle = path_generator_obj.use_graph_wiggle
+        self.penalty_const = log(1-path_generator_obj.penalty_for_size)
+        self.fix_shallowest_contig = path_generator_obj.fix_shallowest_contig
         self.__starting_subpath_to_readpaths = path_generator_obj.pass_starting_subpath_to_readpaths()
         self.__middle_subpath_to_readpaths = path_generator_obj.pass_middle_subpath_to_readpaths()
         self.__read_paths_counter = path_generator_obj.pass_read_paths_counter()
@@ -50,6 +53,7 @@ class SingleTraversal(object):
         self.__decay_f = path_generator_obj.pass_decay_f()
         self.__decay_t = path_generator_obj.pass_decay_t()
         self.__candidate_single_copy_vs = path_generator_obj.pass_candidate_single_copy_vs()
+        self.__fixed_single_copy_vs = path_generator_obj.pass_fixed_single_copy_vs()
         self.__cov_unit = None  # unit for coverage
         self.result_path = None
 
@@ -97,7 +101,9 @@ class SingleTraversal(object):
         """
         if not path:
             # by default, randomly choose the read path and the direction
-            read_path = random.choices(self.read_paths)[0]
+            # read_path = random.choices(self.read_paths)[0]
+            # 2025-09-04 only choose single-contig
+            read_path = random.choices(random.choices(self.read_paths)[0])
             if random.random() > 0.5:
                 read_path = self.graph.reverse_path(read_path)
             path = list(read_path)
@@ -161,6 +167,28 @@ class SingleTraversal(object):
                         path = list(self.read_paths[read_id])
                     else:
                         path = list(self.graph.reverse_path(self.read_paths[read_id]))
+                    # 2025-09-04 only extend one direction to avoid the initial read path violating the following extending rules
+                    # truncate the path before where path_tuple starts in the path
+                    # try to find where path_tuple starts in the path
+                    found = False
+                    len_path_tuple = len(path_tuple)
+                    for i in range(len(path) - len_path_tuple + 1):
+                        if tuple(path[i:i+len_path_tuple]) == path_tuple:
+                            # Truncate the path before where path_tuple starts
+                            path = path[i:]
+                            found = True
+                            break
+                    # if path_tuple is not found, search for the reverse of path_tuple
+                    if not found:
+                        reverse_path_tuple = tuple(self.graph.reverse_path(len_path_tuple))
+                        for i in range(len(path) - len_path_tuple + 1):
+                            if tuple(path[i:i+len_path_tuple]) == reverse_path_tuple:
+                                # Truncate the path before where reverse_path_tuple starts
+                                path = path[i:]
+                                found = True
+                                break
+                    if not found:  # should not happen
+                        raise Exception("path_tuple is not found in the path")
                     continue
                     # 2023-03-23: find a bug in previous recursive code
                     # return self.__heuristic_extend_path(path)
@@ -442,6 +470,7 @@ class SingleTraversal(object):
                 bin_sizes[v_n] = count
                 obs[v_n] = count * self.contig_coverages[v_n]  # self.graph.vertex_info[v_n].cov
             else:
+                # increase the bin size when the vertex occurs again (copy number being increased)
                 bin_sizes[v_n] += self.graph.vertex_info[v_n].len - self.__cov_unit + 1
         return bin_sizes, obs
 
@@ -455,6 +484,7 @@ class SingleTraversal(object):
             bin_sizes[new_v] = count
             obs[new_v] = count * self.contig_coverages[new_v]  # self.graph.vertex_info[new_v].cov
         else:
+            # increase the bin size when the vertex occurs again (copy number being increased)
             bin_sizes[new_v] += self.graph.vertex_info[new_v].len - self.__cov_unit + 1
 
     @staticmethod
@@ -467,6 +497,14 @@ class SingleTraversal(object):
         prop_values = np.array([probs[key] for key in keys])
         # multinomial distribution
         return np.sum(np.log(prop_values) * obs_values)
+
+    def __overall_size_limit_like(self, path_len, scalar):
+        """
+        Use Bernolli distribution to penalize the path length over repeated regions (not act on new vertex).
+        The underlying assumption is that the path should not be looping itself too many times,
+        when there's shallow vertex among deep ones, making the deep ones looping too many times.
+        """
+        return self.penalty_const * path_len * scalar
 
     def __cal_multiplicity_like(
             self,
@@ -491,20 +529,78 @@ class SingleTraversal(object):
         """
         # TODO: for long-read assembly graph
         #       1) modeling the (start + end) points
-        # path = list(deepcopy(path))
+        last_v, last_e = path[-1]
+        path_len = self.graph.get_path_length(path)
         bin_sizes, observations = self.__count_v_bin_size_and_obs(path)
-        old_like = self.__cal_single_multiplicity_loglike(bin_sizes=bin_sizes, observations=observations)
+        scalar = sum(observations.values())
+        old_like = self.__cal_single_multiplicity_loglike(bin_sizes=bin_sizes, observations=observations) + \
+                   self.__overall_size_limit_like(path_len, scalar=scalar)
         log_like_ratio_list = []
         # logger.trace(f"      - path={path}")
         # logger.trace(f"    bin sizes={bin_sizes}")
         # logger.trace(f"    observations={observations}")
-        for v_name, v_end in proposed_extension:
-            is_new_vertex = v_name not in observations
+        # use graph wiggle to avoid getting stuck at a shallow multi-copy vertex
+        use_graph_wiggle = self.use_graph_wiggle and random.random() < self.use_graph_wiggle
+        if use_graph_wiggle:
+            # prepare vertex_copy_num_dict from path
+            current_vs = [v_n for v_n, v_e in path]
+            current_v_counts = {v_n: current_vs.count(v_n) for v_n in set([v_n for v_n, v_e in path])}
+        else:
+            current_v_counts = {}
+        # check the multiplicity of every vertices
+        for go_v, (v_name, v_end) in enumerate(proposed_extension):
+            if self.fix_shallowest_contig > 0 and v_name in self.__fixed_single_copy_vs and v_name in current_v_counts:
+                # this vertex is fixed as single copy, so the later proposed extension is not valid, use the -inf as the log-likelihood ratio
+                log_like_ratio_list.extend([-inf] * len(proposed_extension[go_v:]))
+                break
+            current_v_counts[v_name] = current_v_counts.get(v_name, 0) + 1
+            if use_graph_wiggle:
+                if v_name not in observations:
+                    is_new_vertex = True
+                else:
+                    # heuristically use the neighboring vertices to indicate the current copy number,
+                    # not considering leaking or other network-like situations
+                    # find the connected vertices excluding the this vertex (self-loop); vertices can be duplicated;
+                    prior_vs = [_p_v for _p_v, _p_e in self.graph.vertex_info[v_name].connections[not v_end] if _p_v != v_name]
+                    input_counts = sum([current_v_counts[_p_v] for _p_v in prior_vs if _p_v in current_v_counts])
+                    # print(f"path: {path}, proposed_extension: {proposed_extension}, prior_vs: {prior_vs}")
+                    # print(f"input_counts: {input_counts}, current_v_counts: {current_v_counts}, v_name: {v_name}")
+                    if input_counts < current_v_counts[v_name]:
+                        is_new_vertex = False
+                    else:
+                        # draw by comparing the sc coverage with the mean coverage
+                        mean_cov = self.__get_cov_mean(list(path) + list(proposed_extension[:go_v]), return_std=False)
+                        new_sc_cov = self.contig_coverages[v_name] / float(current_v_counts[v_name])
+                        
+                        # try:
+                        old_sc_cov = self.contig_coverages[v_name] / float(current_v_counts[v_name] - 1)
+                        # except ZeroDivisionError as e:
+                        #     print(f"current_v_counts: {current_v_counts}, v_name: {v_name}")
+                        #     print(f"proposed_extension: {proposed_extension}")
+                        #     print(f"path: {path}")
+                        #     print(f"observations: {observations}")
+                        #     raise e
+                        
+                        # compare the new and old single-copy coverage with the mean coverage
+                        # the larger the abs(old_sc_cov-mean) relative to abs(new_sc_cov - mean_cov), 
+                        # the smaller the old_probability, which should be in range [0, 1)
+                        old_probability = abs(new_sc_cov - mean_cov) / (abs(new_sc_cov - mean_cov) + abs(old_sc_cov - mean_cov) + 1e-10)
+                        # draw a random number to determine whether to consider it as a new vertex
+                        # print(f"old_probability: {old_probability}, new_sc_cov: {new_sc_cov}, old_sc_cov: {old_sc_cov}, mean_cov: {mean_cov}")
+                        is_new_vertex = random.random() > old_probability
+                    # input("press enter to continue")
+            else:
+                is_new_vertex = v_name not in observations
             self.__update_v_bin_size(new_v=v_name, bin_sizes=bin_sizes, obs=observations)
             # logger.trace(f"      - v_name={v_name}")
             # logger.trace(f"    bin sizes={bin_sizes}")
             # logger.trace(f"    observations={observations}")
-            new_like = self.__cal_single_multiplicity_loglike(bin_sizes=bin_sizes, observations=observations)
+            path_len += self.graph.vertex_info[v_name].len - \
+                        self.graph.vertex_info[v_name].connections[not v_end][(last_v, last_e)]
+            mul_like = self.__cal_single_multiplicity_loglike(bin_sizes=bin_sizes, observations=observations)
+            size_like = self.__overall_size_limit_like(path_len, scalar=scalar)
+            new_like =  mul_like + size_like
+            # logger.info("    mul like: {}, size_like: {}, new_like: {}".format(mul_like, size_like, new_like))
             if is_new_vertex:
                 # logger.trace(f"      - old_like={-inf}, new_like={new_like}")
                 log_like_ratio_list.append(inf)
@@ -512,6 +608,7 @@ class SingleTraversal(object):
             else:
                 # logger.trace(f"      - old_like={old_like}, new_like={new_like}")
                 log_like_ratio_list.append(new_like - old_like)  # now the likes are accumulated since last inf (new v)
+            last_v, last_e = v_name, v_end
         # logger.trace("    loglike ratio list: {}".format(log_like_ratio_list))
         if logarithm:
             return np.array(log_like_ratio_list, dtype=np.float128)
@@ -789,7 +886,10 @@ class VariantGenerator(object):
 
     def __init__(self,
                  traversome_obj,
-                 start_strategy="random",
+                 graph_based_multiplicity_wiggle=0,
+                 penalty_for_size=1e-5,
+                 fix_shallowest_contig=0,
+                 # start_strategy="random",
                  min_num_valid_search=1000,
                  max_num_valid_search=10000,
                  max_num_traversals=50000,
@@ -803,14 +903,27 @@ class VariantGenerator(object):
                  decay_t=inf,
                  cov_inert=1.,
                  use_alignment_cov=False,
+                 decompose_circular_unit=True,
                  min_unit_similarity=0.85,
                  resume=False,
                  temp_dir: fpath = None):
         """
         :param traversome_obj: traversome object.
-        :param start_strategy: strategy for choosing the start path.
-            - random: randomly choosing from read aligned paths.
-            - numerate: sequentially numerate from read aligned paths.
+        :param graph_based_multiplicity_wiggle: use graph information to wiggle the multiplicity
+             to generate more variants.
+        :param penalty_for_size: penalty for the size of the variant,
+            used to avoid overlooping the same contig too many times over depth-heterogeneous graph.
+        :param fix_shallowest_contig:
+            In a connected component, choose
+            0. to disable this fixation;
+            1. fix all contigs that has a similar (<1.15 fold) coverage to the shallowest one to be single-copy (default);
+            2. fix the shallowest contig to be single-copy in the proposed variants;
+            3. fix all single-connected contigs that has a similar (<1.15 fold) coverage
+               to the shallowest single-connected one to be single-copy;
+            4. fix the shallowest single-connected contig (one in and one out) to be single-copy;
+        # :param start_strategy: strategy for choosing the start path.
+        #     - random: randomly choosing from read aligned paths.
+        #     - numerate: sequentially numerate from read aligned paths.
         :param min_num_valid_search: minimum number of valid searches
         :param max_num_valid_search: maximum number of valid searches
         :param max_num_traversals: maximum number of searches
@@ -851,8 +964,11 @@ class VariantGenerator(object):
         assert 100 <= decay_t
         assert 0 <= cov_inert
         assert 0.5 <= min_unit_similarity
-        assert start_strategy in {"random", "numerate"}
-        self.start_strategy = start_strategy
+        # assert start_strategy in {"random", "numerate"}
+        self.use_graph_wiggle = graph_based_multiplicity_wiggle
+        self.penalty_for_size = penalty_for_size
+        self.fix_shallowest_contig = fix_shallowest_contig
+        # self.start_strategy = start_strategy
         self.graph = traversome_obj.graph
         # self.alignment = traversome_obj.alignment
         # self.tvs = traversome_obj
@@ -866,6 +982,7 @@ class VariantGenerator(object):
         self.resume = resume
         self.temp_dir = temp_dir
         self.force_circular = force_circular
+        self.decompose_circular_unit = decompose_circular_unit
         self.uni_chromosome = uni_chromosome
         self._max_uncover_ratio = max_uncover_ratio
         self.__differ_f = differ_f
@@ -894,6 +1011,7 @@ class VariantGenerator(object):
         #     OrderedDict([(_v, 1.) for _v in single_copy_vertices]) if single_copy_vertices \
         #         else OrderedDict()
         self.__candidate_single_copy_vs = set()
+        self.__fixed_single_copy_vs = set()
         self.__previous_len_variant = 0
         self.count_valid = 0
         self.count_search = 0
@@ -1041,7 +1159,6 @@ class VariantGenerator(object):
                 new_num_valid_search = int(new_num_valid_search)
                 logger.info("resetting min_valid_search={}".format(new_num_valid_search))
                 return new_num_valid_search - num_valid_search, current_ratio, 1
-                # TODO this process will never stop if the graph cannot generate a circular path on forced circular
 
     def index_readpaths_subpaths(self):
         logger.info("Indexing aligned read path records ..")
@@ -1121,6 +1238,42 @@ class VariantGenerator(object):
             if len(self.graph.vertex_info[v_name].connections[True]) < 2 and \
                     len(self.graph.vertex_info[v_name].connections[False]) < 2:
                 self.__candidate_single_copy_vs.add(v_name)
+        if self.fix_shallowest_contig > 0:
+            # set the shallowest contig in each connected component as single copy
+            # iterate the connected components
+            for v_set in self.graph.vertex_clusters:
+                # sort the vertices by their cov
+                v_cov_list = [(v_name, self.graph.vertex_info[v_name].cov) for v_name in v_set]
+                v_cov_sorted = sorted(v_cov_list, key=lambda x: x[1])
+                shallowest_cov = -1
+                # find the shallowest vertex
+                for v_name, v_cov in v_cov_sorted:
+                    if self.fix_shallowest_contig == 1:
+                        # fix all contigs that has a similar (<1.15 fold) coverage
+                        # to the shallowest one to be single-copy
+                        if shallowest_cov == -1:
+                            shallowest_cov = v_cov
+                            self.__fixed_single_copy_vs.add(v_name)
+                        elif v_cov < shallowest_cov * 1.15:
+                            self.__fixed_single_copy_vs.add(v_name)
+                    elif self.fix_shallowest_contig == 2:
+                        # fix the shallowest contig to be single-copy in the proposed variants
+                        self.__fixed_single_copy_vs.add(v_name)
+                        break
+                    elif self.fix_shallowest_contig == 3:
+                        # fix all single-connected contigs that has a similar (<1.15 fold) coverage
+                        # to the shallowest single-connected one to be single-copy
+                        if v_name in self.__candidate_single_copy_vs:
+                            if shallowest_cov == -1:
+                                shallowest_cov = v_cov
+                                self.__fixed_single_copy_vs.add(v_name)
+                            elif v_cov < shallowest_cov * 1.15:
+                                    self.__fixed_single_copy_vs.add(v_name)
+                    elif self.fix_shallowest_contig == 4:
+                        # fix the shallowest single-connected contig (one in and one out) to be single-copy
+                        if v_name in self.__candidate_single_copy_vs:
+                            self.__fixed_single_copy_vs.add(v_name)
+                            break
 
     #     np.random.seed(self.__random.randint(1, 10000))
     #     clusters_res = WeightedGMMWithEM(
@@ -1163,7 +1316,7 @@ class VariantGenerator(object):
                 path_not_traversed=self.__read_paths_not_in_variants,
                 previous_un_traversed_ratio=previous_ratio,
                 previous_un_traversed_ratio_count=previous_ratio_c)
-            if add_search:
+            if add_search > 0:
                 self.__previous_len_variant = len(self.variants)
                 num_valid_search += add_search
             else:
@@ -1206,14 +1359,15 @@ class VariantGenerator(object):
             # read_path = random.choices(self.read_paths, weights=read_p_freq_reciprocal)[0]
             # 2.
             # prioritize uncovered read paths
-            if self.start_strategy == "random":
-                single_traversal.run()
-            elif self.start_strategy == "numerate":
-                start_read_path = self.read_paths[self.count_search % self.len_read_p]
-                if self.__random.getrandbits(1):  # generate 0 or 1
-                    single_traversal.run(list(self.graph.reverse_path(start_read_path)))
-                else:
-                    single_traversal.run(list(start_read_path))
+            # if self.start_strategy == "random":
+            #     single_traversal.run()
+            # elif self.start_strategy == "numerate":
+            #     start_read_path = self.read_paths[self.count_search % self.len_read_p]
+            #     if self.__random.getrandbits(1):  # generate 0 or 1
+            #         single_traversal.run(list(self.graph.reverse_path(start_read_path)))
+            #     else:
+            #         single_traversal.run(list(start_read_path))
+            single_traversal.run()
             new_path = single_traversal.result_path
             self.count_search += 1
             logger.debug("    traversal {}: {}".format(self.count_search, self.graph.repr_path(new_path)))
@@ -1240,6 +1394,9 @@ class VariantGenerator(object):
             else:
                 # if len(new_path) >= v_len * 2:  # using path length to guess multiple units is not a good idea
                 if is_circular_p:
+                    # deprecate decomposition for now
+                    # TODO: move the decomposition if later used
+                    #       outside each traversal check, so reduce the decomposition runs
                     new_path_list = self.__decompose_hetero_units(new_path)
                 else:
                     new_path_list = [new_path]
@@ -1290,7 +1447,7 @@ class VariantGenerator(object):
                             path_not_traversed=self.__read_paths_not_in_variants,
                             previous_un_traversed_ratio=previous_ratio,
                             previous_un_traversed_ratio_count=previous_ratio_c)
-                        if add_search:
+                        if add_search > 0:
                             self.__previous_len_variant = len(self.variants)
                             num_valid_search += add_search
                             # flatten_n_parts = max(flatten_n_parts, previous_ratio_c)
@@ -1352,14 +1509,15 @@ class VariantGenerator(object):
                 g_vars.count_search += 1
                 count_search = int(g_vars.count_search)
                 lock.release()
-                if self.start_strategy == "random":
-                    single_traversal.run()
-                elif self.start_strategy == "numerate":
-                    start_read_path = self.read_paths[count_search % self.len_read_p]
-                    if self.__random.randint.getrandbits(1):  # use getrandbits(1) to generate 0 or 1
-                        single_traversal.run(list(self.graph.reverse_path(start_read_path)))
-                    else:
-                        single_traversal.run(list(start_read_path))
+                # if self.start_strategy == "random":
+                #     single_traversal.run()
+                # elif self.start_strategy == "numerate":
+                #     start_read_path = self.read_paths[count_search % self.len_read_p]
+                #     if self.__random.randint.getrandbits(1):  # use getrandbits(1) to generate 0 or 1
+                #         single_traversal.run(list(self.graph.reverse_path(start_read_path)))
+                #     else:
+                #         single_traversal.run(list(start_read_path))
+                single_traversal.run()
                 new_path = single_traversal.result_path
                 repr_path = self.graph.repr_path(new_path)
                 is_circular_p = self.graph.is_circular_path(new_path)
@@ -1425,7 +1583,7 @@ class VariantGenerator(object):
                                     previous_un_traversed_ratio=g_vars.previous_ratio,
                                     previous_un_traversed_ratio_count=g_vars.previous_ratio_c)
                             logger.info("adding searches by " + str(add_search))
-                            if add_search:
+                            if add_search > 0:  # fix bug 2025-04-04
                                 g_vars.previous_len_variant = len(variants)
                                 g_vars.num_valid_search += add_search
                                 g_vars.flatten_n_parts = min(g_vars.flatten_n_parts + 1, MAX_ADDING_TIMES)
@@ -1434,6 +1592,7 @@ class VariantGenerator(object):
                                 # break_traverse = True
                                 # kill all other workers
                                 event.set()
+                                lock.release()
                                 return "done"
                     lock.release()
                 # if break_traverse:
@@ -1467,7 +1626,7 @@ class VariantGenerator(object):
                     path_not_traversed=self.__read_paths_not_in_variants,
                     previous_un_traversed_ratio=1.,
                     previous_un_traversed_ratio_count=1)
-            if not add_search:
+            if add_search <= 0:
                 logger.info("\t{}/{}/{}/{} uniq/valid/tvs/set variants".format(
                     len(self.variants), self.count_valid, "-", self.min_valid_search))
                 # logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
@@ -1541,7 +1700,7 @@ class VariantGenerator(object):
                             path_not_traversed=path_not_traversed,
                             previous_un_traversed_ratio=global_vars.previous_ratio,
                             previous_un_traversed_ratio_count=global_vars.previous_ratio_c)
-                    if not add_search:
+                    if add_search <= 0:
                         lock.release()
                         break
                     else:
@@ -1611,6 +1770,15 @@ class VariantGenerator(object):
         # logger.info("  {} unique paths in {}/{} valid paths, {} traversals".format(
         #     len(self.variants), global_vars.count_valid, global_vars.num_valid_search, global_vars.count_search))
 
+    # TODO
+    # 0. need to totally transformed!!
+    # 1. not able to decompose u0-,u1-,u0+,u2-,u0-,u1+,u0+,u2-(circular)
+    # 2. proposing u21-,u22+,u21-,u23+,u21-,u23+ is not stopped yet, although ml solved it in daBelVisc1-c-traversome
+    # Note:
+    #    e.g. (u0-,u1-,u0+,u2-,u0-,u1+,u0+,u2+) may be more reasonable than (u0-,u1-,u0+,u2-), (u0-,u1+,u0+,u2+) if
+    #    the former case generate a similar likelihood but a better criteria value, which is exactly the case
+    #    when two isomeric plastomes are the same thing.
+    #    But the result then may not be canonical and not easy to use.
     def __decompose_hetero_units(self, circular_path):
         """
         Decompose a path that may be composed of multiple circular paths (units) containing similar variants
@@ -1619,6 +1787,10 @@ class VariantGenerator(object):
         e.g. 1,2,3,2,3,7,5,1,-3,-2,-3,-2,8,5 was composed of 1,2,3,2,3,7,5 and 1,-3,-2,-3,-2,8,5,
              when 1,5 were likely to be single copy
         """
+
+        # the design of self.__min_unit_similarity may not be working for pt cases, e.g. tvs_id101
+        # so the same component with totally different order is now also accepted as a valid unit # 2025-04-04
+
         len_total = len(circular_path)
         if len_total < 4:
             return [circular_path]
@@ -1626,22 +1798,32 @@ class VariantGenerator(object):
         # 1.1 get the multiplicities (copy) information of (v_name, v_end) in the circular path
         logger.trace("circular_path: {}".format(circular_path))
         unique_vne_list = sorted(set(circular_path))
-        copy_to_vne = OrderedDict()
-        vne_to_copy = OrderedDict()
+        copy_to_vne = OrderedDict()  # consider end/direction
+        vne_to_copy = OrderedDict()  # consider end/direction
         for v_n_e in unique_vne_list:
             this_copy = circular_path.count(v_n_e)
             if this_copy not in copy_to_vne:
                 copy_to_vne[this_copy] = []
             copy_to_vne[this_copy].append(v_n_e)
             vne_to_copy[v_n_e] = this_copy
+        # TODO not really contributing as of now
+        copy_to_v = OrderedDict()  # consider only vertex name
+        v_to_copy = OrderedDict()  # consider only vertex name
+        unique_v_list = sorted(set([v_n_e[0] for v_n_e in unique_vne_list]))
+        for v_n_ in unique_v_list:
+            this_copy = sum([vne_to_copy.get((v_n_, v_e), 0) for v_e in [True, False]])
+            if this_copy not in copy_to_v:
+                copy_to_v[this_copy] = []
+            copy_to_v[this_copy].append(v_n_)
+            v_to_copy[v_n_] = this_copy
         # 1.2 store v lengths
-        v_lengths = OrderedDict([(v_n_, self.graph.vertex_info[v_n_].len) for v_n_, v_e_ in unique_vne_list])
+        v_lengths = OrderedDict([(v_n_, self.graph.vertex_info[v_n_].len) for v_n_ in unique_v_list])
 
         # 2. estimate candidate number of units.
         # The shared contig-len-weighted path should be larger than self.__min_unit_similarity
-        candidate_sc_vertices = set([_v_n for _v_n, _v_e in vne_to_copy]) & self.__candidate_single_copy_vs
+        candidate_sc_vertices = set(unique_v_list) & self.__candidate_single_copy_vs
         logger.trace("      candidate_sc_vertices: {}".format(candidate_sc_vertices))
-        copies = sorted(copy_to_vne)
+        copies = sorted(copy_to_vne)  # all copy numbers
         if candidate_sc_vertices:
             # limit the estimation to the candidate single copy vertices
             sum_lens = [sum([v_lengths[_v_n]
@@ -1667,6 +1849,14 @@ class VariantGenerator(object):
                 if accumulated_weight >= self.__min_unit_similarity:
                     # append all candidate copy numbers here, no need to do prime factor
                     candidate_num_units.append(copy_num)
+        # logger.info(f"     candidate_num_units_1: {candidate_num_units} ")
+        # TODO also add greatest common divisor of all copy numbers
+        gcd_value = find_greatest_common_divisor(sorted(copy_to_v))
+        candidate_num_units_set = set(candidate_num_units)
+        if gcd_value > 1 and gcd_value not in candidate_num_units_set:
+            candidate_num_units_set.add(gcd_value)
+            candidate_num_units = sorted(candidate_num_units_set)
+        # logger.info(f"     candidate_num_units_2: {candidate_num_units} ")
 
         # 3. try to decompose
         logger.trace("      candidate_num_units: {}".format(candidate_num_units))
@@ -1680,6 +1870,41 @@ class VariantGenerator(object):
             qualified_schemes = set()
             for num_units in candidate_num_units:
                 logger.trace("      num_units: {}".format(num_units))
+
+                # trying on 2025-09-05 ... I think it's not right to only use v because the chopping will be wrong
+                # if num_units in copy_to_v:
+                #     candidate_starts_v = copy_to_v[num_units]
+                # elif num_units in copy_to_vne:
+                #     candidate_starts_v = [v_n_ for v_n_, v_e_ in copy_to_vne[num_units]]
+                # else: # gcd value
+                #     candidate_starts_v = []
+                #     for test_copy in copy_to_v:
+                #         if test_copy % num_units == 0:
+                #             candidate_starts_v.extend(copy_to_v[test_copy])
+                #     candidate_starts_v = sorted(set(candidate_starts_v))
+                # unit_sc_vertices = [v_n_ for v_n_ in candidate_starts_v if v_n_ in candidate_sc_vertices]
+                if num_units in copy_to_v and len_total%num_units == 0:
+                    # try to chop the entire path into equal pieces and see if equal in content, regardless of order
+                    units = [circular_path[start_id: start_id + num_units]
+                             for start_id in range(0, len_total, num_units)]
+                    first_v_list = sorted([_v for _v, _e in units[0]])
+                    for _unit in units[1:]:
+                        this_v_list = sorted([_v for _v, _e in _unit])
+                        if first_v_list != this_v_list:
+                            is_same_vs = False
+                            break
+                    else:
+                        is_same_vs = True
+                    if is_same_vs:
+                        this_scheme = tuple(
+                            sorted([self.graph.get_standardized_path_circ(self.graph.roll_path(_unit))
+                                    for _unit in units]))
+                        if this_scheme not in qualified_schemes:
+                            qualified_schemes.add(this_scheme)
+                            logger.info("new scheme added: {}".format(this_scheme))
+                        continue
+                elif num_units not in copy_to_vne:
+                    continue  # TODO skip gcd and copy_to_v values for now
                 unit_sc_vertices = [v_n_e for v_n_e in copy_to_vne[num_units] if v_n_e[0] in candidate_sc_vertices]
                 logger.trace("      unit_sc_vertices: {}".format(unit_sc_vertices))
                 candidate_starts = unit_sc_vertices if unit_sc_vertices else copy_to_vne[num_units]
@@ -1721,25 +1946,37 @@ class VariantGenerator(object):
                     del sne_indices[0]
                 logger.trace("      sne_indices: {}".format(sne_indices))
 
-                # 3.2 try to decompose and calculate the shared variants
-                #     to determine whether those starts are qualified
+                # 3.2 try to decompose and calculate the shared contigs
+                #     to determine whether those starts are qualified (same contigs with different order or above the similarity threshold)
                 #     to break the original path into units
                 for start_n_e, *s_indices in sne_indices:
                     units = []
                     for from_id, to_id in zip(s_indices[:-1], s_indices[1:]):
                         units.append(circular_path[from_id:to_id])
                     units.append(circular_path[s_indices[-1]:] + circular_path[:s_indices[0]])
-                    variant_counts = np.array([[_unit.count(v_n_e_)
-                                                for v_n_e_ in unique_vne_list]
-                                                for _unit in units])
-                    # idx_shared = (variant_counts == variant_counts[0]).all(axis=0)
-                    variants_shared = variant_counts.min(axis=0)
-                    # logger.info("idx_shared ({}): {}".format(len(idx_shared), idx_shared))
-                    # logger.info("variant_counts[0] ({}): {}".format(len(variant_counts[0]), variant_counts[0]))
-                    # logger.info("v_lengths ({}): {}".format(len(v_lengths), v_lengths))
-                    shared_len = \
-                        num_units * sum(variants_shared * v_lengths) / total_base_len
-                    logger.trace("      shared_len: {}".format(shared_len))
+                    # if units have the same contigs (orders can be different)
+                    first_v_list = sorted([_v for _v, _e in units[0]])
+                    for _unit in units[1:]:
+                        this_v_list = sorted([_v for _v, _e in _unit])
+                        if first_v_list != this_v_list:
+                            is_same_vs = False
+                            break
+                    else:
+                        is_same_vs = True
+                    if not is_same_vs:
+                        variant_counts = np.array([[_unit.count(v_n_e_)
+                                                    for v_n_e_ in unique_vne_list]
+                                                    for _unit in units])
+                        # idx_shared = (variant_counts == variant_counts[0]).all(axis=0)
+                        contigs_shared = variant_counts.min(axis=0)
+                        # logger.info("idx_shared ({}): {}".format(len(idx_shared), idx_shared))
+                        # logger.info("variant_counts[0] ({}): {}".format(len(variant_counts[0]), variant_counts[0]))
+                        # logger.info("v_lengths ({}): {}".format(len(v_lengths), v_lengths))
+                        shared_len = \
+                            num_units * sum(contigs_shared * v_lengths) / total_base_len
+                        logger.trace("      shared_len: {}".format(shared_len))
+                    else:
+                        shared_len = 1.0
                     if shared_len > self.__min_unit_similarity:
                         this_scheme = tuple(sorted([self.graph.get_standardized_path_circ(self.graph.roll_path(_unit))
                                                     for _unit in units]))
@@ -1751,14 +1988,18 @@ class VariantGenerator(object):
             # 3.3 calculate the support from read paths
             circular_units = []
             original_sub_paths = set(self.subpath_generator.gen_subpaths(circular_path))
+            logger.info("original path: {}".format(circular_path))
             for this_scheme in qualified_schemes:
+                logger.info("this_scheme: {}".format(this_scheme))
                 these_sub_paths = set()
                 for this_unit in this_scheme:
                     these_sub_paths |= set(self.subpath_generator.gen_subpaths(this_unit))
                 if original_sub_paths - these_sub_paths:
                     # the original one contains unique subpath(s)
+                    logger.info("original contains unique subpath(s)")
                     continue
                 else:
+                    logger.info("original does not contain unique subpath(s)")
                     for this_unit in this_scheme:
                         circular_units.append(this_unit)
                     # calculate the multiplicity-based likelihood will be weird,
@@ -1858,6 +2099,9 @@ class VariantGenerator(object):
 
     def pass_candidate_single_copy_vs(self):
         return self.__candidate_single_copy_vs
+    
+    def pass_fixed_single_copy_vs(self):
+        return self.__fixed_single_copy_vs
 
     def pass_differ_f(self):
         return self.__differ_f
@@ -1870,4 +2114,5 @@ class VariantGenerator(object):
 
     def pass_decay_t(self):
         return self.__decay_t
+
 

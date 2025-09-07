@@ -95,6 +95,8 @@ class GraphAlignConflicts(object):
                         if read_seg not in read_seg_clusters:
                             read_seg_clusters[read_seg] = [None, None]
                         read_seg_clusters[read_seg][int(is_to_conflict)] = (conflict_n, conflict_e, conflict_site)
+        if not read_seg_clusters:
+            return None
         ########
         # record post-filtered bk points for gmm clustering
         post_filtered_bk_points = {}  # {v_name: [pos1, pos2, ...]} # 0-based, directly used to slice the contig
@@ -139,6 +141,9 @@ class GraphAlignConflicts(object):
                 post_filtered_bk_points[to_v].append(to_pos - 1)
             else:
                 post_filtered_bk_points[to_v].append(to_pos)
+        if not post_filtered_bk_points:
+            return None
+        ########
         # logger.warning(f"Number of abnormal conflict ratio: {count_abnormal}:{len(read_seg_clusters)}")
         ########
         # automatically cluster the conflicts positions using gmm-em
@@ -351,6 +356,7 @@ class GraphAlignConflicts(object):
                                 #     (True, read_n, go_r-1, go_r, conflict_e, conflict_site))
                                 # if read_n == 'SRR11434954.25514 25514 length=13075':
                                 #     logger.warning(f"SRR11434954.25514 25514 length=13075 -- to conflict added")
+                        # TODO, the bug here is all about trimming and multiple hits!!!
                         if go_r != len(r_records) - 1:  # is not end part of the query, the end of the record means a conflict
                             conflict_n, conflict_e = rec.path[-1]
                             conflict_site = rec.p_len - rec.p_end  # zero based in the reverse direction

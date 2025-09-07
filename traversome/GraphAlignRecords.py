@@ -42,7 +42,7 @@ class GAFRecord(object):
         self.path = self.parse_gaf_path()
         self.p_len = int(record_line_split[6])
         self.p_start = int(record_line_split[7])  # start position on the path, zero based
-        self.p_end = int(record_line_split[8])  # end position on the path, open ended
+        self.p_end = int(record_line_split[8])  # end position on the path, open ended; GraphAligner: p_end > p_start
         self.p_align_len = self.p_end - self.p_start
 
         self.num_match = int(record_line_split[9])
@@ -248,7 +248,7 @@ class ReadRecord(object):
     def __len__(self):
         return len(self.raw_ids)
 
-    def sort_by(self, record_attributes: str = ("q_start", "q_end", "cigar")):
+    def sort_by(self, record_attributes: str = ("q_start", "q_end", "num_match", "cigar")):
         new_order = sorted(range(len(self)),
                            key=lambda x: [self.records[x].__getattribute__(r_a) for r_a in record_attributes])
         self.records = [self.records[x] for x in new_order]
@@ -957,24 +957,72 @@ class GraphAlignRecords(object):
         if min_identity is None:
             min_identity = self.min_identity
         #
+        warned = False
+        #
         if not self.read_records:
             self.build_read_records()
-        del_ids = []
+        del_ids = set()
         for read_name, read_record in self.read_records.items():
             if read_record.p_align_len < min_align_len:  # no need to check further
-                del_ids.extend(read_record.raw_ids)
+                del_ids.update(read_record.raw_ids)
                 continue
             if read_record.p_identity >= min_identity:  # no need to check further
                 continue
+            # do the first round to remove multiple hits, 
+            # which are consecutive records with large overlapping: overlap/min(p_align_len1, p_align_len2) > 0.5
+            go_r = 0
+            while go_r < len(read_record) - 1:  # no need to check the last record
+                record = read_record[go_r]
+                next_go_r = go_r + 1
+                next_record = read_record[next_go_r]
+                while record.q_end > next_record.q_start:  # overlapping
+                    overlap = record.q_end - next_record.q_start
+                    if overlap / min(record.p_align_len, next_record.p_align_len) > 0.5:
+                        # compare the alignment score
+                        if record.optional_fields["AS"] >= next_record.optional_fields["AS"]:
+                            del_ids.add(read_record.raw_ids[next_go_r])
+                            # update next_go_r and next_record
+                            next_go_r += 1
+                            if next_go_r == len(read_record):
+                                break
+                            next_record = read_record[next_go_r]
+                        else:
+                            del_ids.add(read_record.raw_ids[go_r])
+                            record = next_record
+                            go_r = next_go_r
+                            next_go_r += 1
+                            if next_go_r == len(read_record):
+                                break
+                            next_record = read_record[next_go_r]
+                    else:
+                        break
+                go_r += 1
+            # do another round of filtering and modification
             record_lengths = []
             record_identities = []
             record_ids = []
             for go_r, record in enumerate(read_record):
+                raw_id = read_record.raw_ids[go_r]
+                if raw_id in del_ids:
+                    continue
                 record_lengths.append(record.p_align_len)
                 record_identities.append(record.identity)
                 record_ids.append(go_r)
                 if go_r != len(read_record) - 1:
-                    q_gap = read_record[go_r + 1].q_start - record.q_end
+                    # find the next available record (not in del_ids) to check the overlapping/gap (q_gap)
+                    next_go_r = go_r + 1
+                    next_raw_id = read_record.raw_ids[next_go_r]
+                    while next_raw_id in del_ids:
+                        next_go_r += 1
+                        if next_go_r == len(read_record):
+                            break
+                        next_raw_id = read_record.raw_ids[next_go_r]
+                    if next_go_r == len(read_record):
+                        break
+                    # the gap between the current record and the next available record
+                    q_gap = read_record[next_go_r].q_start - record.q_end
+                    # if the gap is positive, there is a gap between the current and the next record
+                    # if the gap is negative, there is an overlap between the current and the next record
                     if q_gap > 0:
                         record_lengths.append(q_gap)
                         record_identities.append(0.)
@@ -982,19 +1030,82 @@ class GraphAlignRecords(object):
                     elif q_gap == 0:
                         pass
                     else:
-                        # TODO: should trim the overlapping bases from badly aligned parts, either from current or next;
-                        #       p_end, p_align_len and identity should be recalculated
-                        # currently, simply trim the overlapping bases from the current record, without changing the identity
-                        #       assuming the overlapping bases are equally-greatly-aligned
-                        record.q_end += q_gap
-                        if record.q_strand:
-                            record.p_end += q_gap
+                        if not isinstance(self.assembly_graph, Assembly):
+                            if not warned:
+                                logger.warning(
+                                    "No assembly graph object is available, "
+                                    "the overlapping hits will be directly deleted instead of trimming!")
+                                warned = True
+                            del_ids.add(raw_id)
                         else:
-                            record.p_start -= q_gap
-                        record.p_align_len += q_gap
-                        record_lengths[-1] += q_gap
-                        # raise NotImplementedError(f"{-q_gap}-bp overlapping records detected in {read_name}:{go_r}-{go_r + 1}! "
-                        #                           f"Current implementation cannot handle it!")
+
+                            # TODO: should trim the overlapping bases from badly aligned parts, either from current or next;
+                            #       p_end, p_align_len and identity, CIGAR should be recalculated
+                            # currently, simply trim the overlapping bases from the current record, without changing the identity
+                            #       assuming the overlapping bases are equally-greatly-aligned
+                            record_lengths[-1] += q_gap
+                            # too long overlapping causes negative length (unexcluded multiple hits)
+                            if record_lengths[-1] <= 0:
+                                del_ids.add(raw_id)
+                                del record_lengths[-1]
+                                del record_identities[-1]
+                                del record_ids[-1]
+                            else:
+                                ### 0.1.7.2d modification mark
+                                # modify the query
+                                record.q_end += q_gap
+                                # modify the CIGAR to be None
+                                record.cigar = None
+                                # modify the alignment length
+                                record.p_align_len += q_gap
+                                # modify the path
+                                modified = False
+                                added_v_len = 0
+                                accumulate_len = 0
+                                if record.q_strand:
+                                    record.p_end += q_gap
+                                    # modify the path if changed: p_end retreats by the sum of the length of the last or more contigs
+                                    truncated_end = len(record.path)
+                                    for go_p, (v_n, v_e) in enumerate(reversed(record.path)):
+                                        added_v_len = self.assembly_graph[v_n].len
+                                        accumulate_len += added_v_len
+                                        # trim overlaps # the overlap should be simply zero if the graph was trimmed correctly
+                                        if go_p > 0:
+                                            last_v_n, last_v_e = record.path[len(record.path) - go_p]
+                                            overlap = self.assembly_graph[last_v_n].connections[not last_v_e][(v_n, v_e)]
+                                            accumulate_len -= overlap
+                                        if accumulate_len <= record.p_end:
+                                            truncated_end = len(record.path) - go_p - 1
+                                            modified = True
+                                        else:
+                                            break
+                                    if modified:
+                                        record.path = record.path[:truncated_end]
+                                        shifted_len = accumulate_len - added_v_len  # the last added v_len should be excluded
+                                        record.p_end -= shifted_len
+                                        record.p_len -= shifted_len
+                                else:
+                                    record.p_start -= q_gap
+                                    # modify the path if changed: p_start passes by the sum of the length of the first or more contigs
+                                    truncated_start = 0
+                                    for go_p, (v_n, v_e) in enumerate(record.path):
+                                        added_v_len = self.assembly_graph[v_n].len
+                                        accumulate_len += added_v_len
+                                        # trim overlaps
+                                        if go_p > 0:
+                                            last_v_n, last_v_e = record.path[go_p - 1]
+                                            overlap = self.assembly_graph[last_v_n].connections[last_v_e][(v_n, not v_e)]
+                                            accumulate_len -= overlap
+                                        if accumulate_len <= record.p_start:
+                                            truncated_start = go_p + 1
+                                            modified = True
+                                        else:
+                                            break
+                                    if modified:
+                                        record.path = record.path[truncated_start:]
+                                        shifted_len = accumulate_len - added_v_len  # the last added v_len should be excluded
+                                        record.p_start += shifted_len
+                                        record.p_len -= shifted_len  
             # gradually trimming either ends to find the longest continuous records within this read that meets the identity criteria
             # the identity of the continuous records is the length-weighted identity average
             # if the continuous records are shorter than min_align_len or not found, the read will be removed
@@ -1002,11 +1113,11 @@ class GraphAlignRecords(object):
             continuous_pseudo_ids = self.find_continuous_records(
                 lengths=record_lengths, identities=record_identities, min_length=self.min_align_len, min_identity=self.min_identity)
             if not continuous_pseudo_ids:
-                del_ids.extend(read_record.raw_ids)
+                del_ids.update(read_record.raw_ids)
             elif len(continuous_pseudo_ids) == 1:
                 continuous_ids = [record_ids[_id] for _id in continuous_pseudo_ids[0]]
                 keep_raw_ids = set([read_record.raw_ids[_id] for _id in continuous_ids if _id is not None])
-                del_ids.extend([_id for _id in read_record.raw_ids if _id not in keep_raw_ids])
+                del_ids.update([_id for _id in read_record.raw_ids if _id not in keep_raw_ids])
             else:
                 keep_raw_ids = set()
                 for go_b, pseudo_block_ids in enumerate(continuous_pseudo_ids):
@@ -1016,8 +1127,8 @@ class GraphAlignRecords(object):
                     for _id in block_ids:
                         if _id is not None:
                             read_record[_id].query_name = read_name + "_block" + str(go_b + 1)
-                del_ids.extend([_id for _id in read_record.raw_ids if _id not in keep_raw_ids])
-        del_ids.sort(reverse=True)
+                del_ids.update([_id for _id in read_record.raw_ids if _id not in keep_raw_ids])
+        del_ids = sorted(del_ids, reverse=True)
         for del_id in del_ids:
             del self.raw_records[del_id]
         self.read_records = OrderedDict()
@@ -1280,22 +1391,30 @@ class GraphAlignRecords(object):
         :param min_identity: minimum identity of the continuous records
         :param min_wing_len: minimum length of the terminal record in a continuous block
         """
+        # TODO deal with the case where multiple hits are found for a read,
+        #  and the hits are fragmented into multiple blocks
+        #  and the real continuous blocks are interrupted by the fragmented hits with similar identities
+
         # initialize empty lists to store the blocks and the current block being processed
         # initialize variables to keep track of the current block's length and the sum of identities multiplied by lengths.
         blocks = []
         current_block = []
         current_block_lengths = []
+        is_first = True
         current_length_sum = 0
         current_identity_sum = 0
 
         for go_r, (length, identity) in enumerate(zip(lengths, identities)):
             # check if adding it to the current block would maintain an average identity above the threshold. 
             # If so, we append the contig to the current block and update the current length and identity sum. 
-            if current_length_sum == 0 or (current_identity_sum + identity * length) / (current_length_sum + length) >= min_identity:
+            if is_first or \
+                    (current_length_sum + length > 0 and \
+                     (current_identity_sum + identity * length) / (current_length_sum + length) >= min_identity):
                 current_block.append(go_r)
                 current_length_sum += length
                 current_block_lengths.append(length)
                 current_identity_sum += identity * length
+                is_first = False
             else:
                 # if not, test the current_block and start a new block with the current contig.
                 if current_identity_sum >= min_identity and current_length_sum >= min_length:
