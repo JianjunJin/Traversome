@@ -4,7 +4,7 @@
 Install the traversome package.
 
 Local install for developers:
-    conda install python numpy scipy sympy python-symengine dill typer loguru -c conda-forge
+    mamba install -c bioconda graphaligner python numpy scipy sympy python-symengine dill typer loguru ppymal gekkoq
     pip install . -e --no-deps
 """
 
@@ -32,6 +32,7 @@ else:
         "scipy",
         "symengine",
         "sympy",
+        "gekko",
         # "pymc>=4",  # make mcmc optional
         # "matplotlib",
         "typer",
