@@ -1,17 +1,17 @@
-
-
 # Traversome
-Genomic structure frequency estimation from genome assembly graphs and long reads.
 
+Genomic structure frequency estimation from genome assembly graphs and long reads.
 
 ### Installation
 
 Install dependencies using conda. I recommend using the mamba version of conda.
+
 ```bash
 mamba create -n traversome_env
 mamba activate traversome_env
-mamba install python numpy scipy sympy python-symengine dill typer loguru pyyaml
+mamba install -c bioconda graphaligner python numpy scipy sympy python-symengine dill typer loguru pyyaml gekko
 ```
+
 <details><summary>[Optional] Install dependencies for running Bayesian MCMC.</summary>
 If you want to run Bayesian mcmc with Traversome, you have to install pymc and pytensor. 
 Due to the fast evolving of pymc, sometimes its installation may be unsuccessful and not seen during the installation.
@@ -19,9 +19,11 @@ Due to the fast evolving of pymc, sometimes its installation may be unsuccessful
 ```bash
 mamba install pytensor pymc
 ```
+
 </details>
 
 Install Traversome using pip.
+
 ```bash
 git clone --depth=1 https://github.com/JianjunJin/Traversome
 pip install ./Traversome --no-deps
@@ -45,6 +47,7 @@ Important optional flags to finetune for achieving valid result (high bootstrap 
 Use `traversome thorough -h` to see details for above flags and other flags.
 
 ### Interpreting results
+
 ```
 |-- output_dir
     |-- traversome.log.txt          running log
@@ -54,6 +57,7 @@ Use `traversome thorough -h` to see details for above flags and other flags.
     |-- variant.*.fasta             sequence of each variant in the best supported result
     |-- pangenome.gfa               pangenome graph of the best supported result
     |-- options.yaml                information of options
-    |-- readpath.information.tab    read path index -> alignment record indices
+    |-- readpath.info.tab           read path index -> compatible variants and number of supported reads
+    |-- readpath.unused.info.tab    filtered-out-unused read path index -> compatible variants and number of supported reads
     |-- readpath.record_ids.tab     information of read paths and their congruent variant
 ```
