@@ -9,6 +9,7 @@ from copy import deepcopy
 from math import log, inf
 from scipy import stats
 from scipy.special import logsumexp
+from scipy.stats import lognorm
 from enum import Enum
 from collections import OrderedDict
 import numpy as np
@@ -17,7 +18,7 @@ import subprocess
 # from pathos.multiprocessing import ProcessingPool as Pool
 import dill
 from loguru import logger
-from typing import List, Union
+from typing import List, Union, Tuple
 from itertools import product
 import re
 
@@ -305,6 +306,8 @@ class GaussianMixtureModel:
     #     return responsibilities
     
     def e_step(self, X, means, std_dev, weights):
+        epsilon = 1e-10
+        std_dev = max(std_dev, epsilon)  # avoid std_dev to be zero
         n_components = len(means)
         log_responsibilities = np.zeros((X.shape[0], n_components))
         for k in range(n_components):
@@ -426,12 +429,12 @@ class VariantSubPathsGenerator:
         self.min_alignment_len = min_alignment_len
         self.max_alignment_len = max_alignment_len
         self.read_paths_hashed = read_paths_hashed
-        self.variant_subpath_counters = {}
+        self.variant_readpath_counters = {}
 
     # @cache
     def gen_subpaths(self, variant_path):
-        if variant_path in self.variant_subpath_counters:
-            return self.variant_subpath_counters[variant_path]
+        if variant_path in self.variant_readpath_counters:
+            return self.variant_readpath_counters[variant_path]
         else:
             # if this_overlap is None:
             #     this_overlap = self.graph.uni_overlap()
@@ -497,7 +500,7 @@ class VariantSubPathsGenerator:
                         if this_sub_path not in these_sub_paths:
                             these_sub_paths[this_sub_path] = 0
                         these_sub_paths[this_sub_path] += 1
-            self.variant_subpath_counters[variant_path] = these_sub_paths
+            self.variant_readpath_counters[variant_path] = these_sub_paths
             return these_sub_paths
 
 
@@ -962,7 +965,9 @@ def run_graph_aligner(
         num_processes: int = 1,
         other_params: str = ""):
     logger.info("Making alignment using GraphAligner ..")
+    # 2025-03-25 --multimap-score-fraction 1.0 added to reduce the number of multiple mappings
     this_command = os.path.join("", "GraphAligner") + \
+                   " --multimap-score-fraction 1.0 " + \
                    " -g " + graph_file + " -f " + seq_file + " " + other_params + " " + \
                    " -x vg -t " + str(num_processes) + \
                    " -a " + alignment_file + ".tmp.gaf"
@@ -972,14 +977,14 @@ def run_graph_aligner(
     # TODO better adjusted for graphaligner log
     if "Aborted" in output.decode("utf8"):  # or "(ERR)" in output.decode("utf8"):
         logger.error(output.decode("utf8"))
-        exit()
+        exit(1)
     elif "Unknown graph type" in output.decode("utf8"):
         logger.error(output.decode("utf8"))
-        exit()
+        exit(1)
     elif not os.path.exists(alignment_file + ".tmp.gaf"):
         logger.error(output.decode("utf8"))
         logger.error("No graph alignment file produced!")
-        exit()
+        exit(1)
     else:
         os.rename(alignment_file + ".tmp.gaf", alignment_file)
 
@@ -1294,3 +1299,22 @@ def optimize_min_adj(
     return optimal_min_id_adj, optimal_min_ln_adj, min_diff, res_sum
 
 
+def get_randint_by_exp_weights(
+        max_bound: int,
+        exponent=2):
+    posistions = np.arange(max_bound)
+    weights = 1 / (posistions + 1) ** exponent
+    return np.random.choice(posistions, p=weights / weights.sum())
+
+
+
+def summarize_read_lengths(read_lengths: List[int]) -> Tuple[float, float, float, float]:
+    """
+    """
+    # fit log-normal distribution (fix loc=0 since read lengths are positive)
+    sigma, _, scale = lognorm.fit(read_lengths, floc=0)
+    geometric_mean = scale
+    geometric_std = np.exp(sigma)
+    # TODO I actually just want the N025 and N095, not the model
+    lower_95, upper_95 = lognorm.ppf([0.025, 0.975], sigma, loc=0, scale=scale)
+    return geometric_mean, geometric_std, lower_95, upper_95

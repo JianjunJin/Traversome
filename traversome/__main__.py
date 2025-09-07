@@ -234,6 +234,36 @@ class Previous(str, Enum):
 #         logger.exception("")
 #     logger.info("Total cost %.4f" % (time.time() - time_zero))
 
+@app.command()
+def trim(
+    graph_file: Path = typer.Option(
+        ..., "-g", "--graph",
+        help="GFA/FASTG format Graph file",
+        exists=True, resolve_path=True),
+    output_graph: Path = typer.Option(
+        ..., "-o", "--output",
+        help="Output graph file",
+        exists=False, resolve_path=True),
+    log_level: LogLevel = typer.Option(
+        LogLevel.INFO, "--loglevel", help="Logging level. Use DEBUG for more, ERROR for less."),
+    ):
+    """Trim the overlaps of the contigs in the graph to be 0, along with modifying the sequence."""
+    from loguru import logger
+    initialize(
+        output_dir=None,  # no log file
+        loglevel=log_level,
+        previous=None)
+    setup_logger(loglevel=log_level, timed=True)
+    debug = log_level in (LogLevel.DEBUG, LogLevel.TRACE)
+    from traversome.Assembly import Assembly
+    assembly_obj = Assembly(str(graph_file))
+    logger.info("Trimming overlaps in the graph..")
+    modified = assembly_obj.trim_overlaps(debug=debug)
+    if not modified:
+        logger.info("No overlaps to be trimmed.")
+    logger.info(f"Writing to {str(output_graph)}..")
+    assembly_obj.write_to_gfa(str(output_graph))
+        
 
 @app.command()
 def thorough(
@@ -259,6 +289,13 @@ def thorough(
         './', "-o", "--output",
         help="Output directory",
         exists=False, resolve_path=True),
+    # identifiable_by_unique_rp: bool = typer.Option(
+    #     False, "--strict",
+    #     help="Read path and their occurrence counts will be used to identify the composition of variants. "
+    #          "Choose --strict to use only unique read paths to identify the variants; " \
+    #          "variants with the same read path but different counts will be treated as unidentifiable. "
+    #          "This can be helpful by merging ambiguous variant combinations and achieve better bootstrap support, "
+    #          "but with lower resolution. "),
     var_fixed: Path = typer.Option(
         None, "--vf", "--variant-fixed",
         help=r"A file containing user assigned variant paths "
@@ -277,15 +314,46 @@ def thorough(
     # var_gen_scheme: VarGen = typer.Option(
     #     VarGen.Heuristic, "-G",
     #     help="Variant generating scheme: H (Heuristic)"),
-    search_start_scheme: StartStrategy = typer.Option(
-        StartStrategy.random, "--sss",  #  "--search-start-strategy",
-        help="random (randomly chosen from read aligned paths, default)\n"
-             "numerate (sequentially numerate from read aligned paths)"),
+    graph_based_multiplicity_wiggle: float = typer.Option(
+        0.25, "--g-wiggle",
+        help="Use connection information to allow more possible multiplicity results, "
+             "therefore more candidate variants. "
+             "Input a float value between 0 and 0.5; a larger number means more wiggle. ",
+        min=0, max=0.5, # 0.0 means no wiggle
+    ),
+    penalty_for_length: float = typer.Option(
+        1e-5, "--len-penalty",
+        help="penalty for the size of the variant, "
+             "used to avoid overlooping the same contig too many times over depth-heterogeneous graph."
+    ),
+    fix_shallowest_contig: int = typer.Option(
+        1, "--fix-shallow",
+        help="In a connected component, "
+             "1. fix all contigs that has a similar (<1.15 fold) coverage to the shallowest one to be single-copy (default); "
+             "2. fix the shallowest contig to be single-copy in the proposed variants; "
+             "3. fix all single-connected contigs that has a similar (<1.15 fold) coverage "
+             "   to the shallowest single-connected one to be single-copy; "
+             "4. fix the shallowest single-connected contig (one in and one out) to be single-copy; "
+             "0. Disable this fixation; ",
+        min=0, max=4,
+        ),
+    # search_start_scheme: StartStrategy = typer.Option(
+    #     StartStrategy.random, "--sss",  #  "--search-start-strategy",
+    #     help="random (randomly chosen from read aligned paths, default)\n"
+    #          "numerate (sequentially numerate from read aligned paths)"),
     use_alignment_cov: bool = typer.Option(
         False, "--use-align-cov",
         help="Use alignment as the contig coverage. "  # for variant heuristic proposal step
              "Testing mode. "
         ),
+    decompose_circular_unit: bool = typer.Option(
+        True, "--no-decompose",
+        help="By default, any proposed circular candidate path that exceed the longest read path will enter into "
+             "the decomposition trial process, which is trying to find if there are identical/near-identical units "
+             "in the circular candidate path and decompose it into smaller circular candidate paths if possible. "
+             "This is a design for most biological "
+             "Choose to disable this process."
+    ),
     search_decay_factor: float = typer.Option(
         20., "--sdf",  # "--search-decay-factor",
         help="[1, INF] Search decay factor. "
@@ -313,6 +381,10 @@ def thorough(
         ModelSelectionMode.BIC, "-F", "--func",
         help="AIC (reverse model selection using stepwise AIC)\n"
              "BIC (reverse model selection using stepwise BIC, default)"),
+    # disabled for now
+    # augmented_bootstrap: bool = typer.Option(
+    #     False, "--augmented-bootstrap", "--abs",
+    #     help="Use augmented bootstrap (keep the original records for each replicate) to estimate the support of the variants. "),
     bootstrap: int = typer.Option(
         100, "--bs", "--bootstrap",
         help="The number of repeats used to perform bootstrap analysis. "),
@@ -374,6 +446,8 @@ def thorough(
         -1, "--min-align-counts",
         help="Threshold for counts per path, below which the alignment(s) of that path will be discarded. "
              "Automatic selection (-1) does not guarantee the best performance - good bootstrap support. "
+             "This is a very important parameter to set, to filter out the low-quality alignments. "
+             "However, using this parameter may lead to the loss of resolution. "
              "Default: auto(-1)"
     ),
     graph_component_selection: str = typer.Option(
@@ -432,13 +506,41 @@ def thorough(
     num_processes: int = typer.Option(
         1, "-p", "--processes",
         help="Num of processes. Multiprocessing will lead to non-identical result with the same random seed."),
-    n_generations: int = typer.Option(
-        0, "--mcmc",
-        help="MCMC generations. Set '--mcmc 0' to disable mcmc process."),
-    n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
-    mc_bracket_depth: Optional[int] = typer.Option(
-        10000, "--mc-bd",  # "--mc-bracket-depth",
-        help="Bracket depth for gcc during MCMC sampling. "),
+    # genetic algorithm options
+    # disabled for now due to the inefficient performance
+    # ga_pop_size: int = typer.Option(
+    #     100, "--ga-pop-size",
+    #     help="Population size for the genetic algorithm. "
+    #          "The larger the value is, the more likely the best/equally-best result will be achieved, "
+    #          "but also the longer the computation time will be."),
+    # ga_max_gen: int = typer.Option(
+    #     200, "--ga-max-gen",
+    #     help="Maximum number of generations for the genetic algorithm. "),
+    # ga_mut_prob: float = typer.Option(
+    #     0.1, "--ga-mut-prob",
+    #     help="Mutation probability for the genetic algorithm. "),
+    # ga_patience: int = typer.Option(
+    #     10, "--ga-patience",
+    #     help="Patience for the genetic algorithm. "
+    #             "If the best solution does not change for this many generations, "
+    #             "the algorithm will stop early. "),
+    # reverse model selection options
+    rms_max_queue_size: int = typer.Option(None, "--rms-max-queue-size",
+        help="Maximum queue size for reverse model selection. "),
+    rms_max_end_hits: int = typer.Option(None, "--rms-max-end-hits",
+        help="Maximum end hits (one of the stop criteria) for reverse model selection."
+             "Stop the searching if it hit the end of a search branch for this many times. "),
+    rms_max_unchanged: int = typer.Option(None, "--rms-max-unchanged",
+        help="The patience level of reverse model selection (one of the stop criteria)."
+             "Stop the searching if the best model has not changed for this many iterations. "),
+    # disable the mcmc part for now
+    # n_generations: int = typer.Option(
+    #     0, "--mcmc",
+    #     help="MCMC generations. Set '--mcmc 0' to disable mcmc process. NOT RECOMMENDED as of now. "),
+    # n_burn: int = typer.Option(1000, "--burn", help="MCMC Burn-in"),
+    # mc_bracket_depth: Optional[int] = typer.Option(
+    #     10000, "--mc-bd",  # "--mc-bracket-depth",
+    #     help="Bracket depth for gcc during MCMC sampling. "),
     # TODO: to be fully implemented
     prev_run: Previous = typer.Option(
         Previous.terminate, "--previous",
@@ -500,6 +602,7 @@ def thorough(
     write_options_to_yaml(app, output_dir.joinpath("options.yaml"))
     # set theano cache directory
     theano_cache_dir = output_dir.joinpath("theano.cache")
+    symengine_cache_dir = output_dir.joinpath("symengine.cache")
     try:
         # disable caching can solve the temp file issue, but largely reduce performance
         # import theano
@@ -510,6 +613,7 @@ def thorough(
         # TODO to fix pytensor issue
         os.environ["PYTENSOR_FLAGS"] = "base_compiledir={}".format(str(theano_cache_dir))
         # os.environ["TMPDIR"] = str(output_dir.joinpath("tmp.mp"))
+        os.environ["SYMENGINE_CACHE_DIR"] = str(symengine_cache_dir)
 
         # assert var_gen_scheme != "U", "User-provided is under developing, please use heuristic instead!"
         setup_logger(loglevel=log_level, timed=True, log_file=os.path.join(output_dir, "traversome.log.txt"))
@@ -561,26 +665,39 @@ def thorough(
             var_fixed=str(var_fixed) if var_fixed else var_fixed,
             var_candidate=str(var_candidate) if var_candidate else var_candidate,
             outdir=str(output_dir),
+            # identifiable_by_unique_rp=identifiable_by_unique_rp,
             model_criterion=criterion,
+            # augmented_bootstrap=augmented_bootstrap,
             bootstrap=bootstrap,
             bs_threshold=bs_threshold,
             jackknife=jackknife,
             # fast_bootstrap=fast_bootstrap,  # deprecated
             out_prob_threshold=out_seq_threshold,
-            search_start_scheme=search_start_scheme,
+            graph_based_multiplicity_wiggle=graph_based_multiplicity_wiggle,
+            penalty_for_size=penalty_for_length,
+            fix_shallowest_contig=fix_shallowest_contig,
+            # search_start_scheme=search_start_scheme,
             use_alignment_cov=use_alignment_cov,
+            decompose_circular_unit=decompose_circular_unit,
             search_decay_factor=search_decay_factor,
             min_valid_search=min_valid_search,
             max_valid_search=max_valid_search,
             max_num_traversals=max_num_traversals,
             max_uniq_traversal=max_uniq_traversal,
             max_uncover_ratio=max_uncover_ratio,
+            # ga_pop_size=ga_pop_size,
+            # ga_max_gen=ga_max_gen,
+            # ga_mut_prob=ga_mut_prob,
+            # ga_patience=ga_patience,
+            rms_max_queue_size=rms_max_queue_size,
+            rms_max_end_hits=rms_max_end_hits,
+            rms_max_unchanged=rms_max_unchanged,
             num_processes=num_processes,
             uni_chromosome=single_chr,
             force_circular=force_circular,
             size_ratio=size_ratio,
-            n_generations=n_generations,
-            n_burn=n_burn,
+            n_generations=0,  # n_generations,
+            n_burn=1000,      # n_burn,
             random_seed=random_seed,
             # keep_temp=False,
             loglevel=log_level,
@@ -595,21 +712,31 @@ def thorough(
             prune_terminal_contigs=prune_terminal_contigs,
             keep_graph_redundancy=keep_graph_redundancy,
             keep_unaligned_contigs=keep_unaligned_contigs,
-            ignore_conflicts=not check_conflicts,
+            check_conflicts=check_conflicts,
             add_conflict_edges=add_conflict_edges,
             gmm_max_std=gmm_max_std,
             resume=prev_run == "resume",
-            mc_bracket_depth=mc_bracket_depth,
+            mc_bracket_depth=10000,  # mc_bracket_depth,
             # use_gfa_alignment=use_gfa_annotation_lines,
             keep_temp=keep_temp,
         )
         traverser.run()
         del traverser
-    except SystemExit:
-        pass
+    # except KeyboardInterrupt:
+    #     logger.error("Interrupted by user.")
+    #     logger.info("Total cost %.4f" % (time.time() - time_zero))
+    #     raise SystemExit(1)
+    except SystemExit as e:
+        logger.info("Total cost %.4f" % (time.time() - time_zero))
+        raise e
     except:
         logger.exception("")
-    logger.info("Total cost %.4f" % (time.time() - time_zero))
+        logger.info("Total cost %.4f" % (time.time() - time_zero))
+        raise SystemExit(1)
+    finally:
+        logger.info("Total cost %.4f" % (time.time() - time_zero))
+        #
+    
     # remove theano cached files if not keeping temporary files
     # TODO WARNING (theano.link.c.cmodule) and FileNotFoundError to be fixed
     # if not keep_temp:
@@ -635,21 +762,29 @@ def initialize(output_dir, loglevel, previous):
     clear files if overwrite
     log head and running environment
     """
-    os.makedirs(str(output_dir), exist_ok=previous in ("overwrite", "resume"))
-    if previous == "overwrite" and os.path.isdir(output_dir):
-        # rmdir(output_dir.joinpath("tmp.mp"), ignore_errors=True)
-        rmdir(output_dir.joinpath("tmp.candidates"), ignore_errors=True)
-        rmdir(output_dir.joinpath("theano.cache"), ignore_errors=True)
-        for exist_f in output_dir.glob("*.*"):
-            os.remove(exist_f)
-    # os.makedirs(str(output_dir.joinpath("tmp.mp")), exist_ok=previous in ("overwrite", "resume"))
-    logfile = os.path.join(output_dir, "traversome.log.txt")
-    from loguru import logger
-    # avoid repeating RUNNING_HEAD in the screen output by typer.secho
-    setup_logger(loglevel=loglevel, timed=False, log_file=logfile, screen_out=None)
-    logger.info(RUNNING_HEAD)
-    setup_logger(loglevel=loglevel, timed=False, log_file=logfile)
-    logger.info(RUNNING_ENV_INFO)
+    if output_dir is None:  # skip generating log file
+        from loguru import logger
+        # avoid repeating RUNNING_HEAD in the screen output by typer.secho
+        setup_logger(loglevel=loglevel, timed=False, log_file=None, screen_out=None)
+        logger.info(RUNNING_HEAD)
+        setup_logger(loglevel=loglevel, timed=False, log_file=None)
+        logger.info(RUNNING_ENV_INFO)
+    else:
+        os.makedirs(str(output_dir), exist_ok=previous in ("overwrite", "resume"))
+        if previous == "overwrite" and os.path.isdir(output_dir):
+            # rmdir(output_dir.joinpath("tmp.mp"), ignore_errors=True)
+            rmdir(output_dir.joinpath("tmp.candidates"), ignore_errors=True)
+            rmdir(output_dir.joinpath("theano.cache"), ignore_errors=True)
+            for exist_f in output_dir.glob("*.*"):
+                os.remove(exist_f)
+        # os.makedirs(str(output_dir.joinpath("tmp.mp")), exist_ok=previous in ("overwrite", "resume"))
+        logfile = os.path.join(output_dir, "traversome.log.txt")
+        from loguru import logger
+        # avoid repeating RUNNING_HEAD in the screen output by typer.secho
+        setup_logger(loglevel=loglevel, timed=False, log_file=logfile, screen_out=None)
+        logger.info(RUNNING_HEAD)
+        setup_logger(loglevel=loglevel, timed=False, log_file=logfile)
+        logger.info(RUNNING_ENV_INFO)
 
 
 @app.command()

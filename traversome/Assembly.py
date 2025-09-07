@@ -10,6 +10,7 @@ from copy import deepcopy
 from collections import OrderedDict
 from loguru import logger
 from typing import Union
+import random
 from traversome.AssemblySimple import AssemblySimple, Vertex  #, VertexMergingHistory, VertexEditHistory
 # from traversome.PathGeneratorGraphOnly import PathGeneratorGraphOnly
 # from traversome.VariantGenerator import VariantGenerator
@@ -201,7 +202,7 @@ class Assembly(AssemblySimple):
                                cutoff_to_total: float = None,
                                update_cluster: bool = True):
         """
-        The weight of a connected component is calculated as \sum_{i=1}^{N}length_i*depth_i,
+        The weight of a connected component is calculated as \\sum_{i=1}^{N}length_i*depth_i,
         where N is the contigs in that connected component.
 
         Parameters
@@ -857,8 +858,8 @@ class Assembly(AssemblySimple):
 
         :param bait_vertices:
         :param bait_offsets:
-        :param limit_extending_len:
-        :param extending_len_weighted_by_depth:
+        :param limit_extending_len: None or INF means no limit
+        :param extending_len_weighted_by_depth: 
         :return:
         """
         if bait_offsets is None:
@@ -1445,48 +1446,333 @@ class Assembly(AssemblySimple):
         # remove the original contigs
         self.remove_vertex(set(break_points), update_cluster=True)
 
-    def trim_overlaps(self):
+    def __search_for_trimming_trivial(self, v_cluster, result_v_ends, debug=False):
+        """Search for a doable overlap trimming scheme for trivial cases with algebraic method.
+        :param v_cluster: a set of vertices that is connected
+        :param result_v_ends: a dict to store the results
+        :param debug: whether to show the solving process
+        :return: whether the trivial case is solved
+        """
+        update_v_ends = {}
+        if len(v_cluster) == 1:
+            v_name = list(v_cluster)[0]
+            conn_1 = self.vertex_info[v_name].connections[True]
+            conn_2 = self.vertex_info[v_name].connections[False]
+            if len(conn_1) == 0 and len(conn_2) == 0:
+                # not connected
+                update_v_ends[(v_name, True)] = update_v_ends[(v_name, False)] = 0
+            elif len(conn_1) == 1 and len(conn_2) == 1 and (v_name, False) in conn_1:
+                # if self-looping and no palindromic, trim_head = overlap // 2, trim_tail = overlap - trim_head
+                ovl = conn_1[(v_name, False)]
+                update_v_ends[(v_name, True)] = ovl // 2
+                update_v_ends[(v_name, False)] = ovl - ovl // 2
+            elif len(conn_1) == 0 and (v_name, False) in conn_2:
+                # conn_2 is palindromic, check that overlap must be an even number, 
+                # and trim_head = overlap // 2, trim_tail = overlap - trim_head
+                ovl = conn_2[(v_name, False)]
+                assert ovl % 2 == 0, "Overlap must be an even number for palindromic contig!"
+                update_v_ends[(v_name, False)] = ovl // 2
+            elif len(conn_2) == 0 and (v_name, True) in conn_1:
+                # conn_1 is palindromic, check that overlap must be an even number, 
+                # and trim_head = overlap // 2, trim_tail = overlap - trim_head
+                ovl = conn_1[(v_name, True)]
+                assert ovl % 2 == 0, "Overlap must be an even number for palindromic contig!"
+                update_v_ends[(v_name, True)] = ovl // 2
+        if update_v_ends:
+            result_v_ends.update(update_v_ends)
+            logger.debug(str(update_v_ends))
+            return True
+        else:
+            return False
+        
+    def __search_for_trimming_check(self, v_cluster, v_ends):
+        """Check the results of the overlap trimming scheme if they follows the equations rigorously.
+        :param v_cluster: a set of vertices that is connected
+        :param v_ends: the results of the overlap trimming scheme
+        :param debug: whether to show the solving process
+        """
+        # check the results
+        for v_name in v_cluster:
+            for this_end in (True, False):
+                if v_ends[(v_name, this_end)] < 0:
+                    logger.debug(f"Trimming {v_name} {this_end} < 0, redo searching with a stricter tolerance.")
+                    return False
+        checked_edges = set()
+        for v_name in v_cluster:
+            for this_end in (True, False):
+                for (n_v, n_e), ovl in self.vertex_info[v_name].connections[this_end].items():
+                    this_edge = tuple(sorted([(v_name, this_end), (n_v, n_e)]))
+                    if this_edge not in checked_edges:
+                        if v_ends[(v_name, this_end)] + v_ends[(n_v, n_e)] != ovl:
+                            logger.debug(f"Overlap trimming {str(((v_name, this_end), (n_v, n_e)))}(ovl={ovl}, trimmed {v_ends[(v_name, this_end)]}+{v_ends[(n_v, n_e)]}) "
+                                         f"is not correct, redo searching with a stricter tolerance.")
+                            return False
+                        checked_edges.add(this_edge)
+        for v_name in v_cluster:
+            if self.vertex_info[v_name].len - 0.5 < v_ends[(v_name, True)] + v_ends[(v_name, False)]:
+                logger.debug(f"Trimming {v_name} ({v_ends[(v_name, True)]}+{v_ends[(v_name, False)]}) >= contig_len ({self.vertex_info[v_name].len}),"
+                             f" redo searching with a stricter tolerance.")
+                return False
+        return True
+    
+    def __search_for_overlap_trimming(self, debug=False):
+        """Search for a doable overlap trimming scheme using algebraic method.
+        form the equation system:
+            rule 1: int trim_x >= 0
+            rule 2: trim_this + trim_next = overlap
+            rule 3: trim_head + trim_tail < contig_len
+        then minimize sum(trim_x ^ 2), which is an arbitrary choice,
+        but the advantage is that minimizing sum(trim_x ^ 2) will make even trimming in simple cases.
+        This constitutes a convex mixed-integer quadratic programming (MIQP) problem,
+        since the objective function is convex (sum of squares) and constraints are linear.
+        Here we use gekko to solve the MIQP problem.
+        """
+        result_v_ends = {}
+        from gekko import GEKKO
+        m = GEKKO(remote=False)  # use local solver
+
+        # solving by cluster can help
+        for v_cluster in self.vertex_clusters:
+            logger.debug(f"Searching for overlap trimming in cluster {v_cluster}")
+            # shortcut for the trivial case
+            if self.__search_for_trimming_trivial(v_cluster, result_v_ends, debug=debug):
+                continue
+
+            v_ends = {}
+            for v_name in v_cluster:
+                for this_end in (True, False):
+                    # rule 1: contraint v_ends to be non-negative integers
+                    v_ends[(v_name, this_end)] = m.Var(lb=0, integer=True)
+            
+            # rule 2: trim_this + trim_next = overlap
+            added = set()
+            for v_name in v_cluster:
+                for this_end in (True, False):
+                    for (n_v, n_e), ovl in self.vertex_info[v_name].connections[this_end].items():
+                        this_edge = tuple(sorted([(v_name, this_end), (n_v, n_e)]))
+                        if this_edge not in added:
+                            m.Equation(v_ends[(v_name, this_end)] + v_ends[(n_v, n_e)] == ovl)
+                            added.add(this_edge)
+
+            # rule 3: trim_head + trim_tail < contig_len
+            for v_name in v_cluster:
+                # GEKKO treats < and <= equivalently. For strict mathematical boundaries, use >= 1 instead of > 0.
+                # the most important thing to know! This avoids zero-length contigs
+                m.Equation(self.vertex_info[v_name].len - v_ends[(v_name, True)] - v_ends[(v_name, False)] >= 1)
+                # other notes: in theory, we can create zero-len contigs then prune them while keep the connections
+                # but this is not necessary now and require extra coding in graph modification
+
+            # minimize sum(trim_x ^ 2) is too slow
+            m.Minimize(m.sum([v_ends[(v_name, this_end)]**2 for v_name, this_end in v_ends]))
+            
+            attempt  = 1
+            increase_tol = 0
+            while attempt and attempt < 15:
+                # solve the MIQP problem
+                # 1 for APOPT, 2 for BPOPT, 3 for IPOPT, 0 for all available solvers
+                m.options.SOLVER = 1
+                # m.options.SOLVER = 1 + (attempt - 1) % 3  # BPOPT will generate unrigoous results
+                # use relatively relax options to prioritize successful solving rather than the optimal solution
+                # increase the maximum number of iterations
+                m.options.MAX_ITER = 200 + 100 * attempt
+                # if m.options.SOLVER in {1, 3}:  # solver options only available for APOPT(1) and IPOPT(3)
+                m.solver_options = [f"minlp_maximum_iterations {200 + 100 * attempt}",
+                                    f"minlp_gap_tol {1e-3 / 10**(increase_tol)}",]
+                # set a relaxed objective tolerance, but decrease it if the result is wrong
+                m.options.OTOL = 1e-3 / 10**(increase_tol)
+                m.options.RTOL = 1e-3 / 10**(increase_tol)
+                # if attempt == 7:
+                #     # use the alternative objective function
+                #     m.Minimize(alternative_obj)
+                #     logger.debug("use the alternative objective function")
+                if attempt >= 7:
+                    # give up the balance (not super necessary) and remove the objective function
+                    m.options.OTOL = 1e-4
+                    m.options.RTOL = 1e-4
+                    m.solver_options = [f"minlp_maximum_iterations {200 + 100 * attempt}",
+                                        f"minlp_gap_tol {1e-4}",]
+                    if attempt == 7:
+                        m.Obj(0)
+                        logger.debug("remove the objective function")
+                logger.debug(f"Attempt {attempt} with MAX_ITER {m.options.MAX_ITER}, "
+                             f"OTOL {m.options.OTOL}, RTOL {m.options.RTOL}")
+                attempt += 1
+                try:
+                    if debug:
+                        m.solve(disp=True)
+                    else:
+                        m.solve(disp=False)
+                except NameError as e:  # temporary for gekko's bug
+                    if "TimeoutExpired" in str(e):
+                        raise TimeoutError("TimeoutExpired in gekko")
+                    else:
+                        raise e
+                except Exception as e:
+                    if "Solution Not Found" in str(e):
+                        if attempt >= 15:
+                            raise Exception("Solution not found for current graph (APM issue)!")
+                        else:
+                            continue
+                    else:
+                        raise e
+                else:
+                    update_res = {_n_e: round(v_ends[_n_e].value[0]) for _n_e in v_ends}
+                    # check results
+                    # logger.debug(f"Attempt {attempt - 1} with APPSTATUS {m.options.APPSTATUS}")
+                    if self.__search_for_trimming_check(v_cluster, update_res):
+                        # get the results
+                        logger.debug(str(update_res))
+                        result_v_ends.update(update_res)
+                        attempt = False
+                    else:
+                        increase_tol += 1
+                    if attempt >= 15:
+                        raise Exception("Solution not found for current graph (tol minimized)!")
+        return result_v_ends
+
+    # def __search_for_overlap_trimming(self, strategy):
+    #     """
+    #     Search for a doable overlap trimming scheme.
+    #     strategy: 
+    #         0: "even", 
+    #         1: "random"
+    #         # 2: "proportional",
+    #     """
+    #     # issue: self-looping ones cannot trim more than its neighboring overlap
+    #     # issue: SSC issue unresolved
+
+    #     fixed_edge = {}
+    #     for v_name, v_info in self.vertex_info.items():
+    #         for this_end in (True, False):
+    #             pending_ends = []
+    #             if (v_name, this_end) in fixed_edge:
+    #                 trim_this = fixed_edge[(v_name, this_end)]
+    #             elif not v_info.connections[this_end]:  # no connections, no trim
+    #                 fixed_edge[(v_name, this_end)] = trim_this = 0
+    #                 # 
+    #                 print("----")
+    #                 print(fixed_edge)
+    #             else:
+    #                 other_end_trim = 0 if (v_name, not this_end) not in fixed_edge else fixed_edge[(v_name, not this_end)]
+    #                 trimmable_len = v_info.len - other_end_trim - 1
+    #                 # need to propose a trimming scheme
+    #                 if (v_name, this_end) in v_info.connections[this_end]:  # palindromic repeat, not the self-loop
+    #                     # half of the overlap
+    #                     half_overlap = v_info.connections[this_end][(v_name, this_end)] / 2
+    #                     assert int(half_overlap) == half_overlap, "extra node need to be created (not checked and implemented)"
+    #                     assert half_overlap < trimmable_len
+    #                     trim_this = half_overlap
+    #                 else:
+    #                     next_overlaps = list(v_info.connections[this_end].values())
+    #                     if strategy == 0:
+    #                         # even trimming
+    #                         trim_this = min(min(next_overlaps)//2, trimmable_len)
+    #                     elif strategy == 1:
+    #                         # random trimming
+    #                         trim_this = random.randint(0, min(min(next_overlaps), trimmable_len))
+    #                 fixed_edge[(v_name, this_end)] = trim_this
+    #                 for (n_v, n_e), ovl in v_info.connections[this_end].items():
+    #                     pending_ends.append((n_v, n_e, ovl, trim_this))
+    #                 print("----")
+    #                 print(fixed_edge)
+    #             while pending_ends:
+    #                 next_v, next_e, overlap, trimmed = pending_ends.pop()
+    #                 trim_next = overlap - trimmed
+    #                 if trim_next < 0:  # trmming longer than the overlap
+    #                     print(v_info.len, v_name, this_end, trimmed)
+    #                     print(self.vertex_info[next_v].len, next_v, next_e, trim_next)
+    #                     print("overlap", overlap)
+    #                     raise ValueError("trmming longer than the overlap")
+    #                     return None
+    #                 trim_next_next = 0 if (next_v, not next_e) not in fixed_edge else fixed_edge[(next_v, not next_e)]
+    #                 if trim_next + trim_next_next > self.vertex_info[next_v].len:
+    #                     raise ValueError("trimming longer than the next contig")
+    #                     return None  # trimming longer than the next contig
+    #                 if (next_v, next_e) in fixed_edge:
+    #                     if fixed_edge[(next_v, next_e)] != trim_next:
+    #                         print(v_info.len, v_name, this_end, trimmed)
+    #                         print(self.vertex_info[next_v].len, next_v, next_e, trim_next)
+    #                         print("overlap", overlap)
+    #                         print("registered_trim_next", fixed_edge[(next_v, next_e)])
+    #                         raise ValueError("inconsistent trimming")
+    #                         return None  # inconsistent trimming
+    #                 fixed_edge[(next_v, next_e)] = trim_next
+    #                 for (n_v, n_e), ovl in self.vertex_info[next_v].connections[next_e].items():
+    #                     if (n_v, n_e) not in fixed_edge:
+    #                         pending_ends.append((n_v, n_e, ovl, trim_next))
+    #     return fixed_edge
+
+    
+    def trim_overlaps(self, debug=False):
         """
         Trim the overlaps of the contigs in the graph to be 0, along with modifying the sequence.
         """
-        if self.__uni_overlap:
-            # relatively easy to trim the overlaps, trim half of the overlap from each end
-            head_trim = self.__uni_overlap // 2
-            tail_trim = self.__uni_overlap - head_trim
-            for v_name, v_info in self.vertex_info.items():
-                # make sure the length is long enough to trim
-                if v_info.len <= self.__uni_overlap:
-                    raise ProcessingGraphFailed("The contig " + v_name + " shorter than the universal overlap!")
-                self.vertex_info[v_name].seq[True] = v_info.seq[True][head_trim:-tail_trim]
-                self.vertex_info[v_name].seq[False] = v_info.seq[False][tail_trim:-head_trim]
-                self.vertex_info[v_name].len -= self.__uni_overlap
-                # trim the connections
-                for this_end in (True, False):
-                    for next_v, next_e in v_info.connections[this_end]:
-                        self.vertex_info[v_name].connections[this_end][(next_v, next_e)] = 0
-            self.__uni_overlap = 0
-            return True
-        else:
-            # TODO
-            # TODO
-            # TOFINISH
-            # searching for a doable overlap trimming scheme
-            vertex_names = list(self.vertex_info)
-            queue_schemes = {}  # {(vertex_name, vertex_end): [trim_option1, trim_option2, ..], ...}
-            current_scheme_order = []
-            # initialize the queue_schemes
-            for vertex_name in vertex_names:
-                for vertex_end in (True, False):
-                    if (vertex_name, vertex_end) not in queue_schemes:
-                        next_candidates = self.vertex_info[vertex_name].connections[vertex_end].keys()
-                        curent_overlaps = self.vertex_info[vertex_name].connections[vertex_end].values()
-                        assert self.vertex_info[vertex_name].len > max(curent_overlaps), \
-                            "The contig " + vertex_name + " is shorter than its maximum overlap!"
-                        # if (vertex_name, not vertex_end) not in queue_schemes:
-                        #     min_trim = 0
-                        #     max_trim = 
-                        #     queue_schemes[(vertex_name, vertex_end)] = 
-            raise NotImplementedError("The trimming of overlaps for this type of graph is not implemented yet!")
+        # try even first
+        # print("search for even scheme")
+        # trimming_strategy = self.__search_for_overlap_trimming(strategy=0)
+        # if trimming_strategy is None:
+        #     # try random for 100
+        #     try_count = 0
+        #     print("search for random scheme")
+        #     while trimming_strategy is None:
+        #         trimming_strategy = self.__search_for_overlap_trimming(strategy=1)
+        #         try_count += 1
+        #         if try_count > 100:
+        #             logger.warning("The trimming of overlaps for this type of graph is not feasible!")
+        #             return False
+        trimming_strategy = self.__search_for_overlap_trimming(debug=debug)
+        trimmed = False
+        # do the trimming
+        for v_name, v_info in self.vertex_info.items():
+            for this_end in (True, False):
+                trim_this = trimming_strategy[(v_name, this_end)]
+                if trim_this > 0:
+                    trimmed = True
+                    self.vertex_info[v_name].seq[this_end] = self.vertex_info[v_name].seq[this_end][:-trim_this]
+                    self.vertex_info[v_name].seq[not this_end] = self.vertex_info[v_name].seq[not this_end][trim_this:]
+                    self.vertex_info[v_name].len -= trim_this
+        # trim the connections
+        for v_name, v_info in self.vertex_info.items():
+            for this_end in (True, False):
+                for next_v_e in v_info.connections[this_end]:
+                    self.vertex_info[v_name].connections[this_end][next_v_e] = 0  
+        return trimmed    
+        # if self.__uni_overlap:
+        #     # relatively easy to trim the overlaps, trim half of the overlap from each end
+        #     head_trim = self.__uni_overlap // 2
+        #     tail_trim = self.__uni_overlap - head_trim
+        #     for v_name, v_info in self.vertex_info.items():
+        #         # make sure the length is long enough to trim
+        #         if v_info.len <= self.__uni_overlap:
+        #             raise ProcessingGraphFailed(f"The contig {v_name}(len={v_info.len}) shorter than the universal overlap {self.__uni_overlap}!")
+        #         self.vertex_info[v_name].seq[True] = v_info.seq[True][head_trim:-tail_trim]
+        #         self.vertex_info[v_name].seq[False] = v_info.seq[False][tail_trim:-head_trim]
+        #         self.vertex_info[v_name].len -= self.__uni_overlap
+        #         # trim the connections
+        #         for this_end in (True, False):
+        #             for next_v, next_e in v_info.connections[this_end]:
+        #                 self.vertex_info[v_name].connections[this_end][(next_v, next_e)] = 0
+        #     self.__uni_overlap = 0
+        #     return True
+        # else:
+        #     # TOFINISH
+        #     # searching for a doable overlap trimming scheme
+        #     vertex_names = list(self.vertex_info)
+        #     queue_schemes = {}  # {(vertex_name, vertex_end): [trim_option1, trim_option2, ..], ...}
+        #     current_scheme_order = []
+        #     # initialize the queue_schemes
+        #     for vertex_name in vertex_names:
+        #         for vertex_end in (True, False):
+        #             if (vertex_name, vertex_end) not in queue_schemes:
+        #                 next_candidates = self.vertex_info[vertex_name].connections[vertex_end].keys()
+        #                 curent_overlaps = self.vertex_info[vertex_name].connections[vertex_end].values()
+        #                 assert self.vertex_info[vertex_name].len > max(curent_overlaps), \
+        #                     "The contig " + vertex_name + " is shorter than its maximum overlap!"
+        #                 # if (vertex_name, not vertex_end) not in queue_schemes:
+        #                 #     min_trim = 0
+        #                 #     max_trim = 
+        #                 #     queue_schemes[(vertex_name, vertex_end)] = 
+        #     raise NotImplementedError("The trimming of overlaps for this type of graph is not implemented yet!")
                     
 
 
