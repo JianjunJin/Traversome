@@ -15,6 +15,7 @@ from collections import OrderedDict
 import numpy as np
 import random
 import subprocess
+import ast
 # from pathos.multiprocessing import ProcessingPool as Pool
 import dill
 from loguru import logger
@@ -1320,13 +1321,21 @@ def summarize_read_lengths(read_lengths: List[int]) -> Tuple[float, float, float
     return geometric_mean, geometric_std, lower_95, upper_95
 
 def parse_g_select(graph_component_select):
-    if graph_component_select.isdigit():
-        graph_component_select = int(graph_component_select)
-    elif "." in graph_component_select:
-        graph_component_select = float(graph_component_select)
-    else:
-        try:
-            graph_component_select = slice(*eval(graph_component_select))
-        except (SyntaxError, TypeError):
-            raise TypeError(str(graph_component_select) + " is invalid for --graph-selection!")
-    return graph_component_select
+    graph_component_select = str(graph_component_select).strip()
+    try:
+        return int(graph_component_select)
+    except ValueError:
+        pass
+    try:
+        return float(graph_component_select)
+    except ValueError:
+        pass
+    try:
+        slice_args = ast.literal_eval(graph_component_select)
+        if not isinstance(slice_args, tuple) or not 1 <= len(slice_args) <= 3:
+            raise ValueError
+        if not all(isinstance(part, int) or part is None for part in slice_args):
+            raise ValueError
+        return slice(*slice_args)
+    except (SyntaxError, ValueError):
+        raise TypeError(str(graph_component_select) + " is invalid for --graph-selection!")

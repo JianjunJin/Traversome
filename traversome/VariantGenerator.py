@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import os
+import ast
 
 from loguru import logger
 from traversome.utils import harmony_weights, run_dill_encoded, find_greatest_common_divisor, setup_logger   # MaxTraversalReached
@@ -1061,7 +1062,7 @@ class VariantGenerator(object):
             count_f = self.temp_dir.joinpath(f"sid.{var_id}.count")
             try:
                 with open(tuple_f) as input_r, open(count_f) as input_i:
-                    this_variant = eval(input_r.read())
+                    this_variant = ast.literal_eval(input_r.read())
                     this_count = int(input_i.read())
                     self.variants.append(this_variant)
                     self.variants_counts[this_variant] = this_count
@@ -2114,5 +2115,4 @@ class VariantGenerator(object):
 
     def pass_decay_t(self):
         return self.__decay_t
-
 
