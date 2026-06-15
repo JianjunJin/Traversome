@@ -166,7 +166,7 @@ class ModelFitMaxLike(object):
 
     def genetic_algorithm_search(self,
                                  n_proc,
-                                 criterion=Criterion.AIC,
+                                 criterion=Criterion.BIC,
                                  chosen_ids: Union[typingODict[int, bool], Set] = None,
                                  user_fixed_ids: Union[list, tuple, set, None] = None,
                                  equal_tol=1e-5,
@@ -549,7 +549,7 @@ class ModelFitMaxLike(object):
 
     def reverse_model_selection(self,
                                 n_proc,
-                                criterion=Criterion.AIC,
+                                criterion=Criterion.BIC,
                                 chosen_ids: Union[typingODict[int, bool], Set] = None,
                                 user_fixed_ids: Union[list, tuple, set, None] = None,
                                 max_queue_size: int = None,
@@ -729,7 +729,7 @@ class ModelFitMaxLike(object):
 
     def reverse_model_selection_using_reps(self,
                                            n_proc,
-                                           criterion=Criterion.AIC,
+                                           criterion=Criterion.BIC,
                                            chosen_ids: Union[typingODict[int, bool], Set] = None,
                                            # random_size: int = 0,
                                            user_fixed_ids: Union[list, tuple, set, None] = None,
@@ -1837,5 +1837,4 @@ class ModelFitMaxLike(object):
     #                 model_sp_ids.add(self.sbp_to_sbp_id[sub_path])
     #     return self.observed_sbp_id_set.issubset(model_sp_ids)
             
-
 

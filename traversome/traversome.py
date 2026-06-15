@@ -463,7 +463,7 @@ class Traversome(object):
                     self.fit_model_using_reverse_model_selection(
                         model=self.model,
                         sbp_to_sbp_id=sbp_to_sbp_id,
-                        criterion=self.kwargs.get("model_criterion", Criterion.AIC),
+                        criterion=self.kwargs.get("model_criterion", Criterion.BIC),
                         init_self_max_like=True,
                         num_processes=self.num_processes
                     ).items():
@@ -651,7 +651,7 @@ class Traversome(object):
             best_models = self.fit_model_using_reverse_model_selection(
                 model=sampled_model,
                 sbp_to_sbp_id=sbp_to_sbp_id,
-                criterion=self.kwargs.get("model_criterion", Criterion.AIC),
+                criterion=self.kwargs.get("model_criterion", Criterion.BIC),
                 init_self_max_like=False,
                 bootstrap_str=f"BS{go_bs + 1: 0{n_digit}d}")
 
@@ -738,7 +738,7 @@ class Traversome(object):
                 best_models = self.fit_model_using_reverse_model_selection(
                     model=sampled_model,
                     sbp_to_sbp_id=sbp_to_sbp_id,
-                    criterion=self.kwargs.get("model_criterion", Criterion.AIC),
+                    criterion=self.kwargs.get("model_criterion", Criterion.BIC),
                     init_self_max_like=False,
                     bootstrap_str=f"BS{go_bs + 1: 0{n_digit}d}",
                     num_processes=n_process,
@@ -959,7 +959,7 @@ class Traversome(object):
                                 this_prop, foo, this_like, this_criterion = self.fit_model_using_point_maximum_likelihood(
                                     model=self.model,
                                     sbp_to_sbp_id=sbp_to_sbp_id,
-                                    criterion=self.kwargs.get("model_criterion", Criterion.AIC),
+                                    criterion=self.kwargs.get("model_criterion", Criterion.BIC),
                                     chosen_ids=set(tuple_v_chosen),
                                     init_self_max_like=False)
                                 cache_new_best[tuple(tuple_v_chosen)] = (this_prop, foo, this_like, this_criterion)
@@ -2438,7 +2438,7 @@ class Traversome(object):
             self,
             model,
             sbp_to_sbp_id,
-            criterion=Criterion.AIC,
+            criterion=Criterion.BIC,
             chosen_ids: Union[typingODict[int, bool], Set] = None,
             init_self_max_like: bool = True,
             bootstrap_str: str = ""):
@@ -2479,7 +2479,7 @@ class Traversome(object):
     def fit_model_using_reverse_model_selection(self,
                                                 model,
                                                 sbp_to_sbp_id,
-                                                criterion=Criterion.AIC,
+                                                criterion=Criterion.BIC,
                                                 chosen_ids: Union[typingODict[int, bool], Set] = None,
                                                 init_self_max_like: bool = True,
                                                 bootstrap_str: str = "",
@@ -2592,6 +2592,4 @@ class Traversome(object):
         Compare the sub-path counts between two candidate variants
         """
         pass
-
-
 
