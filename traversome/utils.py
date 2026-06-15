@@ -16,6 +16,7 @@ import numpy as np
 import random
 import subprocess
 import ast
+import shlex
 # from pathos.multiprocessing import ProcessingPool as Pool
 import dill
 from loguru import logger
@@ -967,27 +968,37 @@ def run_graph_aligner(
         other_params: str = ""):
     logger.info("Making alignment using GraphAligner ..")
     # 2025-03-25 --multimap-score-fraction 1.0 added to reduce the number of multiple mappings
-    this_command = os.path.join("", "GraphAligner") + \
-                   " --multimap-score-fraction 1.0 " + \
-                   " -g " + graph_file + " -f " + seq_file + " " + other_params + " " + \
-                   " -x vg -t " + str(num_processes) + \
-                   " -a " + alignment_file + ".tmp.gaf"
-    logger.debug(this_command)
-    ga_run = subprocess.Popen(this_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
-    output, err = ga_run.communicate()
+    tmp_alignment_file = alignment_file + ".tmp.gaf"
+    this_command = [
+        "GraphAligner",
+        "--multimap-score-fraction", "1.0",
+        "-g", graph_file,
+        "-f", seq_file,
+        *shlex.split(other_params),
+        "-x", "vg",
+        "-t", str(num_processes),
+        "-a", tmp_alignment_file,
+    ]
+    logger.debug(" ".join(shlex.quote(str(arg)) for arg in this_command))
+    ga_run = subprocess.run(this_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    output = ga_run.stdout
     # TODO better adjusted for graphaligner log
-    if "Aborted" in output.decode("utf8"):  # or "(ERR)" in output.decode("utf8"):
-        logger.error(output.decode("utf8"))
+    if ga_run.returncode != 0:
+        logger.error(output)
+        logger.error("GraphAligner exited with code {}!".format(ga_run.returncode))
         exit(1)
-    elif "Unknown graph type" in output.decode("utf8"):
-        logger.error(output.decode("utf8"))
+    elif "Aborted" in output:  # or "(ERR)" in output:
+        logger.error(output)
         exit(1)
-    elif not os.path.exists(alignment_file + ".tmp.gaf"):
-        logger.error(output.decode("utf8"))
+    elif "Unknown graph type" in output:
+        logger.error(output)
+        exit(1)
+    elif not os.path.exists(tmp_alignment_file):
+        logger.error(output)
         logger.error("No graph alignment file produced!")
         exit(1)
     else:
-        os.rename(alignment_file + ".tmp.gaf", alignment_file)
+        os.rename(tmp_alignment_file, alignment_file)
 
 
 def try_gcc_option() -> bool:
