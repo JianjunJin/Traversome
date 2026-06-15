@@ -15,9 +15,6 @@ from math import inf
 from shutil import rmtree as rmdir
 from traversome import __version__
 from traversome.utils import setup_logger, parse_g_select
-from typer.core import TyperGroup
-from typer.models import CommandInfo
-import inspect
 import yaml
 
 
@@ -77,40 +74,30 @@ def main(
 
 
 # ================== logging options to yaml ==================
-# to ensure that Path and Enum objects are properly serialized to YAML.
-def custom_representer(dumper, data):
-    return dumper.represent_scalar('tag:yaml.org,2002:str', str(data))
-
-yaml.add_representer(Path, custom_representer)
-yaml.add_representer(Enum, custom_representer)
-
-
-def get_command_params(command_info: CommandInfo):
-    parameters = {}
-    signature = inspect.signature(command_info.callback)
-    for name, param in signature.parameters.items():
-        if hasattr(param.default, "default"):
-            parameters[name] = param.default.default
-        else:
-            parameters[name] = param.default
-    return parameters
+def serialize_option_value(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, slice):
+        return {
+            "start": value.start,
+            "stop": value.stop,
+            "step": value.step,
+        }
+    return value
 
 
-def write_options_to_yaml(app: TyperGroup, yaml_file: str):
+def write_options_to_yaml(options: dict, yaml_file: str):
     """
-    Write all Typer options from the app to a YAML file.
-    :param app: The Typer app instance
+    Write the actual options for the current command invocation.
+    :param options: The current command options
     :param yaml_file: The path to the output YAML file
     """
-    options = {}
-    for command in app.registered_commands:
-        options.update(get_command_params(command))
-    # Convert complex objects to strings
-    for key, value in options.items():
-        if isinstance(value, (Path, Enum)):
-            options[key] = str(value)
-        elif value is Ellipsis:
-            options[key] = '...'
+    options = {
+        key: serialize_option_value(value)
+        for key, value in options.items()
+    }
     with open(yaml_file, 'w') as f:
         yaml.dump(options, f, 
                   default_flow_style=False)  # add to produce human-readable YAML
@@ -622,6 +609,8 @@ def thorough(
         assert min_alignment_counts > 0
     if topology == ChTopology.circular:
         prune_terminal_contigs = True
+    graph_component_selection = parse_g_select(graph_component_selection)
+    run_options = locals().copy()
 
     from loguru import logger
     initialize(
@@ -629,7 +618,7 @@ def thorough(
         loglevel=log_level,
         previous=prev_run)
     # write options to yaml file
-    write_options_to_yaml(app, output_dir.joinpath("options.yaml"))
+    write_options_to_yaml(run_options, output_dir.joinpath("options.yaml"))
     # set theano cache directory
     theano_cache_dir = output_dir.joinpath("theano.cache")
     symengine_cache_dir = output_dir.joinpath("symengine.cache")
@@ -676,7 +665,6 @@ def thorough(
         #     logger.info("Graph alignment source: GAF alignment file")
 
         # assert max_valid_search >= min_valid_search, ""
-        graph_component_selection = parse_g_select(graph_component_selection)
             
         # TODO: use json file to record parameters
         from traversome.traversome import Traversome
@@ -878,4 +866,3 @@ def simulate(
         random_seed=random_seed
         )
     simulator.run()
-
