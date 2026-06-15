@@ -1318,3 +1318,15 @@ def summarize_read_lengths(read_lengths: List[int]) -> Tuple[float, float, float
     # TODO I actually just want the N025 and N095, not the model
     lower_95, upper_95 = lognorm.ppf([0.025, 0.975], sigma, loc=0, scale=scale)
     return geometric_mean, geometric_std, lower_95, upper_95
+
+def parse_g_select(graph_component_select):
+    if graph_component_select.isdigit():
+        graph_component_select = int(graph_component_select)
+    elif "." in graph_component_select:
+        graph_component_select = float(graph_component_select)
+    else:
+        try:
+            graph_component_select = slice(*eval(graph_component_select))
+        except (SyntaxError, TypeError):
+            raise TypeError(str(graph_component_select) + " is invalid for --graph-selection!")
+    return graph_component_select

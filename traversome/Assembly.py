@@ -258,8 +258,10 @@ class Assembly(AssemblySimple):
                     if go_c not in selected_component_ids:
                         discard_vs.update(comp)
             self.remove_vertex(discard_vs, update_cluster=update_cluster)
+            return True
         else:
             raise ValueError("Please choose only one criteria among component_ids, cutoff_to_max, and cutoff_to_total!")
+        return False
 
     def remove_vertex(self, vertices, update_cluster=True):
         """

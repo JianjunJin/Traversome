@@ -14,7 +14,7 @@ from typing import Union, Optional
 from math import inf
 from shutil import rmtree as rmdir
 from traversome import __version__
-from traversome.utils import setup_logger
+from traversome.utils import setup_logger, parse_g_select
 from typer.core import TyperGroup
 from typer.models import CommandInfo
 import inspect
@@ -244,10 +244,28 @@ def trim(
         ..., "-o", "--output",
         help="Output graph file",
         exists=False, resolve_path=True),
+    trim_overlaps: bool = typer.Option(
+        False, "--trim-overlaps",  "--trim-o",
+        help="Trim redundant overlap information in the graph. "
+             "If disabled, the overlaps will be kept in the output graph. "),
+    graph_component_selection: str = typer.Option(
+        "0", "--graph-selection", "--graph-s",
+        help="Use this to select certain connected components in the graph for assembly. "
+             "First, the weight of each connected component will be calculated as \\sum_{i=1}^{N}length_i*depth_i, "
+             "where N is the contigs in that component. Then, the components will be sorted in a decreasing order. "
+             "1) If the input is an integer or a slice, this will trigger the selection of specific component "
+             "by the decreasing order, e.g. 0 will keep the first component; 0,4 will keep the first four components; "
+             "2) If the input is a float in the range of (0, 1), this will trigger the selection using "
+             "the accumulated weight ratio cutoff, "
+             "above which, the remaining components will be discarded. "
+             "A cutoff of 1.0 means keeping all components in the graph, "
+             "while a value close to 0 means only keep the connected "
+             "component with the largest weight. "),
     log_level: LogLevel = typer.Option(
         LogLevel.INFO, "--loglevel", help="Logging level. Use DEBUG for more, ERROR for less."),
     ):
-    """Trim the overlaps of the contigs in the graph to be 0, along with modifying the sequence."""
+    """trim the graph by either redundant overlaps or specific connected components."""
+    graph_component_selection = parse_g_select(graph_component_selection)
     from loguru import logger
     initialize(
         output_dir=None,  # no log file
@@ -257,12 +275,24 @@ def trim(
     debug = log_level in (LogLevel.DEBUG, LogLevel.TRACE)
     from traversome.Assembly import Assembly
     assembly_obj = Assembly(str(graph_file))
-    logger.info("Trimming overlaps in the graph..")
-    modified = assembly_obj.trim_overlaps(debug=debug)
-    if not modified:
-        logger.info("No overlaps to be trimmed.")
-    logger.info(f"Writing to {str(output_graph)}..")
-    assembly_obj.write_to_gfa(str(output_graph))
+    modified1 = False
+    if isinstance(graph_component_selection, int) or isinstance(graph_component_selection, slice):
+        modified1 = assembly_obj.reduce_graph_by_weight(component_ids=graph_component_selection)
+    elif isinstance(graph_component_selection, float):
+        modified1 = assembly_obj.reduce_graph_by_weight(cutoff_to_total=graph_component_selection)
+    if not modified1:
+        logger.info("No component to be trimmed.")
+    modified2 = False
+    if trim_overlaps:
+        logger.info("Trimming overlaps in the graph..")
+        modified2 = assembly_obj.trim_overlaps(debug=debug)
+        if not modified2:
+            logger.info("No overlaps to be trimmed.")
+    if not modified1 and not modified2:
+        logger.info("No graph generated due to no trim operation.")
+    else:
+        logger.info(f"Writing trimmed graph to {str(output_graph)}..")
+        assembly_obj.write_to_gfa(str(output_graph))
         
 
 @app.command()
@@ -382,9 +412,9 @@ def thorough(
         help="AIC (reverse model selection using stepwise AIC)\n"
              "BIC (reverse model selection using stepwise BIC, default)"),
     # disabled for now
-    # augmented_bootstrap: bool = typer.Option(
-    #     False, "--augmented-bootstrap", "--abs",
-    #     help="Use augmented bootstrap (keep the original records for each replicate) to estimate the support of the variants. "),
+    augmented_bootstrap: bool = typer.Option(
+        False, "--augmented-bootstrap", "--abs",
+        help="Use augmented bootstrap (keep the original records for each replicate) to estimate the support of the variants. "),
     bootstrap: int = typer.Option(
         100, "--bs", "--bootstrap",
         help="The number of repeats used to perform bootstrap analysis. "),
@@ -646,15 +676,7 @@ def thorough(
         #     logger.info("Graph alignment source: GAF alignment file")
 
         # assert max_valid_search >= min_valid_search, ""
-        if graph_component_selection.isdigit():
-            graph_component_selection = int(graph_component_selection)
-        elif "." in graph_component_selection:
-            graph_component_selection = float(graph_component_selection)
-        else:
-            try:
-                graph_component_selection = slice(*eval(graph_component_selection))
-            except (SyntaxError, TypeError):
-                raise TypeError(str(graph_component_selection) + " is invalid for --graph-selection!")
+        graph_component_selection = parse_g_select(graph_component_selection)
             
         # TODO: use json file to record parameters
         from traversome.traversome import Traversome
@@ -667,7 +689,7 @@ def thorough(
             outdir=str(output_dir),
             # identifiable_by_unique_rp=identifiable_by_unique_rp,
             model_criterion=criterion,
-            # augmented_bootstrap=augmented_bootstrap,
+            augmented_bootstrap=augmented_bootstrap,
             bootstrap=bootstrap,
             bs_threshold=bs_threshold,
             jackknife=jackknife,

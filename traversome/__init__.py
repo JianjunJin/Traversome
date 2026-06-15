@@ -5,7 +5,7 @@ Traversome: genome variant resolution and frequency estimation from genome assem
 """
 
 
-__version__ = "0.1.10"
+__version__ = "0.1.10a"
 __author__ = "JianJun Jin and Deren Eaton"
 
 
