@@ -4,7 +4,7 @@
 Install the traversome package.
 
 Local install for developers:
-    mamba install -c bioconda graphaligner python numpy scipy sympy python-symengine dill typer loguru ppymal gekkoq
+    mamba install -c bioconda graphaligner python numpy scipy sympy python-symengine dill typer loguru pyyaml gekko
     pip install . -e --no-deps
 """
 
