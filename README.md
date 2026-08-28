@@ -6,10 +6,19 @@ Genomic structure frequency estimation from genome assembly graphs and long read
 
 Install dependencies using conda. I recommend using the mamba version of conda.
 
+For Linux and Intel macOS:
+
 ```bash
-mamba create -n traversome_env
-mamba activate traversome_env
-mamba install -c bioconda graphaligner python numpy scipy sympy python-symengine dill typer loguru pyyaml gekko
+mamba create -n traversome -c conda-forge -c bioconda graphaligner python numpy scipy sympy python-symengine dill typer loguru pyyaml gekko
+mamba activate traversome
+```
+
+For Apple Silicon macOS, use an `osx-64` environment because GraphAligner is not available for native `osx-arm64`:
+
+```bash
+mamba create -n traversome --platform osx-64 -c conda-forge -c bioconda graphaligner python numpy scipy sympy python-symengine dill typer loguru pyyaml gekko
+mamba activate traversome
+conda config --env --set subdir osx-64
 ```
 
 <!-- // hide mcmc for now
