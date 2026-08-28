@@ -394,12 +394,6 @@ class Traversome(object):
             logger.error("No candidate variants found!")
             logger.info("======== VARIANTS SEARCHING ENDS ========\n")
             raise SystemExit(1)
-        elif self.num_put_variants == 1 or len(self.repr_to_merged_variants) == 1:
-            # self.variant_proportions_best[0] = self.variant_proportions[0] = 1.   # for reverse model selection
-            # TODO
-            self._variant_proportions_cmb_best[(0,)][0] = self._variant_proportions_cmb[(0,)][0] = 1.   # for genetic_algorithm_search
-            logger.info("======== VARIANTS SEARCHING ENDS ========\n")
-            self.gen_all_informative_sub_paths(silent=True)
         else:
             for go_p, path in enumerate(self.variant_paths):
                 logger.info("cid_{} PATH: {}".format(go_p, self.graph.repr_path(path)))
@@ -471,16 +465,14 @@ class Traversome(object):
             
             logger.info("======== MODEL SELECTION & FITTING ENDS ========\n")
 
-            if self.kwargs.get("bootstrap", 0):  # or self.kwargs.get("jackknife", 0):
+            if self.kwargs.get("bootstrap", 0) and len(self.repr_to_merged_variants) > 1:
                 logger.info("======== BOOTSTRAPPING STARTS ========")
                 self.do_bootstrap(n_processes=self.num_processes)
                 self.summarize_bootstrap_replicates()
                 logger.info("======== BOOTSTRAPPING ENDS ========\n")
 
             if not self._variant_proportions_cmb_best:  # if it is not modified during subsampling
-                for sorted_var_ids, res_tuple in self._variant_proportions_cmb.items():
-                    tuple_var_ids = tuple(sorted(sorted_var_ids, key=lambda x: self._cid_sorter[x]))
-                    self._variant_proportions_cmb_best[tuple_var_ids] = res_tuple
+                self._set_raw_model_results_as_best()
             # MCMC
             if self.kwargs.get("n_generations", 0) > 0 and \
                     len([repr_v
@@ -502,7 +494,7 @@ class Traversome(object):
         self.output_readpath_info()
         self.output_sampling_info()
         self.output_result_info()
-        if self.kwargs.get("bootstrap", 0) == 0 or self.bs_eligible or self.num_put_variants == 1:
+        if self.kwargs.get("bootstrap", 0) == 0 or self.bs_eligible or len(self.repr_to_merged_variants) == 1:
             self.output_pangenome_graph()
             self.output_seqs()
         # remove temporary files
@@ -1074,6 +1066,12 @@ class Traversome(object):
         #         if cid_ not in self._cid_sorter:
         #             self._cid_sorter[cid_] = len(self._cid_sorter)
 
+    def _set_raw_model_results_as_best(self):
+        self.__sorting_cid()
+        for sorted_var_ids, res_tuple in self._variant_proportions_cmb.items():
+            tuple_var_ids = tuple(sorted(sorted_var_ids, key=lambda x: self._cid_sorter[x]))
+            self._variant_proportions_cmb_best[tuple_var_ids] = res_tuple
+
     def _check_bs_threshold(self, count_unique, n_reps, threshold, last_v_tuple):
         """
         check if bootstrap is possible to converge to a single solution with the threshold value
@@ -1177,13 +1175,14 @@ class Traversome(object):
                     output_h.write("\t".join(this_line) + "\n")
             if not self.vp_unique_results_sorted:
                 for go_sub_s, tuple_v_chosen in enumerate(raw_res):
+                    raw_result = self._variant_proportions_cmb_best[tuple_v_chosen]
                     this_line = [f"{num_solutions:0{s_digit}d}/{go_sub_s + 1:0{sub_s_digit}d}"
                                  f"\t-"
-                                 f"\t-"
-                                 f"\t-"] + \
+                                 f"\t{raw_result[2]}"
+                                 f"\t{raw_result[3]}"] + \
                                 ["-" for _id in range(num_fids)] + \
                                 ["-"]
-                    for cid, prop_val in self._variant_proportions_cmb_best[tuple_v_chosen][0].items():
+                    for cid, prop_val in raw_result[0].items():
                         this_line[self._repr_cid_to_fid_column[cid]] = f"{prop_val:.4f}"  # given that fid is 1-based
                     output_h.write("\t".join(this_line) + "\n")
             elif raw_res not in self.vp_unique_results:  # if there is no support for the raw-dataset-based best result
